@@ -57,5 +57,10 @@
   "tui.serve.iroh.failed": "Iroh 传输启动失败（{error}）。",
   "tui.serve.iroh.hint": "  已保存到 {path}。把 ticket + 一个邀请码发给朋友，无需域名/TLS/端口即可连入。",
   "tui.serve.iroh.missing": "未安装 'iroh' 包——请安装：pip install iroh（或 uv sync）。",
-  "tui.serve.iroh.ticket": "  Ticket：{ticket}"
+  "tui.serve.iroh.ticket": "  Ticket：{ticket}",
+  "tui.web.banner": "★ Web 传输已就绪。在浏览器打开下面的地址（或供任意 WebSocket 客户端拨入）；浏览器需要的是地址 + 邀请码，而不是 p2p ticket。",
+  "tui.web.url": "  Web 地址：{url}",
+  "tui.web.failed": "Web 传输启动失败（{error}）。",
+  "tui.web.static": "  正在从 {static_dir} 托管网页客户端。",
+  "tui.web.no_static": "  未配置网页客户端构建——仅提供 WebSocket 端点。请构建 loreweaver-web 并传入 {static_dir}（或在前面加反向代理）。"
 }

@@ -57,5 +57,10 @@
   "tui.serve.iroh.failed": "Iroh transport could not start ({error}).",
   "tui.serve.iroh.hint": "  Saved to {path}. Share the ticket + an invite key; friends dial in with no domain/TLS/port.",
   "tui.serve.iroh.missing": "The 'iroh' package is not installed — install it: pip install iroh (or uv sync).",
-  "tui.serve.iroh.ticket": "  Ticket: {ticket}"
+  "tui.serve.iroh.ticket": "  Ticket: {ticket}",
+  "tui.web.banner": "★ Web transport ready. Open the URL in a browser (or dial it from any WebSocket client); browsers need a URL + an invite key, not a p2p ticket.",
+  "tui.web.url": "  Web URL: {url}",
+  "tui.web.failed": "Web transport could not start ({error}).",
+  "tui.web.static": "  Serving the web client from {static_dir}.",
+  "tui.web.no_static": "  No web client bundle configured — serving the WebSocket endpoint only. Build loreweaver-web and pass {static_dir} (or put a reverse proxy in front)."
 }
