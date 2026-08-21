@@ -796,12 +796,18 @@ describe("GameView", () => {
       expect(frame).toContain("claimed by p9")
 
       // Without an own character the roster used to be skipped by Tab entirely;
-      // an unclaimed pregen makes it a stop, and Enter claims rather than
-      // submitting the (empty) chat input.
+      // an unclaimed pregen makes it a stop. Enter is now TWO-STEP (v2.x): the
+      // first Enter arms the claim, the second fires it — a stray Enter on focus
+      // must not silently submit `.pc claim`.
       await act(async () => {
         mockInput.pressTab()
       })
       await flush()
+      await act(async () => {
+        mockInput.pressEnter()
+      })
+      await flush()
+      expect(client.sent).toEqual([])
       await act(async () => {
         mockInput.pressEnter()
       })
