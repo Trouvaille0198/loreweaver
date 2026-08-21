@@ -98,7 +98,9 @@ async def test_the_loop_reports_one_bucket_and_round_per_tool_round() -> None:
 
     await run_kp_turn(ctx, services, Toolset(_ActivityProvider()), "What does the lore say?")
 
-    assert seen == [("reading", 1), ("dice", 2), ("bookkeeping", 3)]
+    # 2.3.1 activity hints also announce ("thinking", round) before every model
+    # call; the per-tool-round buckets are what this test pins.
+    assert [pair for pair in seen if pair[0] != "thinking"] == [("reading", 1), ("dice", 2), ("bookkeeping", 3)]
 
 
 async def test_a_round_takes_the_bucket_of_its_first_call_and_leaks_nothing_else() -> None:
@@ -122,9 +124,9 @@ async def test_a_round_takes_the_bucket_of_its_first_call_and_leaks_nothing_else
 
     await run_kp_turn(ctx, services, Toolset(_ActivityProvider()), "Talk to Ida.")
 
-    assert seen == [("cast", 1)]
-    # Only the four closed bucket words ever reach the sink — never a name or an argument.
-    assert all(activity in {"reading", "dice", "cast", "bookkeeping"} for activity, _ in seen)
+    assert [pair for pair in seen if pair[0] != "thinking"] == [("cast", 1)]
+    # Only the closed bucket words ever reach the sink — never a name or an argument.
+    assert all(activity in {"reading", "dice", "cast", "bookkeeping", "thinking"} for activity, _ in seen)
 
 
 async def test_a_turn_without_a_sink_still_runs() -> None:
