@@ -413,16 +413,30 @@ class RoomHub:
         return list(self.rooms.get(session_key, ()))
 
     def online(self, session_key: str) -> int:
-        """How many members are currently connected to ``session_key``."""
-        return len(self.rooms.get(session_key, ()))
+        """How many distinct PEOPLE are currently connected to ``session_key``.
+
+        One human per ``user_key`` — the hub's unit of identity (see
+        ``publish``): a browser refresh or a second tab of the same player is
+        one person, not two, even while the old connection is still closing.
+        This is the same dedup the room ``state`` frame applies, so the two
+        counts can never disagree.
+        """
+        return len({member.user_key for member in self.rooms.get(session_key, ())})
 
     async def _emit_presence(self, session_key: str) -> None:
         members = self.rooms.get(session_key)
         if not members:
             return
+        # One row per DISTINCT person (user_key), never per connection: without
+        # this, refreshing the page — old connection lingering for the close
+        # handshake while the new one joins — made the online count climb by
+        # one per refresh until the zombie finished closing.
+        by_user: dict[str, Member] = {}
+        for member in members:
+            by_user.setdefault(member.user_key, member)
         players = [
             {"id": member.id, "name": getattr(member, "name", "") or member.id, "online": True}
-            for member in members
+            for member in by_user.values()
         ]
         await self.publish(session_key, Event.presence(players, len(players)))
 

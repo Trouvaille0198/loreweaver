@@ -33,7 +33,7 @@ from infra.config import Settings
 from infra.embeddings import FakeEmbeddings
 from infra.llm import FakeLLM, ToolCall, assistant_text, assistant_tools, tool_call
 from net.keystore import Keystore
-from net.session import PROTOCOL_VERSION, _MAX_INPUT_CHARS
+from net.session import _MAX_INPUT_CHARS, PROTOCOL_VERSION
 from net.state import build_room_state
 from net.tui_server import TuiServer, WsMember, _pack_media_message, _unpack_media_message
 from tests.agent.test_kp_selfplay import FIXTURES, SENTINEL, _tools_called_this_turn, kp_responder
@@ -1066,6 +1066,59 @@ async def test_a_party_member_on_another_system_keeps_their_seat_and_their_meter
     assert {member["name"] for member in roster} == {"Nora Vance", "Kael Thorn"}
 
 
+async def test_build_room_state_pregen_claimed_by_is_the_member_display_name():
+    """The wire's pregen `claimed_by` is display-facing: clients render it verbatim
+    ("已被 {name} 认领") and compare it to `welcome.you.name` to mark "yours". Sending
+    the raw internal member id (tui:…) read badly and never matched. The claim records
+    the claimer's display name, and the state builder sends it (the live member
+    registry and finally the raw id are the fallbacks for older claims)."""
+    from core.pregen_roster import pregen_add, pregen_claim
+
+    services = _services()
+    ctx = _room_ctx("pregen-claims", user_id="tui:abc123")
+    sheet = services.characters.generate_character("coc7", "Nora Vance")
+    await pregen_add(services.documents, ctx.chat_key, sheet, source="card:test")
+
+    # Claim WITHOUT a recorded name (an older claim): bare state keeps the id…
+    status, _ = await pregen_claim(
+        services.documents, ctx.chat_key, "Nora Vance", "tui:member-9", services.characters
+    )
+    assert status == "ok"
+    bare = await build_room_state(services, ctx)
+    assert bare["pregens"][0]["claimed_by"] == "tui:member-9"
+    # …but the live member registry resolves it.
+    class FakeMember:
+        id = "tui:member-9"
+        name = "粉肠"
+
+    with_members = await build_room_state(services, ctx, members=[FakeMember()])
+    assert with_members["pregens"][0]["claimed_by"] == "粉肠"
+
+    # A claim that RECORDS the display name sends it even with no members at all.
+    from core.pregen_roster import pregen_release
+
+    assert await pregen_release(
+        services.documents, ctx.chat_key, "Nora Vance", "tui:member-9", services.characters
+    ) == "ok"
+    await pregen_claim(
+        services.documents,
+        ctx.chat_key,
+        "Nora Vance",
+        "tui:member-9",
+        services.characters,
+        claimer_name="粉肠",
+    )
+    replayed = await build_room_state(services, ctx)
+    assert replayed["pregens"][0]["claimed_by"] == "粉肠"
+
+    # Release clears the name along with the claim.
+    assert await pregen_release(
+        services.documents, ctx.chat_key, "Nora Vance", "tui:member-9", services.characters
+    ) == "ok"
+    freed = await build_room_state(services, ctx)
+    assert freed["pregens"][0]["claimed_by"] == ""
+
+
 # ---------------------------------------------------------------------------
 # BUG B: history replay on join -- a joining/reconnecting player sees the
 # room's recent narrative instead of an empty log.
@@ -1180,6 +1233,50 @@ async def test_join_replays_this_turn_s_rolls_and_npc_lines_in_order():
         assert frames[2]["name"] == "Martha"
 
         await ws.close()
+    finally:
+        await server.close()
+
+
+async def test_replay_narrative_ids_are_stable_across_joins_and_match_the_persisted_records():
+    """A joining member used to get every replayed line under a FRESH random id.
+
+    The client dedups history replays by id (protocol 2.0: a narrative whose id
+    matches a completed line is a history replay and replaces it in place), but a
+    freshly minted id per join never matched anything — not the live line, not the
+    previous replay — so every reconnect appended ANOTHER full copy of the log. A
+    replayed narrative must carry the same id as the persisted record it was rebuilt
+    from (the same id the live line was stamped with at turn time).
+    """
+    services = _services()
+    keystore = Keystore()
+    key = keystore.add(room="replay-id-room", name="Ann")
+    server = TuiServer(services, keystore, port=0)
+    url = await _start(server)
+    try:
+        chat_key = _room_ctx("replay-id-room").chat_key
+        await append_message(
+            services, chat_key, DEFAULT_HISTORY_KEY, role="user", content="开始汐浦送灯", turn=1,
+            record_id="user-msg-0001",
+        )
+        await append_message(
+            services, chat_key, DEFAULT_HISTORY_KEY, role="assistant", content="**BGM** 开场……", turn=1,
+            record_id="kp-reply-0002",
+        )
+
+        async def replay_ids() -> list[str]:
+            ws = await websockets.connect(url)
+            try:
+                await _join(ws, key, "Ann")
+                await _recv(ws)  # own join presence
+                frames = [await _recv(ws) for _ in range(2)]
+                return [frame["id"] for frame in frames]
+            finally:
+                await ws.close()
+
+        first = await replay_ids()
+        second = await replay_ids()
+        assert first == ["user-msg-0001", "kp-reply-0002"], first
+        assert second == first  # identical ids on every join — the client's dedup works
     finally:
         await server.close()
 
