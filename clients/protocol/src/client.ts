@@ -209,8 +209,15 @@ export class WsClient {
     this.reconnect = options.reconnect ?? true
     this.reconnectBaseMs = options.reconnectBaseMs ?? 250
     this.reconnectMaxMs = options.reconnectMaxMs ?? 5_000
-    this.setTimeoutFn = options.setTimeoutFn ?? setTimeout
-    this.clearTimeoutFn = options.clearTimeoutFn ?? clearTimeout
+    // Strict-mode ES modules (all client bundles are): invoking the native
+    // window.setTimeout as a METHOD of a foreign `this` — the way the class
+    // calls its timer options (`this.setTimeoutFn(...)`) — throws
+    // "Illegal invocation", which aborts handleClose before the reconnect is
+    // scheduled and leaves the client stuck in "reconnecting" forever. Bind
+    // the functions once so every call is a plain function call. A test-injected
+    // mock is a plain function and binds harmlessly.
+    this.setTimeoutFn = (options.setTimeoutFn ?? setTimeout).bind(globalThis) as typeof setTimeout
+    this.clearTimeoutFn = (options.clearTimeoutFn ?? clearTimeout).bind(globalThis) as typeof clearTimeout
     this.onProtocolMismatch = options.onProtocolMismatch ?? ((message) => console.warn(message))
   }
 
