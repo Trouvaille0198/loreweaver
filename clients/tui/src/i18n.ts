@@ -294,6 +294,7 @@ const messages = {
     "party.noRoster": "No roster",
     "party.pregens": "PREGENS · Enter/click to claim",
     "party.pregenClaimed": "claimed by {who}",
+    "party.pendingClaim": "Claim {name}? Enter or double-click · Esc",
     "party.packCards": "PACK CARDS [W]orld [K]eeper",
     // Leading kind markers, kept to 3 cells so the ≤32-column sidebar can never
     // truncate them away. A world card is ALWAYS keeper-only to import: [W] is what
@@ -605,6 +606,7 @@ const messages = {
     "party.noRoster": "暂无队伍",
     "party.pregens": "预设角色 · Enter/点击认领",
     "party.pregenClaimed": "已被 {who} 认领",
+    "party.pendingClaim": "认领 {name}？Enter 或双击 · Esc 取消",
     "party.packCards": "扩展包卡片 [W]世界 [K]守秘人",
     "party.packCardWorld": "[W]",
     "party.packCardKeeperOnly": "[K]",

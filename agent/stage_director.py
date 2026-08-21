@@ -59,6 +59,7 @@ from core.documents import PLAYER_VIEWER, SCENE_ID
 from core.hooks import sanitize_ui_emissions
 from core.modvars import MODVARS_DOC_ID, MODVARS_DOC_TYPE, wire_entries
 from infra.llm import LLMClient
+from infra.model_call_trace import lane_scope
 from infra.room_facets import STORAGE_ROOM_STATE, RoomStateFacet
 
 if TYPE_CHECKING:
@@ -91,6 +92,9 @@ IMAGE_REF_FALLBACK = "ref_fallback"  # generation declined; the kit's own 定妆
 IMAGE_GENERATED = "generated"
 
 DIRECTOR_TRACE_KIND = "director"
+# 慢菜先备 warms are traced apart from the beat that asked for them: they land later, cost
+# budget of their own, and are what a `larder` hit on a later beat is actually reusing.
+PREGEN_TRACE_KIND = "director_pregen"
 
 MAX_BLOCKS = 6
 MAX_AUDIO_CUES = 2
@@ -460,7 +464,8 @@ async def run_director(
     trackers, scene = await _player_context(services, ctx)
     prompt = _build_prompt(kit, beat, player_text, reply_text, trackers, scene)
     try:
-        result = await _director_llm(services).chat([{"role": "user", "content": prompt}])
+        with lane_scope("director", chat_key=ctx.chat_key):
+            result = await _director_llm(services).chat([{"role": "user", "content": prompt}])
     except Exception as exc:  # noqa: BLE001 — presentation must never break the table
         logger.debug("director: llm call failed: %s", exc)
         _trace(blocks=0, cues=0, prepared=0, image={"outcome": IMAGE_PROVIDER_FAILED})
@@ -531,13 +536,30 @@ _PREGEN_TASKS: set[asyncio.Task] = set()
 
 
 def _spawn_pregen(services: Services, ctx: AgentCtx, kit: RoomKit, subject_id: str) -> None:
-    """Warm one subject in the background (fire-and-forget, failures swallowed)."""
+    """Warm one subject in the background (fire-and-forget, failures swallowed).
+
+    Traced under its own kind. A warm is a REAL generation — it spends the room's image
+    budget and fills the larder every later beat serves from — but it happens off the
+    beat's own call, so `run_director`'s row never mentions it. The 2026-08-20 play-test
+    read exactly the wrong story out of that silence: the trace said two pictures were
+    generated while the room had in fact paid for eleven, and the fifteen `larder` hits
+    looked like they came from nowhere. A probe that cannot answer "where did the budget
+    go" is not a probe.
+    """
 
     async def _warm() -> None:
+        outcome = IMAGE_PROVIDER_FAILED
+        digest: str | None = None
         try:
-            await _generate_subject(services, ctx, kit, subject_id, "")  # (hash, outcome) unused here
+            digest, outcome = await _generate_subject(services, ctx, kit, subject_id, "")
         except Exception:  # noqa: BLE001
             logger.debug("director: pre-generation of %r failed", subject_id, exc_info=True)
+        finally:
+            trace_event(
+                PREGEN_TRACE_KIND,
+                {"subject": subject_id, "outcome": outcome, **({"hash": digest} if digest else {})},
+                chat_key=ctx.chat_key,
+            )
 
     task = asyncio.create_task(_warm())
     _PREGEN_TASKS.add(task)

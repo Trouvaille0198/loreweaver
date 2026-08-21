@@ -617,7 +617,20 @@ export function GameView({
         ) : null}
       </box>
 
-      <box height={3} flexDirection="row" border borderColor={theme.border} paddingX={1}>
+      <box
+        height={3}
+        flexDirection="row"
+        border
+        borderColor={theme.border}
+        paddingX={1}
+        // Clicking the input area returns keyboard focus to the chat input even
+        // when the Tab cycle had parked it on the roster/choices: the roster's
+        // Enter handling must never fire from a keystroke meant for the input.
+        onMouseDown={() => {
+          setRosterFocused(false)
+          setChoicesFocused(false)
+        }}
+      >
         <text fg={theme.accent}>{"> "}</text>
         <input
           key={inputVersion}
