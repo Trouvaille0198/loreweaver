@@ -479,5 +479,28 @@ class SheetCommands:
             blurb = str(entry.get("blurb", "")).strip()
             if blurb:
                 line += ctx.i18n.t("pregen.commands.blurb_suffix", blurb=blurb)
+            claimer = self._pregen_claimer_name(ctx, str(entry.get("claimed_by") or ""))
+            if claimer:
+                line += ctx.i18n.t("pregen.commands.claimed_by_suffix", claimer=claimer)
             lines.append(line)
         return "\n".join(lines)
+
+    def _pregen_claimer_name(self, ctx: CommandCtx, user_id: str) -> str:
+        """Map a pregen claim's user_id back to the human name on the key that
+        made it, so `.pc list` shows who holds what (claims are table talk —
+        the roster entry is player-visible either way, only the holder was
+        anonymous). No keystore (standalone CLI) or unknown id → nothing."""
+        if not user_id:
+            return ""
+        keystore = getattr(self, "keystore", None)
+        if keystore is None:
+            return ""
+        try:
+            from net.keystore import member_id_for_key
+
+            for entry in keystore.entries(purpose=None):
+                if entry.name and member_id_for_key(entry.key) == user_id:
+                    return str(entry.name)
+        except Exception:
+            return ""
+        return ""

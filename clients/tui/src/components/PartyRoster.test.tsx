@@ -77,7 +77,7 @@ describe("PartyRoster pregen section (v1.9)", () => {
     act(() => renderer.destroy())
   })
 
-  test("clicking an unclaimed row sends .pc claim; a claimed row is inert", async () => {
+  test("a single click arms a pregen; a double-click claims it; a claimed row is inert", async () => {
     const recorder = new ClaimRecorder()
     const { renderer, flush, captureCharFrame, mockMouse } = await renderRoster(recorder, PREGENS)
     await flush()
@@ -85,12 +85,25 @@ describe("PartyRoster pregen section (v1.9)", () => {
     const lines = captureCharFrame().split("\n")
     const harveyY = lines.findIndex((line) => line.includes("Harvey"))
     expect(harveyY).toBeGreaterThan(0)
+    // First click: arms only — nothing sent.
     await act(async () => {
       await mockMouse.click(lines[harveyY].indexOf("Harvey"), harveyY)
     })
     await flush()
+    expect(recorder.sent).toEqual([])
+    expect(captureCharFrame()).toContain("◉ Harvey")
+    // Second click on the same row (the confirm line above it contains the
+    // name too — locate by the armed marker, not the bare name): claims.
+    const lines2 = captureCharFrame().split("\n")
+    const harveyY2 = lines2.findIndex((line) => line.includes("◉ Harvey"))
+    expect(harveyY2).toBeGreaterThan(0)
+    await act(async () => {
+      await mockMouse.click(lines2[harveyY2].indexOf("Harvey"), harveyY2)
+    })
+    await flush()
     expect(recorder.sent).toEqual([".pc claim Harvey"])
 
+    // A claimed row is inert — clicking it changes nothing.
     const maryY = lines.findIndex((line) => line.includes("Mary"))
     expect(maryY).toBeGreaterThan(0)
     await act(async () => {
@@ -102,16 +115,59 @@ describe("PartyRoster pregen section (v1.9)", () => {
     act(() => renderer.destroy())
   })
 
-  test("Enter while the panel is focused claims the first unclaimed pregen", async () => {
+  test("Enter while focused arms the claim; a second Enter fires it (two-step confirm)", async () => {
     const recorder = new ClaimRecorder()
-    const { renderer, flush, mockInput } = await renderRoster(recorder, PREGENS, { focused: true })
+    const { renderer, flush, captureCharFrame, mockInput } = await renderRoster(recorder, PREGENS, { focused: true })
+    await flush()
+
+    // First Enter: arms only — nothing sent, confirm line rendered (truncated
+    // in the 32-column sidebar, so match the stable prefix + the armed marker).
+    await act(async () => {
+      mockInput.pressEnter()
+    })
+    await flush()
+    expect(recorder.sent).toEqual([])
+    const armed = captureCharFrame()
+    expect(armed).toContain("Claim Harvey")
+    expect(armed).toContain("◉ Harvey")
+
+    // Second Enter: fires the claim.
+    await act(async () => {
+      mockInput.pressEnter()
+    })
+    await flush()
+    expect(recorder.sent).toEqual([".pc claim Harvey"])
+
+    act(() => renderer.destroy())
+  })
+
+  test("Esc cancels an armed claim without sending anything", async () => {
+    const recorder = new ClaimRecorder()
+    const { renderer, flush, captureCharFrame, mockInput } = await renderRoster(recorder, PREGENS, { focused: true })
     await flush()
 
     await act(async () => {
       mockInput.pressEnter()
     })
     await flush()
-    expect(recorder.sent).toEqual([".pc claim Harvey"])
+    expect(captureCharFrame()).toContain("Claim Harvey")
+
+    await act(async () => {
+      mockInput.pressEscape()
+      // A lone ESC is buffered by the terminal parser (to distinguish it from the
+      // prefix of a longer escape sequence) — keep that parser tick inside act().
+      await new Promise((resolve) => setTimeout(resolve, 25))
+    })
+    await flush()
+    expect(recorder.sent).toEqual([])
+    expect(captureCharFrame()).not.toContain("Claim Harvey")
+
+    // A subsequent Enter arms again rather than firing straight through.
+    await act(async () => {
+      mockInput.pressEnter()
+    })
+    await flush()
+    expect(recorder.sent).toEqual([])
 
     act(() => renderer.destroy())
   })
