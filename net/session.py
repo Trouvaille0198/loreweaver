@@ -120,7 +120,12 @@ def resolve_session_fields(keystore: Keystore, key: str, locale: str) -> dict[st
 
 
 def welcome_frame(
-    fields: dict[str, str], *, imagegen: bool = False, demo: bool = False, can_update: bool = False
+    fields: dict[str, str],
+    *,
+    imagegen: bool = False,
+    demo: bool = False,
+    can_update: bool = False,
+    p2p_ticket: str | None = None,
 ) -> dict[str, Any]:
     """Build the `welcome` frame from resolved session fields (shared by both transports)."""
     features = ["media", "audio"]
@@ -134,7 +139,7 @@ def welcome_frame(
         # The operator configured a self-update command AND this connection is a keeper,
         # so the client may offer a "update the server" control (see `admin_update_server`).
         features.append("update")
-    return {
+    frame: dict[str, Any] = {
         "type": "welcome",
         "protocol": _PROTOCOL_VERSION,
         "features": features,
@@ -144,6 +149,12 @@ def welcome_frame(
         "server": _SERVER_BANNER,
         "version": resolve_version(),
     }
+    if p2p_ticket:
+        # Additive: this server also runs a p2p (Iroh) carrier, and here is the
+        # shareable ticket desktop clients dial. Omitted on a WS-only server;
+        # clients that don't know it ignore the extra string.
+        frame["p2p_ticket"] = p2p_ticket
+    return frame
 
 
 def uses_demo_llm(services: Services) -> bool:
@@ -357,6 +368,11 @@ class SessionCore:
         # Recent AI-KP turns, for introspection (tests/admin asserting a keeper tool ran) — never wired.
         self.turns: deque[KPTurnResult] = deque(maxlen=50)
         self.join_timeout = tui_settings.join_timeout if join_timeout is None else join_timeout
+        # The shareable Iroh p2p ticket, when this process runs a combined
+        # WS+p2p carrier (see `app.serve_both`). `None` on a WS-only server —
+        # the welcome frame then omits `p2p_ticket` entirely, so clients know
+        # there is nothing to surface.
+        self.p2p_ticket: str | None = None
 
     async def _recorded_turn_events(self, chat_key: str) -> dict[str, list[tuple[str, Event]]]:
         """`after_id -> [(record id, event)]`, rebuilt from `gateway.turn`'s replay lane.

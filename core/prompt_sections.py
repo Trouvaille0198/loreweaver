@@ -227,6 +227,12 @@ async def inject_game_state_prompt(ctx: Any, character_manager: Any, store: Stor
                             effects=eff_str,
                         )
                     )
+                # These investigators are CLAIMED and in play: the roster is who the
+                # players already are, not a menu. Without this line the KP re-ran the
+                # "choose your character" ceremony at every session start even though
+                # the party was settled — unclaimed pregens are invisible here, so it
+                # could not tell "already playing" from "still on offer".
+                lines.append(i18n.t("prompt.game_state.roster_claimed_hint"))
             else:
                 if character and character.name != "default":
                     meters_str = (

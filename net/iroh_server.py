@@ -472,6 +472,7 @@ class IrohServer:
                 fields["role"] == "keeper"
                 and bool(self.core.services.settings.tui.update_command)
             ),
+            p2p_ticket=self.core.p2p_ticket,
         )
         if not await _write_line(send, welcome):
             return None

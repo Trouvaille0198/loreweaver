@@ -288,6 +288,7 @@ class TuiServer(SessionCore):
                     fields["role"] == "keeper"
                     and bool(self.services.settings.tui.update_command)
                 ),
+                p2p_ticket=self.p2p_ticket,
             ),
         )
         return member

@@ -19,9 +19,19 @@ class FakeMember:
     drop-on-failure fan-out guarantee.
     """
 
-    def __init__(self, id: str, *, transport: str = "tui", name: str = "", fail: bool = False) -> None:
+    def __init__(
+        self,
+        id: str,
+        *,
+        transport: str = "tui",
+        name: str = "",
+        fail: bool = False,
+        user_key: str | None = None,
+    ) -> None:
         self.id = id
-        self.user_key = f"user:{id}"
+        # Two connections of the SAME human share a user_key (the hub's unit of
+        # identity); distinct users get distinct keys by default.
+        self.user_key = user_key if user_key is not None else f"user:{id}"
         self.transport = transport
         self.name = name or id
         self.fail = fail
@@ -119,6 +129,34 @@ async def test_subscribe_unsubscribe_and_online_count() -> None:
     await hub.unsubscribe(bob)
     assert hub.online("room") == 0
     assert hub.members("room") == []
+
+
+async def test_online_and_presence_count_distinct_people_not_connections() -> None:
+    """A refresh or a second tab is ONE person, even while the old connection
+    is still closing — otherwise the online count climbs per refresh."""
+    hub = RoomHub()
+    alice_tab1 = FakeMember("a1", user_key="user:alice")
+    alice_tab2 = FakeMember("a2", user_key="user:alice")  # same person, second tab
+    bob = FakeMember("b")
+
+    await hub.subscribe("room", alice_tab1)
+    await hub.subscribe("room", alice_tab2)
+    await hub.subscribe("room", bob)
+
+    # Two people (alice's two connections) are one online human.
+    assert hub.online("room") == 2
+    presence = next(e for e in bob.events if e.kind == "presence")
+    assert presence.data["online"] == 2
+    assert len(presence.data["players"]) == 2
+
+    # Closing one of alice's tabs changes nothing for the count.
+    await hub.unsubscribe(alice_tab1)
+    assert hub.online("room") == 2
+    presence = next(e for e in bob.events if e.kind == "presence" and e.data["online"] == 2)
+    assert len(presence.data["players"]) == 2
+
+    await hub.unsubscribe(alice_tab2)
+    assert hub.online("room") == 1
 
 
 async def test_publish_fans_out_to_every_member() -> None:

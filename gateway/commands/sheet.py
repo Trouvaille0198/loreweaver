@@ -449,7 +449,14 @@ class SheetCommands:
         if sub in {"claim", "认领", "認領"}:
             if not rest:
                 return ctx.i18n.t("pregen.commands.claim_usage")
-            status, sheet = await pregen_claim(documents, chat_key, rest, ctx.user_id, ctx.services.characters)
+            status, sheet = await pregen_claim(
+                documents,
+                chat_key,
+                rest,
+                ctx.user_id,
+                ctx.services.characters,
+                claimer_name=str(getattr(ctx.raw_ctx, "user_name", "") or ""),
+            )
             if status in {"ok", "yours"} and sheet is not None:
                 if ctx.router.hub is not None:
                     await publish_state(ctx.router.hub, ctx.services, ctx.raw_ctx)

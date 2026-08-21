@@ -49,6 +49,9 @@ def _entry(doc_id: str, data: dict[str, Any]) -> dict[str, Any]:
         "source": str(data.get("source", "")),
         "blurb": str(data.get("blurb", "")),
         "claimed_by": str(data.get("claimed_by", "")),
+        # The claimer's display name, captured at claim time: the wire renders it
+        # verbatim, and a member id alone could never resolve once they are offline.
+        "claimed_name": str(data.get("claimed_name", "")),
     }
 
 
@@ -92,6 +95,7 @@ async def pregen_add(
         "source": str(source)[:200],
         "blurb": str(blurb)[:200],
         "claimed_by": str(existing.data.get("claimed_by", "")) if existing is not None else "",
+        "claimed_name": str(existing.data.get("claimed_name", "")) if existing is not None else "",
         "sheet": sheet.to_dict(),
     }
     doc = await documents.put(chat_key, PREGEN_DOC_TYPE, slug, data, source=str(source)[:200] or None)
@@ -108,17 +112,26 @@ async def pregen_pristine_sheet(documents: Any, chat_key: str, slug: str) -> Cha
         return None
 
 
-async def _set_claimed(documents: Any, chat_key: str, slug: str, claimed_by: str) -> None:
+async def _set_claimed(documents: Any, chat_key: str, slug: str, claimed_by: str, claimed_name: str = "") -> None:
     doc = await documents.get(chat_key, PREGEN_DOC_TYPE, slug)
     if doc is None:
         return
     data = dict(doc.data)
     data["claimed_by"] = claimed_by
+    # An empty claim clears the name too; a fresh claim records the claimer's
+    # display name so the wire can show it even after they disconnect.
+    data["claimed_name"] = claimed_name if claimed_by else ""
     await documents.put(chat_key, PREGEN_DOC_TYPE, slug, data)
 
 
 async def pregen_claim(
-    documents: Any, chat_key: str, ref: str, user_id: str, characters: CharacterManager
+    documents: Any,
+    chat_key: str,
+    ref: str,
+    user_id: str,
+    characters: CharacterManager,
+    *,
+    claimer_name: str = "",
 ) -> tuple[str, CharacterSheet | None]:
     """Claim a pregen for `user_id`. Returns ``(status, sheet)`` with status one of
     ``ok`` (fresh claim — pristine copy saved under the player's uid, made active),
@@ -145,7 +158,7 @@ async def pregen_claim(
         # Force-saving would destroy that player's progress, so the claim reports
         # instead; the status routes to a localized notice like every other outcome.
         return "name_conflict", None
-    await _set_claimed(documents, chat_key, entry["id"], user_id)
+    await _set_claimed(documents, chat_key, entry["id"], user_id, claimer_name)
     return "ok", sheet
 
 

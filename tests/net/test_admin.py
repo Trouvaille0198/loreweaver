@@ -263,6 +263,15 @@ async def test_admin_service_mints_room_scoped_single_use_chat_bind_token():
     )
     binding = next(item for item in listed["keys"] if item["id"].startswith("chat:"))
     assert binding["key_masked"] == "discord:keeper-7"
+    # The keystore's own chat_bind row ships masked and NEVER cleartext — its
+    # token is a different credential from an invite (join) key.
+    raw = next(
+        item
+        for item in listed["keys"]
+        if item["purpose"] == "chat_bind" and not item["id"].startswith("chat:")
+    )
+    assert "key" not in raw
+    assert raw["key_masked"] != minted["key"]
 
     await admin.dispatch(
         "keeper",
@@ -317,7 +326,9 @@ async def test_keeper_can_get_and_set_config_list_and_mint_keys():
         assert bad["message"]
         assert services.settings.llm.provider == "deepseek"  # unchanged
 
-        # list_keys masks key values and exposes ONLY the caller's bound room.
+        # list_keys exposes ONLY the caller's bound room: every row keeps its
+        # masked value, and join-purpose rows ALSO carry the cleartext key on
+        # this keeper-gated channel so the keeper can copy an invite to share.
         listed = await _send(ws, {"type": "admin_list_keys"})
         assert listed["type"] == "admin_keys"
         assert len(listed["keys"]) == 1
@@ -325,6 +336,7 @@ async def test_keeper_can_get_and_set_config_list_and_mint_keys():
         assert only["room"] == "arkham" and only["role"] == "keeper"
         assert only["key_masked"] != keeper_key
         assert "..." in only["key_masked"]
+        assert only["key"] == keeper_key
         assert foreign_key not in json.dumps(listed)
 
         # Minting into a different room is forbidden; omission selects caller_room.
@@ -348,6 +360,15 @@ async def test_keeper_can_get_and_set_config_list_and_mint_keys():
         assert len(minted["keys"]) == 2
         assert all("..." in entry["key_masked"] or entry["key_masked"] == "" for entry in minted["keys"])
         assert all(entry.get("id") for entry in minted["keys"])
+        # Cleartext rides exactly on the join-purpose rows — and only there.
+        assert all(
+            (entry.get("key") is not None) == (entry["purpose"] == "join")
+            for entry in minted["keys"]
+        )
+        assert {entry["key"] for entry in minted["keys"] if entry["purpose"] == "join"} == {
+            keeper_key,
+            new_key,
+        }
 
         # update + delete a key in the keeper's OWN room (arkham) — allowed.
         new_id = next(entry["id"] for entry in minted["keys"] if entry["name"] == "Player One")
