@@ -4,8 +4,9 @@
 // kinds, and `visible_when` on panel template blocks. 2.2 adds the installed-pack
 // card listing (`list_pack_cards` → `pack_cards`), the structured lane behind every
 // "import from installed pack" picker. 2.3 adds each listed card's `kind`, so a picker
-// can send the right import verb. A 2.0/2.1 client ignores all of it.
-export const PROTOCOL_VERSION = "2.3" as const
+// can send the right import verb. 2.4 adds `character.skills` — the sheet's trained
+// skills, folded into a collapsible card section. A 2.0–2.3 client ignores it.
+export const PROTOCOL_VERSION = "2.4" as const
 
 export const FrameType = {
   Join: "join",
@@ -696,6 +697,10 @@ export interface CharacterState {
   system: string
   resources: ResourceState[]
   attributes: Record<string, unknown>
+  /** v2.4: the sheet's trained skills, name → current value. A long, secondary
+   * surface — clients fold it into a collapsible card section, not the main
+   * grid. Absent from a pre-2.4 server — treat as {} (no skills shown). */
+  skills?: Record<string, unknown>
   status_effects: string[]
   avatar?: MediaRef
 }

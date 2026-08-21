@@ -1,13 +1,13 @@
 *English · [中文](protocol.zh.md)*
 
-# loreweaver networked TUI — wire protocol 2.3
+# loreweaver networked TUI — wire protocol 2.4
 
 This is the open, versioned wire protocol between a loreweaver server (started via
 `python -m app --serve`) and the OpenTUI terminal client. The engine itself
 (deterministic core + AI Keeper) is unaffected by transport; the transport-neutral
 session logic is `net.session.SessionCore`, and this document is the language-agnostic seam.
 
-Frames are JSON objects, each shaped `{"type": ...}`. Protocol version: `"2.3"`. The same
+Frames are JSON objects, each shaped `{"type": ...}`. Protocol version: `"2.4"`. The same
 frames + `join` handshake ride the transport; only the carrier + its framing differ:
 
 - **Iroh** (the transport `--serve` starts) — peer-to-peer QUIC. The server
@@ -113,7 +113,7 @@ connections receive `error too_many_connections` before `join` is read.
 ## Server → Client
 
 - `welcome` — sent once, on a successful `join`:
-  `{type:"welcome", protocol:"2.3", features:["media","audio", "imagegen"?, "demo"?, "update"?], room:string, you:{id:string,name:string,role:"player"|"keeper"}, locale:string, server:string, version?:string}`
+  `{type:"welcome", protocol:"2.4", features:["media","audio", "imagegen"?, "demo"?, "update"?], room:string, you:{id:string,name:string,role:"player"|"keeper"}, locale:string, server:string, version?:string}`
   `version` is the server's own release version (compare it to the client's to detect a mismatch). The `"update"` feature appears only for a keeper on a server whose operator configured a self-update command, and gates the `admin_update_server` control.
   `demo` means the server is using its offline sample Keeper, vector support is
   enabled, and this specific Keeper room was empty when the server checked it.
@@ -252,7 +252,11 @@ connections receive `error too_many_connections` before `join` is read.
   never sent — so a client renders the dict as-is, in wire order, and each key is a
   name `.st <key>=<n>` accepts. A system that declares no sheet spec sends its
   stored dict unfiltered.
-  `variables[].hidden` marks a keeper-connection-only row the keeper has not `.var expose`d yet — players never receive hidden rows at all. `pregens` is the module's claimable cast (`.pc list`/`.pc claim`); `claimed_by` is the claiming member id, `""` while unclaimed; omitted when no roster exists. `systems` (v2.3) is every rule system this server discovered, each with the dialect word that makes a character in it (`make_char`, absent when the pack declares none) — what a client needs to offer character creation without knowing any rule system, so a pack that ships its own appears in every client's picker with no client release.
+  `character.skills` (v2.4) is the sheet's trained skills, name → current value
+  (`{侦查: 70, 聆听: 55, …}` for a CoC sheet) — a long, secondary surface, sent for
+  the client to fold into a collapsible card section rather than the main attribute
+  grid. Absent from a pre-2.4 server; a client treats a missing key as "no skills".
+  `variables[].hidden` marks a keeper-connection-only row the keeper has not `.var expose`d yet — players never receive hidden rows at all. `pregens` is the module's claimable cast (`.pc list`/`.pc claim`); `claimed_by` is the claiming member's DISPLAY NAME (the same authoritative name the `welcome` carries; the internal member id is the fallback for a claimer not currently registered), `""` while unclaimed; omitted when no roster exists. `systems` (v2.3) is every rule system this server discovered, each with the dialect word that makes a character in it (`make_char`, absent when the pack declares none) — what a client needs to offer character creation without knowing any rule system, so a pack that ships its own appears in every client's picker with no client release.
   `variables` (optional — omitted when the room has none) is the room's
   deterministic module variables, PLAYER-VISIBLE subset only: keeper-only variables are
   filtered inside the engine (`core.modvars.player_entries`) and never reach any transport.

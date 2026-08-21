@@ -34,8 +34,15 @@ from core.modvars import MODVARS_DOC_ID, MODVARS_DOC_TYPE, wire_entries
 from infra.usage_stats import USAGE_STATS_KEY
 
 
-async def build_room_state(services: Services, ctx: AgentCtx) -> dict[str, Any]:
-    """Assemble one `state` frame's payload (including `type`) for `ctx`'s room."""
+async def build_room_state(
+    services: Services, ctx: AgentCtx, *, members: list[Any] | None = None
+) -> dict[str, Any]:
+    """Assemble one `state` frame's payload (including `type`) for `ctx`'s room.
+
+    `members` (the room hub's registered connections) lets the pregen cast resolve a
+    claimer's internal member id to its display name for the wire; `None` (tests,
+    offline claimers) keeps the id.
+    """
     sheet = await resolve_active_character(services, ctx)
     party = await _party(services, ctx.chat_key, locale=ctx.locale)
     initiative = await _initiative(services, ctx.chat_key)
@@ -72,7 +79,7 @@ async def build_room_state(services: Services, ctx: AgentCtx) -> dict[str, Any]:
     if variables:
         state["variables"] = variables
 
-    pregens = await _pregens(services, ctx.chat_key)
+    pregens = await _pregens(services, ctx.chat_key, members)
     if pregens:
         state["pregens"] = pregens
 
@@ -160,6 +167,7 @@ async def _character_payload(
         "system": sheet.system,
         "resources": resources,
         "attributes": attrs,
+        "skills": _wire_skills(sheet),
         "status_effects": status_effects,
     }
     avatar = getattr(sheet, "avatar", None)
@@ -192,6 +200,22 @@ def _wire_attributes(sheet: CharacterSheet) -> dict[str, Any]:
     if not declared:
         return stored
     return {key: stored[key] for key in declared if key in stored}
+
+
+def _wire_skills(sheet: CharacterSheet) -> dict[str, Any]:
+    """`state.character.skills`: the sheet's trained skills, name → current value.
+
+    Skills are a long, system-specific list (a CoC sheet carries dozens of them) —
+    a secondary surface, not something to paint beside the vitals. The wire sends
+    the stored dict as-is: names and values come from the sheet layer, and clients
+    fold them into a collapsible "skills" section of the character card instead of
+    the main grid. No pack-order filtering like `_wire_attributes`: every system's
+    skill list IS its storage order (there is no declaration-order concept to keep).
+    """
+    skills = getattr(sheet, "skills", None)
+    if not isinstance(skills, dict):
+        return {}
+    return {str(key): value for key, value in skills.items() if value is not None}
 
 
 async def _party(
@@ -422,18 +446,43 @@ async def _variables(services: Services, ctx: AgentCtx) -> list[dict[str, Any]]:
     return entries
 
 
-async def _pregens(services: Services, chat_key: str) -> list[dict[str, Any]]:
+async def _pregens(services: Services, chat_key: str, members: list[Any] | None = None) -> list[dict[str, Any]]:
     """The claimable pregen cast, v1.9 additive: one ``{name, claimed_by}`` per entry,
     insertion-ordered, consumed from the `pregen` documents' PLAYER projection (the cast
     list is table talk; the pristine sheet payload is what the projection withholds).
     Omitted (never an empty list) for roster-less rooms. Best-effort like the rest of
-    this snapshot."""
+    this snapshot.
+
+    `claimed_by` goes out as the claiming member's DISPLAY NAME: clients render it
+    verbatim ("已被 {name} 认领") and compare it against ``welcome.you.name`` to mark
+    "yours" — a raw internal member id (``tui:…``) would read badly and never match.
+    The claim-time display name (``claimed_name``) is authoritative and survives the
+    claimer going offline; the room hub's members are the fallback, and the raw id the
+    last resort for a claim that predates both."""
     try:
         pairs = await services.documents.list_views(chat_key, "pregen", PLAYER_VIEWER)
     except Exception:
         return []
+    member_names = {
+        str(getattr(member, "id", "")): str(getattr(member, "name", "") or "")
+        for member in (members or [])
+        if getattr(member, "id", None)
+    }
+
+    def wire_claimer(view: dict[str, Any]) -> str:
+        claimed_by = str(view.get("claimed_by", ""))
+        if not claimed_by:
+            return ""
+        # Claim-time display name first (works for offline claimers), then the
+        # live member registry, then the raw id as a last resort.
+        return (
+            str(view.get("claimed_name", ""))
+            or member_names.get(claimed_by, "")
+            or claimed_by
+        )
+
     return [
-        {"name": str(view.get("name", "")), "claimed_by": str(view.get("claimed_by", ""))}
+        {"name": str(view.get("name", "")), "claimed_by": wire_claimer(view)}
         for _doc, view in pairs
         if view.get("name")
     ]
