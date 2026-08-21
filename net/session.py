@@ -54,16 +54,18 @@ from net.room_backup import room_rows, room_vector_points
 
 logger = logging.getLogger(__name__)
 
-# v2.3 adds `kind` to every `pack_cards` entry — the 拆卡 classification a picker needs
-# to send the right import verb (without it every client hard-coded `.import <ref> pc`
-# and a world card was offered to players as a character). v2.2 added the installed-pack
+# v2.4 adds `character.skills` — the sheet's trained skills on the state frame, so a
+# client can fold them into the character card. v2.3 added `kind` to every `pack_cards`
+# entry — the 拆卡 classification a picker needs to send the right import verb (without
+# it every client hard-coded `.import <ref> pc` and a world card was offered to players
+# as a character). v2.2 added the installed-pack
 # card listing (`list_pack_cards` → `pack_cards`), the structured lane behind
 # "import from installed pack" pickers. v1.8 added module UI
 # panels (M15): per-viewer `ui_manifest`, hook-emitted `panel_event`, the
 # `panel_intent` client frame, and pack-asset resolution on the media byte channel.
 # v1.7 added declarative hook-emitted `ui` frames (core.hooks emitUI); v1.6 added
 # player-visible module variables on the state frame.
-_PROTOCOL_VERSION = "2.3"
+_PROTOCOL_VERSION = "2.4"
 # Public alias for out-of-band consumers (the `.lwpack` engine-minimum check in app.py).
 PROTOCOL_VERSION = _PROTOCOL_VERSION
 _SERVER_BANNER = "loreweaver/1"
@@ -200,7 +202,11 @@ def render_frame(event: Event) -> dict[str, Any] | None:
     if event.kind == "player_action":
         return {
             "type": "narrative",
-            "id": new_id(),
+            # The stable id is the persisted record id (`origin_id`): the join replay
+            # renders the same id, so a reconnect REPLACES this line in place instead
+            # of appending a duplicate (protocol 2.0 replay contract). `new_id()` only
+            # for the rare event that carries no record.
+            "id": event.origin_id or new_id(),
             "speaker": "player",
             "name": event.name,
             "text": event.text,
@@ -209,7 +215,7 @@ def render_frame(event: Event) -> dict[str, Any] | None:
     if event.kind == "narrative":
         frame: dict[str, Any] = {
             "type": "narrative",
-            "id": event.data.get("frame_id") or new_id(),
+            "id": event.data.get("frame_id") or event.origin_id or new_id(),
             "speaker": event.speaker,
             "text": event.text,
             "format": event.fmt,
@@ -466,6 +472,13 @@ class SessionCore:
         authorize = getattr(member, "authorize", None)
         if authorize is not None and not authorize():
             raise PermissionError("member authorization was revoked")  # i18n-exempt: internal hub signal
+        # Stamp the record id onto the rebuilt event so `render_frame` emits the SAME
+        # narrative id every time this record is replayed — a reconnect replaces the
+        # line in place instead of appending another copy (protocol 2.0 replay
+        # contract; without this every join rendered a fresh random id and the client's
+        # id-keyed dedup could never match, so each reconnect duplicated the whole log).
+        if origin_id and not event.origin_id:
+            event.origin_id = origin_id
         frame = render_frame(event)
         if frame is not None:
             await member.send_frame(frame)
