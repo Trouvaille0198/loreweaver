@@ -94,6 +94,14 @@ eval-logs/
 .keys.toml.lock
 iroh-secret.key
 iroh-ticket.txt
+keeper-key.txt
+
+# Third-party lorebook downloads (Chub.ai etc.) — content the operator brought in
+# at runtime, not repo material; licensing belongs to their authors.
+/*_world.json
+/*lorebook*.json
+/dnd_*.json
+/coc7_zh_world.json
 
 # --- 《安土》 marketing footage (generated video/stills for the trailer; never publish from here)
 marketing/

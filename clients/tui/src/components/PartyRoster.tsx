@@ -94,12 +94,31 @@ export function PartyRoster({
 }: PartyRosterProps) {
   const [expanded, setExpanded] = useState(false)
   const [expandedMembers, setExpandedMembers] = useState<Set<string>>(() => new Set())
+  // v2.x: claiming is CONFIRMED — keyboard Enter is two-step (first arms, second
+  // fires, Esc cancels), and a click arms on the first press and only CLAIMS on
+  // the second press on the same row (a double-click, or a deliberate confirm
+  // click on the armed row). A single stray click/Enter must never silently
+  // bind a pregen (the phantom-claim reports). Clicking a row also never steals
+  // keyboard focus from the chat input.
+  const [pendingClaim, setPendingClaim] = useState<string | null>(null)
 
   const unclaimedPregens = (pregens ?? []).filter((entry) => !entry.claimed_by)
   const claimPregen = (name: string) => {
     // Same wire path as typing `.pc claim <name>` by hand — the server owns all
     // validation (already claimed, no such pregen) and replies in the chat log.
+    setPendingClaim(null)
     client?.sendInput(`.pc claim ${name}`)
+  }
+
+  const handlePregenClick = (name: string) => {
+    if (pendingClaim === name) {
+      // Already armed — this press is the confirmation (a double-click, or a
+      // deliberate second click on the armed row).
+      claimPregen(name)
+    } else {
+      // First press: arm only — never a claim.
+      setPendingClaim(name)
+    }
   }
 
   const importPackCard = (entry: PackCardEntry) => {
@@ -116,12 +135,10 @@ export function PartyRoster({
 
   const toggle = () => {
     if (!character) return
-    onFocus()
     setExpanded((value) => !value)
   }
 
   const toggleMember = (name: string) => {
-    onFocus()
     setExpandedMembers((value) => {
       const next = new Set(value)
       if (next.has(name)) next.delete(name)
@@ -132,16 +149,26 @@ export function PartyRoster({
 
   useKeyboard((event) => {
     if (!focused) return
-    if (keyName(event) !== "return") return
+    const key = keyName(event)
+    if (key === "escape") {
+      if (pendingClaim) setPendingClaim(null)
+      return
+    }
+    if (key !== "return") return
     if (character) {
       setExpanded((value) => !value)
       return
     }
-    // No own character yet: claiming a pregen IS this player's next action, so an
-    // unclaimed entry takes Enter before a party-member detail toggle.
+    // No own character yet: claiming a pregen is this player's next action, so an
+    // unclaimed entry takes Enter before a party-member detail toggle. First Enter
+    // ARMS the claim (confirm line renders); only the second Enter fires it.
     const firstUnclaimed = unclaimedPregens[0]
     if (firstUnclaimed) {
-      claimPregen(firstUnclaimed.name)
+      if (pendingClaim === firstUnclaimed.name) {
+        claimPregen(firstUnclaimed.name)
+      } else {
+        setPendingClaim(firstUnclaimed.name)
+      }
       return
     }
     const expandableMember = party.find((member) => partyVitals(member, theme).length > 0)
@@ -235,15 +262,20 @@ export function PartyRoster({
       {pregens && pregens.length > 0 ? (
         <box flexDirection="column">
           <text fg={theme.dim} wrapMode="none" truncate>{tt(locale, "party.pregens")}</text>
+          {pendingClaim ? (
+            <text fg={theme.accent} wrapMode="none" truncate>
+              {tt(locale, "party.pendingClaim", { name: stripControlChars(pendingClaim) })}
+            </text>
+          ) : null}
           {pregens.map((entry) =>
             entry.claimed_by ? (
               <text key={entry.name} fg={theme.dim} wrapMode="none" truncate>
                 {"✓ "}{stripControlChars(entry.name)} · {tt(locale, "party.pregenClaimed", { who: stripControlChars(entry.claimed_by) })}
               </text>
             ) : (
-              <box key={entry.name} flexDirection="row" onMouseDown={() => claimPregen(entry.name)}>
+              <box key={entry.name} flexDirection="row" onMouseDown={() => handlePregenClick(entry.name)}>
                 <text fg={theme.player} wrapMode="none" truncate>
-                  {"▸ "}{stripControlChars(entry.name)}
+                  {pendingClaim === entry.name ? "◉ " : "▸ "}{stripControlChars(entry.name)}
                 </text>
               </box>
             ),
