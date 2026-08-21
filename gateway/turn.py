@@ -322,12 +322,20 @@ async def run_turn(
                     on_reply_delta=_emit_reply_delta,
                     on_tool_event=_emit_tool_event,
                     user_record_id=user_record_id,
+                    # The reply is persisted under the id its final frame renders with:
+                    # the last streaming epoch's draft id (the final REPLACES that
+                    # draft), or a fresh id when nothing streamed. Live and join replay
+                    # then agree on ONE id per line, so a reconnect replaces it in
+                    # place instead of appending a duplicate (protocol 2.0 replay
+                    # contract). Mirrors `user_record_id` above.
+                    reply_record_id_provider=lambda: stream_state["id"] or None,
                 )
-                # `frame_id` is the open draft's id (the final REPLACES the draft) or a
-                # fresh one when no draft is open — the check lane closed it, or nothing
-                # ever streamed. `origin_id` is the persisted reply's record (join replay).
+                # `frame_id` is the open draft's id (the final REPLACES the draft);
+                # when no draft is open — the check lane closed it, or nothing ever
+                # streamed — it is unset and the rendered id falls back to the record
+                # id (`origin_id`), the persisted reply's record (join replay).
                 final = Event.narrative(
-                    speaker="kp", text=result.reply, fmt="markdown", frame_id=stream_state["id"] or new_id()
+                    speaker="kp", text=result.reply, fmt="markdown", frame_id=stream_state["id"]
                 )
                 final.origin_id = result.reply_record_id
                 await hub.publish(ctx.chat_key, final)
@@ -565,7 +573,9 @@ async def state_for_ctx(
         if connected_names is None
         else connected_names
     )
-    snapshot = await build_room_state(services, ctx)
+    # `members` also lets the pregen cast render claimers by display name, not
+    # internal id (see net.state._pregens).
+    snapshot = await build_room_state(services, ctx, members=members)
     snapshot["online"] = len(members) if online is None else online
     for party_member in snapshot.get("party", []):
         party_member["online"] = party_member.get("name") in connected_names

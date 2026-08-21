@@ -81,7 +81,11 @@ async def test_ai_turn_broadcasts_busy_actor_then_idle_to_every_room_member() ->
 
     for member in (first, second):
         statuses = [event.data for event in member.events if event.kind == "turn_status"]
-        assert statuses == [{"status": "busy", "actor": "Nora"}, {"status": "idle"}]
+        assert statuses == [
+            {"status": "busy", "actor": "Nora"},
+            {"status": "busy", "actor": "Nora", "activity": "thinking", "round": 1},
+            {"status": "idle"},
+        ]
 
 
 async def test_idle_is_published_when_ai_turn_raises(monkeypatch) -> None:
@@ -193,7 +197,10 @@ async def test_a_tool_round_refreshes_busy_with_its_activity_and_round() -> None
     statuses = [event.data for event in watcher.events if event.kind == "turn_status"]
     assert statuses == [
         {"status": "busy", "actor": "Nora"},
+        {"status": "busy", "actor": "Nora", "activity": "thinking", "round": 1},
         {"status": "busy", "actor": "Nora", "activity": "dice", "round": 1},
+        # The round that returns the narration also announces itself first.
+        {"status": "busy", "actor": "Nora", "activity": "thinking", "round": 2},
         {"status": "idle"},
     ]
 

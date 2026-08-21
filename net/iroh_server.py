@@ -382,6 +382,7 @@ class IrohServer:
                     fields["role"] == "keeper"
                     and bool(self.core.services.settings.tui.update_command)
                 ),
+                p2p_ticket=self.core.p2p_ticket,
             )
         )
         return member

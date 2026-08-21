@@ -61,7 +61,7 @@ from infra.providers import (
     list_models,
     mask_secret,
 )
-from net.keystore import Keystore
+from net.keystore import _DEFAULT_PURPOSE, Keystore
 from net.room_backup import (
     RESET_SCOPES,
     chat_key_for_room,
@@ -674,8 +674,11 @@ def _valid_image_size(value: str) -> bool:
 def _keys_frame(
     keystore: Keystore, caller_room: str, *, minted: dict[str, Any] | None = None
 ) -> dict[str, Any]:
-    keys = [
-        {
+    keys: list[dict[str, Any]] = []
+    for entry in keystore.entries(purpose=None):
+        if entry.room != caller_room:
+            continue
+        row: dict[str, Any] = {
             "id": _key_id(entry.key),
             "key_masked": mask_secret(entry.key),
             "room": entry.room,
@@ -684,9 +687,14 @@ def _keys_frame(
             "purpose": entry.purpose,
             "expires_at": entry.expires_at,
         }
-        for entry in keystore.entries(purpose=None)
-        if entry.room == caller_room
-    ]
+        if entry.purpose == _DEFAULT_PURPOSE:
+            # Cleartext invite (join) key — carried ONLY on this keeper-gated,
+            # caller-room-scoped admin channel, so the keeper can copy an invite
+            # to share. Chat-binding rows deliberately carry no full key: their
+            # token is a different credential, and the binding identity is
+            # already visible in `key_masked`.
+            row["key"] = entry.key
+        keys.append(row)
     frame: dict[str, Any] = {"type": "admin_keys", "keys": keys}
     if minted is not None:
         frame["minted"] = minted

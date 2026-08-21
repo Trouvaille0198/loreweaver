@@ -46,6 +46,7 @@
   "prompt.game_state.initiative_line": "   {index}. {name} ({initiative}){marker}",
   "prompt.game_state.npc_header": "👥 活跃NPC:",
   "prompt.game_state.roster_header": "👤 调查员状态:",
+  "prompt.game_state.roster_claimed_hint": "（名单即已认领的玩家角色、正在游戏中——开局/重开时不要要求玩家重新选角；未认领的预构卡不在名单上，玩家可用 .pc list 查看，仅当玩家主动要求时才提及。）",
   "prompt.game_state.roster_line": "{name}：{meters}｜状态：{effects}",
   "prompt.game_state.scene_line": "🎬 当前场景: {scene}",
   "prompt.game_state.solo_line": "{name}：{meters}",

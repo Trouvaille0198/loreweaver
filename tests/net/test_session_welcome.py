@@ -36,6 +36,14 @@ def test_welcome_advertises_guided_demo_as_an_additive_feature():
     assert frame["features"] == ["media", "audio", "imagegen", "demo"]
 
 
+def test_welcome_carries_the_p2p_ticket_only_when_the_server_has_one():
+    plain = welcome_frame(_FIELDS)
+    assert "p2p_ticket" not in plain  # a WS-only server must not advertise one
+
+    combined = welcome_frame(_FIELDS, p2p_ticket="endpointabcd1234")
+    assert combined["p2p_ticket"] == "endpointabcd1234"
+
+
 def test_demo_capability_tracks_mutable_llm_fallback_state():
     active = SimpleNamespace(llm=SimpleNamespace(using_fallback=True))
     configured = SimpleNamespace(llm=SimpleNamespace(using_fallback=False))

@@ -272,6 +272,9 @@ export interface WelcomeFrame {
   // older servers. Clients compare it to their own to detect a version mismatch and,
   // when `features` includes "update", offer a keeper the server self-update control.
   version?: string
+  // Present only when the server also runs a p2p (Iroh) carrier: the shareable
+  // ticket desktop clients dial (TUI / Studio). Omitted on a WS-only server.
+  p2p_ticket?: string
 }
 
 export interface ErrorFrame {
@@ -832,9 +835,11 @@ export interface SystemFrame {
 
 /**
  * Coarse kind of work a busy turn is doing. Added in 2.3.1 and deliberately closed:
- * the server never puts a tool name or argument on the wire.
+ * the server never puts a tool name or argument on the wire. `thinking` (2.4) is
+ * announced before every model call, so even a tool-less stretch keeps the busy
+ * line live.
  */
-export type TurnActivity = "reading" | "dice" | "cast" | "bookkeeping"
+export type TurnActivity = "thinking" | "reading" | "dice" | "cast" | "bookkeeping"
 
 export type TurnStatusFrame =
   | {
@@ -1021,10 +1026,15 @@ export interface AdminKeyInfo {
   role: PlayerRole
   purpose: AdminKeyPurpose
   expires_at: number | null
+  // Cleartext invite (join) key — present ONLY on join-purpose rows and ONLY on
+  // the keeper-gated admin channel, so the keeper can copy an invite to share.
+  // Chat-binding rows never carry it (their token is a different credential).
+  key?: string
 }
 
 // The freshly minted key is returned ONCE, in cleartext, so the keeper can copy
-// it; every other view (including `keys` here) only ever carries `key_masked`.
+// it; the list view carries `key_masked` for every row plus cleartext `key` on
+// join-purpose rows (keeper channel only) — see AdminKeyInfo.key.
 export interface MintedKey {
   key: string
   room: string

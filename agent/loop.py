@@ -202,7 +202,8 @@ _TEXT_TOOL_CALL_MARKER_RE = re.compile(
 # The FOUR coarse activity categories a room may be told a turn is in (protocol 2.3.1's
 # optional `turn_status.activity`). Deliberately coarse and closed: a tool's own name or
 # arguments would put keeper-side material on a room-wide frame, so the wire only ever
-# carries which of these four buckets the round's first tool fell into.
+# carries which of these buckets the round's first tool fell into.
+ACTIVITY_THINKING = "thinking"
 ACTIVITY_READING = "reading"
 ACTIVITY_DICE = "dice"
 ACTIVITY_CAST = "cast"
@@ -380,6 +381,7 @@ async def run_kp_turn(
     *,
     history_key: str | None = None,
     user_record_id: str | None = None,
+    reply_record_id_provider: Callable[[], str | None] | None = None,
     max_rounds: int = 12,
     output_review: Callable[[str], str] | None = None,
     on_reply_delta: Callable[[dict], Awaitable[None]] | None = None,
@@ -405,6 +407,12 @@ async def run_kp_turn(
     by the room_state table's room column). `output_review`, if given, post-processes the final reply (e.g.
     an M2 output censor) — it runs on the finalizer or fallback text too, if
     `max_rounds` was exhausted.
+
+    `reply_record_id_provider`, if given, is called just before the reply is
+    persisted and returns the record id to use (`None` lets the store mint one).
+    The gateway uses it to persist the reply under the SAME id its final frame
+    renders with, so a join replay (which renders the persisted record id)
+    replaces the live line in place instead of duplicating it.
     """
     i18n = services.i18n.with_locale(ctx.locale)
     # AgentCtx instances may be reused by gateways. Never let a direct tool call
@@ -630,6 +638,12 @@ async def run_kp_turn(
     while round_index < allowed_rounds:
         round_index += 1
         rounds = round_index
+        # Live progress even while the model is only THINKING: announce the round
+        # before every model call, then a tool round immediately overrides with
+        # its coarse category once the calls arrive. Without this, a long
+        # tool-less stretch between calls left the busy line frozen on its first
+        # frame — the very gap the 2.3.1 activity hints exist to fill.
+        await ctx.report_activity(ACTIVITY_THINKING, round_index)
         if gate is not None:
             gate.begin_round()
         try:
@@ -800,7 +814,13 @@ async def run_kp_turn(
     if gate is not None:
         await gate.drain()
     reply_record_id = await append_message(
-        services, ctx.chat_key, key, role="assistant", content=reply, turn=turn_index
+        services,
+        ctx.chat_key,
+        key,
+        role="assistant",
+        content=reply,
+        turn=turn_index,
+        record_id=reply_record_id_provider() if reply_record_id_provider is not None else None,
     )
     # M18: count the completed turn — chronicle entries stamp against this counter
     # and the fold's no-future watermark derives from it. Best-effort bookkeeping.

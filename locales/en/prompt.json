@@ -46,6 +46,7 @@
   "prompt.game_state.initiative_line": "   {index}. {name} ({initiative}){marker}",
   "prompt.game_state.npc_header": "👥 Active NPCs:",
   "prompt.game_state.roster_header": "👤 Investigator Status:",
+  "prompt.game_state.roster_claimed_hint": "(This list IS the players' claimed characters, already in play — never re-run character selection at the start of a session; unclaimed pregens are not shown here (players see them via .pc list), so only mention them when a player asks.)",
   "prompt.game_state.roster_line": "{name}: {meters} | Status: {effects}",
   "prompt.game_state.scene_line": "🎬 Current Scene: {scene}",
   "prompt.game_state.solo_line": "{name}: {meters}",
