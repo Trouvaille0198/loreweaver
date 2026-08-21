@@ -858,7 +858,11 @@ async def test_kp_turn_after_module_seed_has_no_sentinel_leak_and_uses_keeper_to
         assert echo["type"] == "narrative" and echo["speaker"] == "player"
         assert busy == {"type": "turn_status", "status": "busy", "actor": "Nora"}
         # The turn read the module, and said so without naming the tool that did it.
-        assert [frame["activity"] for frame in refreshes] == ["reading"]
+        # 2.3.1 activity hints announce "thinking" before every model call; the tool
+        # round then overrides with its coarse category — filter the hints to the
+        # tool-round activities the turn actually performed.
+        tool_activities = [frame["activity"] for frame in refreshes if frame["activity"] != "thinking"]
+        assert tool_activities == ["reading"]
         assert all(frame["round"] >= 1 and frame["actor"] == "Nora" for frame in refreshes)
         assert reply["type"] == "narrative" and reply["speaker"] == "kp"
         assert reply["format"] == "markdown"
