@@ -101,6 +101,7 @@ packages = [
     "infra",
     "agent",
     "gateway",
+    "gateway.commands",
     "adapters",
     "adapters.cli",
     "net",

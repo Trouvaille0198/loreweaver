@@ -36,6 +36,7 @@ from infra.providers import provider_cost_class
 from infra.version import resolve_version
 from net.keystore import Keystore
 from net.tui_server import TuiServer
+from net.web_server import WebServer
 
 DEFAULT_TUI_HOST = "127.0.0.1"
 DEFAULT_TUI_PORT = 8787
@@ -102,10 +103,28 @@ def build_tui_server(settings: Settings, keystore: Keystore, *, host: str, port:
     )
 
 
+def build_web_server(
+    settings: Settings, keystore: Keystore, *, host: str, port: int, static_dir: str = "", llm=None, embeddings=None
+) -> WebServer:
+    """Wire a `WebServer` — `TuiServer` plus the optional SPA static host —
+    the same way `build_tui_server` does."""
+    if not settings.llm.api_key:
+        embeddings = embeddings or FakeEmbeddings(64)
+    services = _app_services(settings, llm=llm, embeddings=embeddings)
+    return WebServer(
+        services,
+        keystore,
+        host=host,
+        port=port,
+        static_dir=static_dir or None,
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cli", action="store_true")
     parser.add_argument("--serve", action="store_true")
+    parser.add_argument("--web", action="store_true")
     parser.add_argument("--doctor", action="store_true")
     parser.add_argument("--version", action="store_true")
     parser.add_argument("--pack", metavar="SRC_DIR")
@@ -117,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--yes", action="store_true")
     parser.add_argument("--host", default=DEFAULT_TUI_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_TUI_PORT)
+    parser.add_argument("--static-dir", dest="static_dir", default=os.environ.get("TRPG_WEB_STATIC_DIR", ""))
     parser.add_argument("--keys", default=os.environ.get("TRPG_TUI_KEYS", DEFAULT_TUI_KEYS_PATH))
     parser.add_argument("--tui-key", dest="tui_key_cmd", choices=["add"])
     parser.add_argument("--room")
@@ -150,6 +170,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.serve:
         return _run_serve(settings, i18n, args)
+
+    if args.web:
+        return _run_web(settings, i18n, args)
 
     if not args.cli:
         print(i18n.t("cli.no_mode"), file=sys.stderr)
@@ -595,6 +618,77 @@ def _run_serve(settings: Settings, i18n: I18n, args: argparse.Namespace) -> int:
     finally:
         server.services.store.close()
     return 0 if started else 1
+
+
+def _run_web(settings: Settings, i18n: I18n, args: argparse.Namespace) -> int:
+    """`--web [--static-dir DIR]`: run the browser-facing WebSocket transport —
+    the web client's carrier (browsers cannot dial Iroh). Optionally serves the
+    built web client from `DIR` on the same port (one origin, no CORS).
+    """
+    keystore = Keystore.load(args.keys)
+    _bootstrap_keystore(keystore, i18n, args.keys)
+    server = build_web_server(settings, keystore, host=args.host, port=args.port, static_dir=args.static_dir)
+    if _uses_demo_llm(server.services):
+        print(i18n.t("cli.offline_demo_notice"), file=sys.stderr)
+    seed_dice(0)
+
+    started = False
+    try:
+        started = asyncio.run(_serve_web(server, i18n, args.keys))
+    except KeyboardInterrupt:
+        started = True
+    finally:
+        server.services.store.close()
+    return 0 if started else 1
+
+
+async def _serve_web(core: WebServer, i18n: I18n, keys_path: str) -> bool:
+    """Run the WebSocket listener `--web` starts (with the optional SPA static
+    host on the same port), mirroring `_serve_iroh`'s clean-shutdown handling:
+    SIGTERM cancels the serve task so the store closes instead of being killed.
+
+    Returns True once the listener came online and served, False if it never
+    started."""
+    scheme = "wss" if core.services.settings.tui.tls_cert_path else "ws"
+    url = f"{scheme}://{core.host}:{core.port}/"
+    _announce_web_url(i18n, url, core.static_dir)
+    try:
+        await core.start()
+    except Exception as exc:
+        print(i18n.t("tui.web.failed", error=str(exc)), file=sys.stderr)
+        return False
+
+    loop = asyncio.get_running_loop()
+    serve_task = asyncio.ensure_future(core.serve())
+    handler_installed = True
+    try:
+        loop.add_signal_handler(signal.SIGTERM, serve_task.cancel)
+    except NotImplementedError:
+        handler_installed = False
+
+    try:
+        await serve_task
+    except asyncio.CancelledError:
+        pass
+    finally:
+        if handler_installed:
+            try:
+                loop.remove_signal_handler(signal.SIGTERM)
+            except (NotImplementedError, ValueError):
+                pass
+        await core.close()
+    return True
+
+
+def _announce_web_url(i18n: I18n, url: str, static_dir) -> None:
+    """Print the browser-facing endpoint prominently, mirroring the Iroh ticket
+    banner. Browsers need the URL + an invite key; no p2p ticket exists here."""
+    print(i18n.t("tui.web.banner"), file=sys.stderr)
+    print(i18n.t("tui.web.url", url=url), file=sys.stderr)
+    if static_dir is None:
+        print(i18n.t("tui.web.no_static", static_dir="--static-dir <web-dist>"), file=sys.stderr)
+    else:
+        print(i18n.t("tui.web.static", static_dir=str(static_dir)), file=sys.stderr)
 
 
 async def _serve_iroh(core: TuiServer, i18n: I18n, keys_path: str) -> bool:
