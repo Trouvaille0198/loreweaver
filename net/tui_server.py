@@ -164,7 +164,17 @@ class TuiServer(SessionCore):
             tui = self.services.settings.tui
             max_size = max(tui.media_max_file_bytes, tui.audio_max_file_bytes) + _WS_MEDIA_HEADER_SLACK
             self._server = await websockets.serve(
-                self.handle, self.host, self.port, ssl=ssl_context, max_size=max_size
+                self.handle,
+                self.host,
+                self.port,
+                ssl=ssl_context,
+                max_size=max_size,
+                # NO permessage-deflate: the library negotiates a 12-bit
+                # compression window, which Firefox/Safari/other strict
+                # clients reject at the handshake (Chrome is lenient and
+                # accepts it). Chat frames are tiny; the interop loss is not
+                # worth the bytes.
+                compression=None,
             )
 
     async def serve(self) -> None:
