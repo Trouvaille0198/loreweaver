@@ -56,6 +56,9 @@ class WebServer(TuiServer):
                 ssl=ssl_context,
                 max_size=max_size,
                 process_request=self._process_request,
+                # Same interop rule as `TuiServer.start`: no permessage-deflate
+                # (the library's 12-bit window is rejected by strict browsers).
+                compression=None,
             )
 
     async def _process_request(self, connection, request):
