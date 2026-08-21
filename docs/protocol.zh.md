@@ -1,10 +1,10 @@
 *[English](protocol.md) · 中文*
 
-# Loreweaver 联网 TUI —— 协议 2.3
+# Loreweaver 联网 TUI —— 协议 2.4
 
 这是 loreweaver 服务器（通过 `python -m app --serve` 启动）与 OpenTUI 终端客户端之间开放、带版本的协议。引擎本身（确定性内核加 AI 守秘人）和用什么传输无关；与传输无关的会话逻辑在 `net.session.SessionCore` 里，这份文档描述的是接口，不绑定任何编程语言。
 
-控制流使用 `{"type": ...}` 形状的 JSON 帧，协议版本为 `"2.3"`。同一套帧和 `join` 握手可以跑在两种传输上：
+控制流使用 `{"type": ...}` 形状的 JSON 帧，协议版本为 `"2.4"`。同一套帧和 `join` 握手可以跑在两种传输上：
 
 - **Iroh** 是 `--serve` 实际启动的默认传输：点对点 QUIC，服务端打印可分享 ticket，不需要域名、证书或端口转发。控制帧是在长连接双向流上的 newline-delimited JSON；媒体字节使用同一连接上的额外双向流。
 - **WebSocket**（`net.tui_server`）只留作离线测试和本机回环，不是 `--serve` 的一个选项。控制帧是文本消息，媒体字节是二进制消息。
@@ -61,7 +61,7 @@
 - `narrative` — 一行**完整的**故事/聊天文本：
   `{type:"narrative", id:string, speaker:"kp"|"player"|"system"|"npc", name?:string, text:string, format:"markdown"|"plain"}`
   对于 `speaker:"npc"`，`name` 携带 NPC 名称。`narrative` 帧永远携带完整的最终文本：当其 `id` 与客户端由 `narrative_delta` 累积出的草稿气泡匹配时，最终文本**替换**该草稿（生成后修正已折入）；否则就是一条普通的单发文本。**空的最终文本是撤销，不是消息**：服务器用它收掉被放弃的草稿（守秘人换了下一轮工具草稿、或回合中途夭折），客户端必须**移除**——绝不渲染——最终文本为空的气泡。
-  **加入时的回放。** 每次加入，服务器都把房间最近的记录（最后 30 条对话历史）作为普通 `narrative` 帧回放——只回放故事通道，不回放点命令回显；自 v2.3 起，桌上现场出现过的每个 `dice` 与 npc `narrative` 帧（守秘人的掷骰、同伴的回合、手打的 `.ra`）都紧接在它现场所跟随的那条记录之后回放，交错顺序就是大家当时看到的那样（见"回合流程"第 5–6 步）。成员回放进行期间发布的现场帧，在回放之后按序、且只送一次。回放帧与现场帧刻意不可区分：客户端按到达顺序渲染，并按 `id` 去重 `narrative`。
+  **加入时的回放。** 每次加入，服务器都把房间最近的记录（最后 30 条对话历史）作为普通 `narrative` 帧回放——只回放故事通道，不回放点命令回显；自 v2.4 起，桌上现场出现过的每个 `dice` 与 npc `narrative` 帧（守秘人的掷骰、同伴的回合、手打的 `.ra`）都紧接在它现场所跟随的那条记录之后回放，交错顺序就是大家当时看到的那样（见"回合流程"第 5–6 步）。成员回放进行期间发布的现场帧，在回放之后按序、且只送一次。回放帧与现场帧刻意不可区分：客户端按到达顺序渲染，并按 `id` 去重 `narrative`。
 - `narrative_delta` — 草稿气泡的一段流式文本增量：
   `{type:"narrative_delta", id:string, speaker:"kp", name?:string, text:string}`
   客户端把共享同一 `id` 的增量拼接进草稿气泡（按 markdown 渲染）。流在**同 `id`** 的 `narrative` 帧到达时结束；服务端保证这条收尾帧一定会来（回合失败也会以已流出的文本收口）。服务端在 AI 守秘人生成的同时就往外发，并且边发边清理：拿不准的一律不发，机关和 MVU 块永远不会流出去。
@@ -93,6 +93,7 @@
   `{type:"state", character?:{name,system,resources:[Resource],attributes:{},status_effects:[],avatar?:{hash,mime,size,name?}}, party:[{name,online:boolean,active:boolean,initiative?:int,resources?:[Resource],ai?:boolean,avatar?:{hash,mime,size,name?}}], scene?:{name,focus?}, clock?:{time,round?}, initiative:[{name,value:int,current:boolean}], online:int, variables?:[{id:string,label:string,kind:"number"|"bool"|"text"|"enum",value:number|boolean|string,min?:int,max?:int,hidden?:boolean}], pregens?:[{name:string,claimed_by:string}], systems?:[{id:string,make_char?:string}], reset?:boolean}`
   `Resource = {id:string, label:string, value:number, max?:number}` — 规则系统的生命体征条（HP、理智、魔法值……）作为通用数据：客户端按列表渲染条形量表，无需知道任何系统的字段名。条目按渲染顺序到达。`label` 已按**本观看者**的语言解析：规则包的 `sheet.resources[].label` 可写成语言映射，于是同一个房间的 `en` 与 `zh` 连接各自读到自己那一版。
   `character.attributes`（v2.3）只含卡的**特征值**——规则系统 `sheet.attributes` 声明的那些键，按包自己的顺序（CoC 7e 的 `STR CON SIZ …`、D&D 5e 的 `STR DEX CON …`、社区包自己系统的自己那套）；生命体征**不**在这里重复（它们是 `resources`），派生值从不发送——客户端照线上顺序原样渲染，每个键都是 `.st <key>=<n>` 接受的名字。没有声明卡表规格的系统按存储原样发送。
+  `character.skills`（v2.4）是卡上已训练的**技能**，名 → 当前值（COC 卡形如 `{侦查: 70, 聆听: 55, …}`）——一个长而次要的界面，发送给客户端折进角色卡的**可折叠区块**，而不是主属性网格。旧于 2.4 的服务器不带此键；客户端把缺失键当作"无技能"。
   `variables`（v1.6，增量字段，可有可无——房间没有就整个省略）是房间的确定性模块变量，且只含玩家可见子集：仅守秘人可见的变量在引擎内部（`core.modvars.player_entries`）就被过滤，永远不会到达任何传输层。条目按定义顺序到达（按原样渲染，不要排序）；`label` 已按房间语言本地化；`min`/`max` 只出现在有界的 `number` 变量上（客户端可将其渲染为进度条）。导入的 SillyTavern MVU 卡片变量共用同一列表：`id` 带 `mvu.` 前缀、点分路径作为 `label`（只有标量叶子，数量由服务端封顶）——不新增帧类型，客户端无需改动。MVU 的叶子由**守秘人挑着放出来**（默认全部隐藏，没公开的一律不发）：玩家帧只携带守秘人公开过的路径（`.var expose`）；守秘人自己连接的帧额外携带未公开的其余叶子，每条带 `hidden:true` 标记（增量字段，可有可无——不认识它的客户端照常渲染，认识的可以画成置灰或者加把锁）。
   `systems`（v2.3，可有可无）是本服务端发现的全部规则系统，每条带上「在这个系统里建卡」用的方言词（`make_char`；规则包没声明就没有这个字段）。客户端要提供建卡入口，需要的就是这两样，不必认识任何一个规则系统——于是自带系统的内容包，不用等客户端发版就会出现在每个客户端的选择器里。
   `reset:true` 标记的是战役被清空（`.reset` / `admin_reset_room`）之后服务端推的那份快照：面板数据已经是最新的（空的），客户端还应该把本地攒下的聊天记录也清掉。
