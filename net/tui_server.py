@@ -279,7 +279,7 @@ class TuiServer(SessionCore):
             ws,
             welcome_frame(
                 fields,
-                imagegen=self.services.imagegen is not None,
+                imagegen=await self.services.imagegen_for_room(fields["session_key"]) is not None,
                 demo=(
                     fields["role"] == "keeper"
                     and await guided_demo_available(self.services, fields["session_key"])

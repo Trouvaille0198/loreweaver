@@ -1,8 +1,8 @@
-"""Image generation over the shared OpenAI-compatible HTTP endpoint.
+"""Image generation over provider HTTP endpoints.
 
-Providers use ``/images/generations`` without native SDKs. Small wire-level
-differences, such as xAI's aspect-ratio/resolution fields, are translated here
-so runtime switching remains deterministic and testable offline.
+OpenAI-compatible providers use ``/images/generations`` without native SDKs.
+Provider-specific surfaces such as MiniMax Image Generation and xAI's dimension
+fields are translated here so runtime switching stays deterministic and testable.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import binascii
 import math
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Protocol
+from urllib.parse import urlparse
 
 import httpx
 
@@ -22,12 +23,16 @@ if TYPE_CHECKING:
     from infra.runtime_config import CredentialBook
 
 OPENAI_IMAGE_BASE_URL = "https://api.openai.com/v1"
+MINIMAX_IMAGE_URL = "https://api.minimaxi.com/v1/image_generation"
+SILICONFLOW_IMAGE_BASE_URL = "https://api.siliconflow.cn/v1"
 IMAGEGEN_OVERRIDE_FIELDS: tuple[str, ...] = ("provider", "base_url", "api_key", "model", "size")
 
 # Provider presets: base_url + default model. ``supergrok`` reuses the SuperGrok
 # subscription token from the LLM credential book (not a separate image key).
 IMAGEGEN_PRESETS: dict[str, dict[str, str]] = {
     "openai": {"base_url": OPENAI_IMAGE_BASE_URL, "model": "gpt-image-1"},
+    "minimax-cn": {"base_url": MINIMAX_IMAGE_URL, "model": "image-01"},
+    "siliconflow": {"base_url": SILICONFLOW_IMAGE_BASE_URL, "model": "Kwai-Kolors/Kolors"},
     "supergrok": {"base_url": XAI_API_BASE, "model": XAI_DEFAULT_IMAGE_MODEL},
 }
 
@@ -52,6 +57,17 @@ _XAI_ASPECT_RATIOS: tuple[tuple[str, float], ...] = (
     ("9:19.5", 9 / 19.5),
     ("20:9", 20 / 9),
     ("9:20", 9 / 20),
+)
+
+_MINIMAX_ASPECT_RATIOS: tuple[tuple[str, float], ...] = (
+    ("1:1", 1.0),
+    ("16:9", 16 / 9),
+    ("4:3", 4 / 3),
+    ("3:2", 3 / 2),
+    ("2:3", 2 / 3),
+    ("3:4", 3 / 4),
+    ("9:16", 9 / 16),
+    ("21:9", 21 / 9),
 )
 
 
@@ -180,6 +196,150 @@ class OpenAICompatImageGen:
         return data, _detect_image_mime(data, declared_mime)
 
 
+class MiniMaxImageGen:
+    """MiniMax's JSON Image Generation surface (``/v1/image_generation``)."""
+
+    def __init__(
+        self,
+        settings: ImageGenSettings,
+        *,
+        client: httpx.AsyncClient | None = None,
+        timeout: float = 120.0,
+    ) -> None:
+        self._settings = settings
+        self._client = client
+        self._timeout = timeout
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        size: str = "1024x1024",
+        reference: bytes | None = None,
+        reference_mime: str = "",
+    ) -> tuple[bytes, str]:
+        del reference_mime
+        prompt = str(prompt or "").strip()
+        if not prompt:
+            raise ImageGenError("imagegen_bad_prompt")
+        if not self._settings.model or not self._settings.api_key:
+            raise ImageGenError("imagegen_not_configured")
+        # MiniMax documents subject references as network URLs. Loreweaver's
+        # presentation kit supplies private local bytes, so refusing is safer
+        # than silently discarding the identity anchor or inventing a data-URI
+        # contract the provider does not document.
+        if reference:
+            raise ImageGenError("imagegen_reference_unsupported")
+
+        close_client = False
+        client = self._client
+        if client is None:
+            client = httpx.AsyncClient(timeout=self._timeout)
+            close_client = True
+        request_body = {
+            "model": self._settings.model,
+            "prompt": prompt[:1500],
+            "aspect_ratio": _nearest_aspect_ratio(size, _MINIMAX_ASPECT_RATIOS),
+            "response_format": "base64",
+            "n": 1,
+        }
+        try:
+            response = await client.post(
+                _minimax_image_url(self._settings.base_url),
+                headers={"Authorization": f"Bearer {self._settings.api_key}"},
+                json=request_body,
+            )
+        except httpx.TimeoutException as exc:
+            raise ImageGenError("imagegen_timeout") from exc
+        except httpx.HTTPError as exc:
+            raise ImageGenError("imagegen_http_error") from exc
+        finally:
+            if close_client:
+                await client.aclose()
+
+        if response.status_code < 200 or response.status_code >= 300:
+            raise ImageGenError("imagegen_http_error", str(response.status_code))
+        try:
+            payload = response.json()
+            encoded = payload["data"]["image_base64"][0]
+            data = base64.b64decode(str(encoded), validate=True)
+        except (KeyError, IndexError, TypeError, ValueError, binascii.Error) as exc:
+            raise ImageGenError("imagegen_bad_response") from exc
+        if not data:
+            raise ImageGenError("imagegen_bad_response")
+        return data, _detect_image_mime(data)
+
+
+class SiliconFlowImageGen:
+    """SiliconFlow's native image request and ``images[].url`` response surface."""
+
+    def __init__(
+        self,
+        settings: ImageGenSettings,
+        *,
+        client: httpx.AsyncClient | None = None,
+        timeout: float = 120.0,
+    ) -> None:
+        self._settings = settings
+        self._client = client
+        self._timeout = timeout
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        size: str = "1024x1024",
+        reference: bytes | None = None,
+        reference_mime: str = "",
+    ) -> tuple[bytes, str]:
+        prompt = str(prompt or "").strip()
+        if not prompt:
+            raise ImageGenError("imagegen_bad_prompt")
+        if not self._settings.model or not self._settings.api_key:
+            raise ImageGenError("imagegen_not_configured")
+
+        request_body = {
+            "model": self._settings.model,
+            "prompt": prompt,
+            "image_size": size or self._settings.size or "1024x1024",
+        }
+        if reference:
+            mime = reference_mime if reference_mime in {"image/jpeg", "image/png", "image/webp"} else "image/png"
+            encoded_reference = base64.b64encode(reference).decode("ascii")
+            request_body["image"] = f"data:{mime};base64,{encoded_reference}"
+
+        close_client = False
+        client = self._client
+        if client is None:
+            client = httpx.AsyncClient(timeout=self._timeout)
+            close_client = True
+        try:
+            response = await client.post(
+                _siliconflow_image_url(self._settings.base_url),
+                headers={"Authorization": f"Bearer {self._settings.api_key}"},
+                json=request_body,
+            )
+            if response.status_code < 200 or response.status_code >= 300:
+                raise ImageGenError("imagegen_http_error", str(response.status_code))
+            try:
+                entry = response.json()["images"][0]
+                image_url = str(entry["url"])
+            except (KeyError, IndexError, TypeError, ValueError) as exc:
+                raise ImageGenError("imagegen_bad_response") from exc
+            data, declared_mime = await _siliconflow_image_bytes(client, image_url)
+        except httpx.TimeoutException as exc:
+            raise ImageGenError("imagegen_timeout") from exc
+        except httpx.HTTPError as exc:
+            raise ImageGenError("imagegen_http_error") from exc
+        finally:
+            if close_client:
+                await client.aclose()
+
+        if not data:
+            raise ImageGenError("imagegen_bad_response")
+        return data, _detect_image_mime(data, declared_mime)
+
+
 class FakeImageGen:
     """Deterministic offline image generator for tests.
 
@@ -229,6 +389,10 @@ def build_imagegen(
 
     if not cfg.provider or not cfg.model or not cfg.api_key:
         return None
+    if provider == "minimax-cn":
+        return MiniMaxImageGen(cfg)
+    if provider == "siliconflow":
+        return SiliconFlowImageGen(cfg)
     return OpenAICompatImageGen(cfg)
 
 
@@ -352,3 +516,57 @@ def _xai_dimensions(size: str) -> dict[str, str]:
         "aspect_ratio": aspect_ratio,
         "resolution": "2k" if max(width, height) > 1024 else "1k",
     }
+
+
+def _nearest_aspect_ratio(size: str, choices: tuple[tuple[str, float], ...]) -> str:
+    """Translate a pixel size to the nearest provider-supported aspect ratio."""
+    try:
+        width_raw, height_raw = str(size).casefold().split("x", 1)
+        width, height = int(width_raw), int(height_raw)
+        if width <= 0 or height <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        return "1:1"
+    ratio = width / height
+    return min(choices, key=lambda item: abs(math.log(ratio / item[1])))[0]
+
+
+def _minimax_image_url(base_url: str) -> str:
+    """Accept either MiniMax's API root or its documented exact image endpoint."""
+    base = str(base_url or MINIMAX_IMAGE_URL).rstrip("/")
+    if base.endswith("/image_generation"):
+        return base
+    return f"{base}/image_generation" if base.endswith("/v1") else f"{base}/v1/image_generation"
+
+
+def _siliconflow_image_url(base_url: str) -> str:
+    """Accept SiliconFlow's API root or its exact image-generation endpoint."""
+    base = str(base_url or SILICONFLOW_IMAGE_BASE_URL).rstrip("/")
+    suffix = "/images/generations"
+    if base.casefold().endswith(suffix):
+        return base
+    return f"{base}{suffix}" if base.casefold().endswith("/v1") else f"{base}/v1{suffix}"
+
+
+async def _siliconflow_image_bytes(client: httpx.AsyncClient, image_url: str) -> tuple[bytes, str]:
+    """Decode a data URL or download SiliconFlow's short-lived HTTPS result."""
+    if image_url.startswith("data:image/"):
+        try:
+            header, encoded = image_url.split(",", 1)
+            if ";base64" not in header.casefold():
+                raise ValueError
+            mime = header[5:].split(";", 1)[0].casefold()
+            data = base64.b64decode(encoded, validate=True)
+        except (ValueError, binascii.Error) as exc:
+            raise ImageGenError("imagegen_bad_response") from exc
+        return data, mime
+
+    parsed = urlparse(image_url)
+    if parsed.scheme.casefold() != "https" or not parsed.netloc:
+        raise ImageGenError("imagegen_bad_response")
+    response = await client.get(image_url, follow_redirects=True)
+    if response.status_code < 200 or response.status_code >= 300:
+        raise ImageGenError("imagegen_http_error", str(response.status_code))
+    if len(response.content) > 32 * 1024 * 1024:
+        raise ImageGenError("imagegen_bad_response")
+    return response.content, response.headers.get("content-type", "").partition(";")[0]

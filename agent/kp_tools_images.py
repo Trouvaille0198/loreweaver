@@ -45,13 +45,14 @@ class ImageTools:
             Confirmation with the generated file name and media hash, or a localized reason it was skipped.
         """
         i18n = self._i18n(ctx)
-        if self._services.imagegen is None:
+        imagegen = await self._services.imagegen_for_room(ctx.chat_key)
+        if imagegen is None:
             return i18n.t("kp_tools.image.generate.not_configured")
         if not allow_imagegen_request(self._services, ctx.chat_key):
             return i18n.t("kp_tools.image.generate.rate_limited")
 
         try:
-            data, mime = await self._services.imagegen.generate(prompt, size=self._services.settings.imagegen.size)
+            data, mime = await imagegen.generate(prompt, size=self._services.settings.imagegen.size)
             settings = self._services.settings.tui
             store = MediaStore(
                 self._services.store,

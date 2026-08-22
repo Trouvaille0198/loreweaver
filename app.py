@@ -27,7 +27,7 @@ from gateway.commands import CommandRouter
 from gateway.panels import installed_pack_homes
 from gateway.runner import GatewayRunner
 from infra.config import Settings
-from infra.embeddings import FakeEmbeddings, LocalEmbeddings
+from infra.embeddings import LocalEmbeddings
 from infra.file_permissions import atomic_write_private, ensure_private_directory
 from infra.i18n import I18n, get_i18n
 from infra.llm import FakeLLM
@@ -77,8 +77,6 @@ def _app_services(settings, *, llm=None, embeddings=None):
 
 
 def build_runner(settings: Settings, *, llm=None, embeddings=None) -> GatewayRunner:
-    if not settings.llm.api_key:
-        embeddings = embeddings or FakeEmbeddings(64)
     services = _app_services(settings, llm=llm, embeddings=embeddings)
     adapter = CliAdapter(extra_fs_bases=(settings.data_dir,))
     return GatewayRunner(
@@ -92,8 +90,6 @@ def build_runner(settings: Settings, *, llm=None, embeddings=None) -> GatewayRun
 def build_tui_server(settings: Settings, keystore: Keystore, *, host: str, port: int, llm=None, embeddings=None) -> TuiServer:
     """Wire a `TuiServer` the same way `build_runner` wires the CLI gateway
     (offline `FakeLLM` demo when no usable provider credential is configured)."""
-    if not settings.llm.api_key:
-        embeddings = embeddings or FakeEmbeddings(64)
     services = _app_services(settings, llm=llm, embeddings=embeddings)
     return TuiServer(
         services,
@@ -108,8 +104,6 @@ def build_web_server(
 ) -> WebServer:
     """Wire a `WebServer` — `TuiServer` plus the optional SPA static host —
     the same way `build_tui_server` does."""
-    if not settings.llm.api_key:
-        embeddings = embeddings or FakeEmbeddings(64)
     services = _app_services(settings, llm=llm, embeddings=embeddings)
     return WebServer(
         services,

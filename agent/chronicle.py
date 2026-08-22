@@ -516,8 +516,9 @@ async def _fold_batch(
                 ),
             },
         ]
+        llm = await services.main_llm(chat_key)
         with lane_scope("fold", chat_key=chat_key):
-            result = await services.llm.chat(messages)
+            result = await llm.chat(messages)
         text = (result.content or "").strip()
         if not text:
             return False
@@ -774,6 +775,11 @@ def _raw_vector_store(services: Services) -> Any | None:
 
 
 async def _index_folded_entries(services: Services, chat_key: str, docs: list[Document]) -> None:
+    async with services.embedding_lock:
+        await _index_folded_entries_unlocked(services, chat_key, docs)
+
+
+async def _index_folded_entries_unlocked(services: Services, chat_key: str, docs: list[Document]) -> None:
     """Index folded records under the collection lane's payload scheme.
 
     `namespace` is the ONE ownership field of a collection point (worldbook's
@@ -804,6 +810,13 @@ async def _index_folded_entries(services: Services, chat_key: str, docs: list[Do
 
 
 async def recall_folded_entries(
+    services: Services, chat_key: str, query: str, *, limit: int = _RECALL_LIMIT
+) -> list[Document]:
+    async with services.embedding_lock:
+        return await _recall_folded_entries_unlocked(services, chat_key, query, limit=limit)
+
+
+async def _recall_folded_entries_unlocked(
     services: Services, chat_key: str, query: str, *, limit: int = _RECALL_LIMIT
 ) -> list[Document]:
     """Topically relevant chronicle records, resolved through the document store

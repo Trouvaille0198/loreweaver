@@ -41,6 +41,7 @@ from gateway.rooms import (
     session_key_for_room,
 )
 from gateway.turn import publish_state
+from infra.embeddings import OpenAIEmbeddings
 from infra.i18n import I18n
 from infra.imagegen import (
     IMAGEGEN_PRESETS,
@@ -55,13 +56,16 @@ from infra.oauth_flows import (
 )
 from infra.providers import (
     CHATGPT_SUBSCRIPTION_PROXY_PROVIDER_NAMES,
-    NATIVE_PROVIDER_NAMES,
     PRESETS,
     describe_settings,
     is_known_provider,
     list_models,
     mask_secret,
+    provider_auth_type,
+    provider_catalog,
+    provider_supports_kind,
 )
+from infra.runtime_config import MODEL_KINDS, model_profile_id, model_profile_parts
 from net.keystore import _DEFAULT_PURPOSE, Keystore
 from net.room_backup import (
     RESET_SCOPES,
@@ -81,6 +85,7 @@ _ADMIN_REQUESTS: frozenset[str] = frozenset(
         "admin_set_model",
         "admin_set_llm",
         "admin_delete_llm",
+        "admin_set_embedding",
         "admin_get_room_config",
         "admin_set_room_model",
         "admin_set_llm_lane",
@@ -163,11 +168,7 @@ class AdminService:
             "admin_delete_room_data",
         }:
             await self._evict_chat_members(caller_room)
-        if (
-            reply.get("type") != "admin_error"
-            and frame.get("type") == "admin_reset_room"
-            and self.hub is not None
-        ):
+        if reply.get("type") != "admin_error" and frame.get("type") == "admin_reset_room" and self.hub is not None:
             # The reset keeps everyone connected (no eviction), so proactively push a
             # fresh reset-flagged state frame: connected clients refresh their info panel
             # and clear their stale chat scrollback without needing to reconnect or send.
@@ -190,10 +191,14 @@ class AdminService:
             source = getattr(member, "source", None)
             if source is None:
                 continue
-            if identity is not None and (
-                getattr(source, "platform", ""),
-                getattr(source, "user_id", ""),
-            ) != identity:
+            if (
+                identity is not None
+                and (
+                    getattr(source, "platform", ""),
+                    getattr(source, "user_id", ""),
+                )
+                != identity
+            ):
                 continue
             await self.hub.unsubscribe(member)
 
@@ -277,6 +282,11 @@ async def _dispatch_admin_frame(
             if reauthorize is not None and not reauthorize():
                 return _error("forbidden", i18n)
             return await _set_model(services, frame, i18n)
+    if kind == "admin_set_embedding":
+        async with services.config_lock:
+            if reauthorize is not None and not reauthorize():
+                return _error("forbidden", i18n)
+            return await _set_embedding(services, frame, i18n)
     if kind == "admin_set_llm":
         async with services.config_lock:
             if reauthorize is not None and not reauthorize():
@@ -330,6 +340,61 @@ async def _dispatch_admin_frame(
     return _error("bad_request", i18n)
 
 
+async def _set_embedding(services: Services, frame: dict[str, Any], i18n: I18n) -> dict[str, Any]:
+    profile_id = str(frame.get("profile_id") or "").strip().casefold()
+    profiles = await services.llm_profiles.all()
+    saved = profiles.get(profile_id)
+    if not saved:
+        return _error("not_found", i18n)
+    provider, kind, encoded_model = model_profile_parts(profile_id)
+    if kind != "embedding":
+        return _error("bad_request", i18n)
+    model = str(saved.get("chat_model") or encoded_model).strip()
+    raw_dim = frame.get("embedding_dim", saved.get("embedding_dim"))
+    try:
+        dim = int(raw_dim)
+    except (TypeError, ValueError):
+        return _error("bad_request", i18n)
+    if not provider or not model or dim <= 0:
+        return _error("bad_request", i18n)
+    current = await services.runtime_config.get()
+    updated = dict(current)
+    updated.update(
+        {
+            "embedding_profile": profile_id,
+            "embedding_model": model,
+            "embedding_dim": str(dim),
+        }
+    )
+    candidate_settings = services.settings.llm.model_copy(
+        update={
+            "provider": provider,
+            "api_key": saved.get("api_key") or saved.get("access_token") or "",
+            "base_url": saved.get("base_url", ""),
+            "embedding_model": model,
+            "embedding_dim": dim,
+        }
+    )
+    candidate = OpenAIEmbeddings(candidate_settings)
+    try:
+        await services.runtime_config.replace(**updated)
+        rebuilt = await services.reconfigure_embeddings(
+            candidate,
+            profile_id=profile_id,
+            model=model,
+        )
+    except Exception:
+        logger.exception("admin_set_embedding failed for profile=%s", profile_id)
+        try:
+            await services.runtime_config.replace(**current)
+        except Exception:
+            logger.exception("failed to restore Embedding runtime configuration")
+        return _error("set_failed", i18n)
+    reply = await _config_frame(services)
+    reply["embedding_rebuilt"] = rebuilt
+    return reply
+
+
 # -- LLM config -------------------------------------------------------------
 
 
@@ -337,6 +402,7 @@ async def _config_frame(services: Services) -> dict[str, Any]:
     info = _describe_llm(services)
     overrides = await services.runtime_config.get()
     saved_providers = await services.llm_credentials.providers()
+    providers = provider_catalog()
     # Subscription status for the model screen (no new protocol frames).
     provider = (info["provider"] or "").casefold()
     base_url = info.get("base_url") or ""
@@ -359,14 +425,18 @@ async def _config_frame(services: Services) -> dict[str, Any]:
                 api_key_masked = "sub:logged_in"
         else:
             subscription_status = "logged_out"
-            api_key_masked = ""
     return {
         "type": "admin_config",
         "provider": info["provider"],
         "chat_model": info["chat_model"],
         "base_url": info["base_url"],
         "api_key_masked": api_key_masked,
-        "providers": _provider_names(),
+        "embedding_model": overrides.get("embedding_model", services.settings.llm.embedding_model),
+        "embedding_dim": int(overrides.get("embedding_dim", services.settings.llm.embedding_dim)),
+        "embedding_profile": str(overrides.get("embedding_profile") or ""),
+        # `providers` is the ID-only projection; metadata-aware clients use the catalog.
+        "providers": [provider["id"] for provider in providers],
+        "provider_catalog": providers,
         # Providers that already have a saved key — the model screen marks these 'ready' and
         # switching to one never re-asks for its key (see `_set_model`).
         "saved_providers": saved_providers,
@@ -376,54 +446,50 @@ async def _config_frame(services: Services) -> dict[str, Any]:
         "director": await _lane_status(services, "director"),
         "imagegen": await _imagegen_status(services),
         # Lets connected clients remove a stale guided-demo affordance immediately.
-        # A true value is global fallback state, not room authorization; adding the
-        # affordance still requires the room-scoped check performed on welcome.
         "using_demo": bool(getattr(services.llm, "using_fallback", False)),
         # Optional hint (clients that ignore unknown fields stay compatible).
         "subscription_status": subscription_status,
     }
 
-def _model_profile_id(provider: str, chat_model: str) -> str:
-    return f"{provider.casefold()}::{chat_model.strip()}"
-
-
-def _model_profile_parts(profile_id: str) -> tuple[str, str]:
-    provider, separator, chat_model = profile_id.partition("::")
-    return provider.casefold(), chat_model if separator else ""
-
 
 async def _llm_profiles(services: Services) -> list[dict[str, Any]]:
-    """Return model-specific global profiles, including legacy provider entries."""
+    """Return typed model profiles, treating untyped persisted entries as chat."""
     profiles: dict[str, dict[str, Any]] = {}
     for profile_id, saved in (await services.llm_profiles.all()).items():
-        provider, encoded_model = _model_profile_parts(str(profile_id))
-        chat_model = saved.get("chat_model", "") or encoded_model
-        if not provider:
+        provider, encoded_kind, encoded_model = model_profile_parts(str(profile_id))
+        model = saved.get("chat_model", "") or encoded_model
+        kind = str(saved.get("kind") or encoded_kind)
+        if not provider or kind not in MODEL_KINDS:
             continue
         secret = saved.get("api_key") or saved.get("access_token") or ""
         profiles[str(profile_id)] = {
             "id": str(profile_id),
             "provider": provider,
-            "chat_model": chat_model,
+            "chat_model": model,
+            "kind": kind,
+            "embedding_dim": int(saved.get("embedding_dim") or 0),
             "base_url": saved.get("base_url", ""),
             "api_key_masked": mask_secret(secret),
             "has_key": bool(secret),
         }
     for provider, saved in (await services.llm_credentials.all()).items():
-        chat_model = saved.get("chat_model", "")
-        profile_id = _model_profile_id(provider, chat_model) if chat_model else provider
+        model = saved.get("chat_model", "")
+        profile_id = model_profile_id(provider, model) if model else provider
         if profile_id in profiles:
             continue
         secret = saved.get("api_key") or saved.get("access_token") or ""
         profiles[profile_id] = {
             "id": profile_id,
             "provider": provider,
-            "chat_model": chat_model,
+            "chat_model": model,
+            "kind": "chat",
+            "embedding_dim": 0,
             "base_url": saved.get("base_url", ""),
             "api_key_masked": mask_secret(secret),
             "has_key": bool(secret),
         }
-    return sorted(profiles.values(), key=lambda item: str(item["id"]))
+    return sorted(profiles.values(), key=lambda item: (str(item["provider"]), str(item["kind"]), str(item["id"])))
+
 
 def _default_room_llm_selection() -> dict[str, Any]:
     return {
@@ -437,21 +503,7 @@ def _default_room_llm_selection() -> dict[str, Any]:
 
 
 async def _room_llm_selection(services: Services, room: str) -> dict[str, Any]:
-    raw = await services.store.state_get(room, ROOM_LLM_SELECTION_KEY)
-    selection = _default_room_llm_selection()
-    if raw:
-        try:
-            decoded = json.loads(raw)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            decoded = {}
-        if isinstance(decoded, dict):
-            for key in selection:
-                if key in decoded:
-                    if key.endswith("_enabled"):
-                        selection[key] = bool(decoded[key])
-                    else:
-                        selection[key] = str(decoded[key] or "").casefold()
-    return selection
+    return await services.room_model_selection(room)
 
 
 async def _room_config_frame(services: Services, room: str) -> dict[str, Any]:
@@ -474,16 +526,19 @@ async def _set_room_model(
     frame: dict[str, Any],
     i18n: I18n,
 ) -> dict[str, Any]:
-    profiles = {str(profile["id"]) for profile in await _llm_profiles(services)}
+    profiles = {str(profile["id"]): str(profile["kind"]) for profile in await _llm_profiles(services)}
     if frame.get("clear") is True:
         await services.store.state_delete(room, ROOM_LLM_SELECTION_KEY)
         return await _room_config_frame(services, room)
     selection = await _room_llm_selection(services, room)
-    for key in ("main", "scribe", "director", "imagegen"):
+    expected_kind = {"main": "chat", "scribe": "chat", "director": "chat", "imagegen": "image"}
+    for key, kind in expected_kind.items():
         if key in frame:
             value = str(frame.get(key) or "").strip().casefold()
             if value and value not in profiles:
                 return _error("not_found", i18n)
+            if value and profiles[value] != kind:
+                return _error("bad_request", i18n)
             selection[key] = value
     for key in ("scribe_enabled", "director_enabled"):
         if key in frame:
@@ -504,6 +559,7 @@ async def _lane_status(services: Services, lane: str) -> dict[str, Any]:
         "api_key_masked": mask_secret(settings.api_key),
         "override_active": bool(overrides),
     }
+
 
 def _clear_lane_client_cache(services: Services, lane: str) -> None:
     attr = f"_{lane}_llm_cache"
@@ -577,15 +633,9 @@ async def _set_model(services: Services, frame: dict[str, Any], i18n: I18n) -> d
             _effective_llm_endpoint(provider, base_url),
             _effective_llm_endpoint(provider, fallback_base_url),
         )
-        api_key = (
-            supplied_api_key
-            if api_key_supplied
-            else "" if endpoint_changed else fallback_api_key
-        )
+        api_key = supplied_api_key if api_key_supplied else "" if endpoint_changed else fallback_api_key
 
-    oauth_path = provider == "supergrok" or (
-        provider in CHATGPT_SUBSCRIPTION_PROXY_PROVIDER_NAMES and not base_url
-    )
+    oauth_path = provider == "supergrok" or (provider in CHATGPT_SUBSCRIPTION_PROXY_PROVIDER_NAMES and not base_url)
     if oauth_path and await services.llm_credentials.load_subscription(provider) is None:
         return _error("set_failed", i18n)
 
@@ -597,9 +647,7 @@ async def _set_model(services: Services, frame: dict[str, Any], i18n: I18n) -> d
     else:
         chat_model = saved.get("chat_model") or SUBSCRIPTION_DEFAULT_MODELS.get(provider, live.chat_model)
     overrides = {
-        key: value
-        for key, value in current.items()
-        if key not in {"provider", "chat_model", "api_key", "base_url"}
+        key: value for key, value in current.items() if key not in {"provider", "chat_model", "api_key", "base_url"}
     }
     overrides.update(
         {
@@ -613,62 +661,95 @@ async def _set_model(services: Services, frame: dict[str, Any], i18n: I18n) -> d
         _reconfigure_llm(services, overrides)
         await services.runtime_config.replace(**overrides)
         if not oauth_path and (api_key_supplied or base_url_supplied or api_key or base_url):
-            await _replace_llm_static_credentials(
-                services, provider, api_key=api_key, base_url=base_url
-            )
+            await _replace_llm_static_credentials(services, provider, api_key=api_key, base_url=base_url)
     except Exception:
         logger.exception("admin_set_model failed (provider=%s)", provider)
         return _error("set_failed", i18n)
     return await _config_frame(services)
 
+
 async def _set_llm_profile(services: Services, frame: dict[str, Any], i18n: I18n) -> dict[str, Any]:
-    """Save one global provider/model profile without changing the live model."""
+    """Save one typed global provider/model profile without changing the live model."""
     provider = str(frame.get("provider") or "").strip().casefold()
-    chat_model = str(frame.get("chat_model") or "").strip()
+    model = str(frame.get("chat_model") or "").strip()
+    kind = str(frame.get("kind") or "chat").strip().casefold()
     if not provider or not is_known_provider(provider):
         return _error("unknown_provider", i18n)
-    if not chat_model:
+    if not model or kind not in MODEL_KINDS:
         return _error("bad_request", i18n)
-    profile_id = _model_profile_id(provider, chat_model)
-    saved = await services.llm_profiles.get(profile_id)
-    if not saved:
-        # CredentialBook normalizes keys on lookup; preserve compatibility with
-        # profiles whose model name contains uppercase characters.
-        all_profiles = await services.llm_profiles.all()
-        saved = next(
-            (dict(value) for key, value in all_profiles.items() if str(key).casefold() == profile_id.casefold()),
-            {},
-        )
+    if not provider_supports_kind(provider, kind):
+        return _error("bad_request", i18n)
+    raw_dim = frame.get("embedding_dim", 0)
+    try:
+        embedding_dim = int(raw_dim or 0)
+    except (TypeError, ValueError):
+        return _error("bad_request", i18n)
+    if kind == "embedding" and embedding_dim <= 0:
+        return _error("bad_request", i18n)
+    profile_id = model_profile_id(provider, model, kind)
+    all_profiles = await services.llm_profiles.all()
+    saved = all_profiles.get(profile_id, {})
     legacy_saved = await services.llm_credentials.get(provider)
+    base_url_supplied = "base_url" in frame
+    base_url = str(frame.get("base_url") or "").strip() if base_url_supplied else str(saved.get("base_url") or "")
+    endpoint = _profile_endpoint(provider, kind, base_url)
     sibling_saved = next(
         (
             dict(value)
-            for key, value in (await services.llm_profiles.all()).items()
+            for key, value in all_profiles.items()
             if str(key).partition("::")[0].casefold() == provider
-            and (value.get("api_key") or value.get("access_token"))
+            and value.get("api_key")
+            and _same_endpoint(
+                endpoint,
+                _profile_endpoint(provider, str(value.get("kind") or "chat"), str(value.get("base_url") or "")),
+            )
         ),
         {},
     )
-    inherited = saved or legacy_saved or sibling_saved
-    api_key = (
-        str(frame["api_key"]).strip()
-        if "api_key" in frame and str(frame["api_key"]).strip()
-        else inherited.get("api_key", "")
+    legacy_matches = bool(legacy_saved.get("api_key")) and _same_endpoint(
+        endpoint,
+        _profile_endpoint(provider, kind, str(legacy_saved.get("base_url") or "")),
     )
-    base_url = (
-        str(frame["base_url"]).strip()
-        if "base_url" in frame and str(frame["base_url"]).strip()
-        else saved.get("base_url") or legacy_saved.get("base_url") or sibling_saved.get("base_url", "")
+    same_saved_endpoint = bool(saved) and _same_endpoint(
+        endpoint,
+        _profile_endpoint(provider, kind, str(saved.get("base_url") or "")),
     )
-    if not api_key and not inherited.get("access_token"):
+    supplied_api_key = str(frame.get("api_key") or "").strip()
+    clear_api_key = frame.get("clear_api_key") is True
+    if supplied_api_key:
+        api_key = supplied_api_key
+    elif clear_api_key:
+        api_key = ""
+    elif same_saved_endpoint:
+        api_key = str(saved.get("api_key") or "")
+    elif legacy_matches:
+        api_key = str(legacy_saved.get("api_key") or "")
+    else:
+        api_key = str(sibling_saved.get("api_key") or "")
+
+    auth_type = provider_auth_type(provider)
+    subscription = (
+        await services.llm_credentials.load_subscription(provider)
+        if auth_type in {"oauth", "api_key_or_oauth"}
+        else None
+    )
+    oauth_path = auth_type == "oauth" or (
+        auth_type == "api_key_or_oauth" and not base_url and subscription is not None
+    )
+    if auth_type == "api_key" and not api_key:
+        return _error("set_failed", i18n)
+    if auth_type == "api_key_or_oauth" and not api_key and not oauth_path:
         return _error("set_failed", i18n)
     try:
         await services.llm_profiles.replace_static(
             profile_id,
             api_key=api_key,
             base_url=base_url,
-            chat_model=chat_model,
+            chat_model=model,
+            kind=kind,
+            embedding_dim=str(embedding_dim) if kind == "embedding" else "",
         )
+        services.invalidate_model_profile(profile_id.casefold())
     except Exception:
         logger.exception("admin_set_llm failed (profile=%s)", profile_id)
         return _error("set_failed", i18n)
@@ -676,36 +757,54 @@ async def _set_llm_profile(services: Services, frame: dict[str, Any], i18n: I18n
 
 
 async def _delete_llm_profile(services: Services, frame: dict[str, Any], i18n: I18n) -> dict[str, Any]:
-    """Delete one provider/model profile without deleting sibling models."""
-    raw_id = str(frame.get("id") or "").strip()
+    """Delete one typed provider/model profile without deleting siblings."""
+    raw_id = str(frame.get("id") or "").strip().casefold()
     provider = str(frame.get("provider") or "").strip().casefold()
-    chat_model = str(frame.get("chat_model") or "").strip()
-    profile_id = raw_id or (_model_profile_id(provider, chat_model) if chat_model else provider)
+    model = str(frame.get("chat_model") or "").strip()
+    profile_id = raw_id or (model_profile_id(provider, model) if model else provider)
     if not profile_id:
         return _error("bad_request", i18n)
-    profile_provider, profile_model = _model_profile_parts(profile_id)
+    profile_provider, profile_kind, profile_model = model_profile_parts(profile_id)
     if not profile_provider:
         profile_provider = provider
     canonical = canonical_subscription_provider(profile_provider)
+    embedding_rebuilt: int | None = None
     try:
+        current = await services.runtime_config.get()
+        if current.get("embedding_profile", "").casefold() == profile_id:
+            embedding_rebuilt = await services.reconfigure_embeddings(
+                services.base_embeddings,
+                profile_id="",
+                model=services.base_embedding_settings.embedding_model,
+            )
+            for key in ("embedding_profile", "embedding_model", "embedding_dim"):
+                current.pop(key, None)
         profiles = await services.llm_profiles.all()
         if profile_id in profiles:
             await services.llm_profiles.forget(profile_id)
+            services.invalidate_model_profile(profile_id)
         else:
             legacy_provider = profile_provider or profile_id
             await services.llm_credentials.forget(legacy_provider)
             if canonical != legacy_provider:
                 await services.llm_credentials.forget(canonical)
         live = _live_llm_settings(services)
-        if _provider_identity(live.provider) == canonical and (
-            not profile_model or live.chat_model == profile_model
+        if (
+            profile_kind == "chat"
+            and _provider_identity(live.provider) == canonical
+            and (not profile_model or live.chat_model == profile_model)
         ):
             _reconfigure_llm(services, {})
-            await services.runtime_config.clear()
+            for key in ("provider", "chat_model", "api_key", "base_url"):
+                current.pop(key, None)
+        await services.runtime_config.replace(**current)
     except Exception:
         logger.exception("admin_delete_llm failed (profile=%s)", profile_id)
         return _error("set_failed", i18n)
-    return await _config_frame(services)
+    reply = await _config_frame(services)
+    if embedding_rebuilt is not None:
+        reply["embedding_rebuilt"] = embedding_rebuilt
+    return reply
 
 
 async def _list_models(services: Services, frame: dict[str, Any], i18n: I18n) -> dict[str, Any]:
@@ -721,6 +820,9 @@ async def _list_models(services: Services, frame: dict[str, Any], i18n: I18n) ->
     provider = str(frame.get("provider") or "").strip().casefold() or current_provider
     if not is_known_provider(provider):
         return _error("unknown_provider", i18n)
+    model_kind = str(frame.get("kind") or "").strip().casefold()
+    if model_kind and model_kind not in MODEL_KINDS:
+        return _error("bad_request", i18n)
 
     api_key_supplied = "api_key" in frame
     base_url_supplied = "base_url" in frame
@@ -734,20 +836,47 @@ async def _list_models(services: Services, frame: dict[str, Any], i18n: I18n) ->
         base_llm.base_url or "",
         saved,
     )
+    if not fallback_api_key:
+        profiles = await services.llm_profiles.all()
+        requested_base_url = supplied_base_url if base_url_supplied else fallback_base_url
+        target_endpoint = _profile_endpoint(provider, model_kind or "chat", requested_base_url)
+        sibling = next(
+            (
+                value
+                for profile_id, value in profiles.items()
+                if model_profile_parts(profile_id)[0] == provider
+                and value.get("api_key")
+                and _same_endpoint(
+                    target_endpoint,
+                    _profile_endpoint(
+                        provider,
+                        str(value.get("kind") or "chat"),
+                        str(value.get("base_url") or ""),
+                    ),
+                )
+            ),
+            {},
+        )
+        fallback_api_key = str(sibling.get("api_key") or "")
+        fallback_base_url = str(sibling.get("base_url") or fallback_base_url)
     base_url = supplied_base_url if base_url_supplied else fallback_base_url
     endpoint_changed = base_url_supplied and not _same_endpoint(
         _effective_llm_endpoint(provider, base_url),
         _effective_llm_endpoint(provider, fallback_base_url),
     )
-    api_key = (
-        supplied_api_key
-        if api_key_supplied
-        else "" if endpoint_changed else fallback_api_key
-    )
+    api_key = supplied_api_key if api_key_supplied else "" if endpoint_changed else fallback_api_key
 
     candidate = base_llm.model_copy(update={"provider": provider, "api_key": api_key, "base_url": base_url})
-    models = await list_models(candidate)
-    return {"type": "admin_models", "provider": provider, "models": models, "imagegen": await _imagegen_status(services)}
+    models = await list_models(candidate, model_kind) if model_kind else await list_models(candidate)
+    reply = {
+        "type": "admin_models",
+        "provider": provider,
+        "models": models,
+        "imagegen": await _imagegen_status(services),
+    }
+    if model_kind:
+        reply["kind"] = model_kind
+    return reply
 
 
 async def _set_imagegen(services: Services, frame: dict[str, Any], i18n: I18n) -> dict[str, Any]:
@@ -781,11 +910,7 @@ async def _set_imagegen(services: Services, frame: dict[str, Any], i18n: I18n) -
             _effective_imagegen_endpoint(provider, base_url),
             _effective_imagegen_endpoint(provider, fallback_base_url),
         )
-        api_key = (
-            supplied_api_key
-            if api_key_supplied
-            else "" if endpoint_changed else fallback_api_key
-        )
+        api_key = supplied_api_key if api_key_supplied else "" if endpoint_changed else fallback_api_key
 
     overrides: dict[str, str] = {
         "provider": provider,
@@ -798,12 +923,8 @@ async def _set_imagegen(services: Services, frame: dict[str, Any], i18n: I18n) -
     try:
         _reconfigure_imagegen(services, overrides)
         await services.imagegen_runtime_config.replace(**overrides)
-        if provider != "supergrok" and (
-            api_key_supplied or base_url_supplied or api_key or base_url
-        ):
-            await services.imagegen_credentials.replace_static(
-                provider, api_key=api_key, base_url=base_url
-            )
+        if provider != "supergrok" and (api_key_supplied or base_url_supplied or api_key or base_url):
+            await services.imagegen_credentials.replace_static(provider, api_key=api_key, base_url=base_url)
     except Exception:
         # As in _set_model: keep a traceback so a genuine bug is not masked by the
         # generic client error. Never log the key/base_url themselves.
@@ -817,19 +938,6 @@ async def _imagegen_status(services: Services) -> dict[str, Any]:
     status = describe_imagegen_settings(services.settings.imagegen, configured=services.imagegen is not None)
     status["saved_providers"] = saved
     return status
-
-
-def _provider_names() -> list[str]:
-    """Every provider `.model`/`is_known_provider` accepts: OpenAI-compatible
-    presets first (sorted), then subscription aliases and native SDK providers."""
-    from infra.oauth_flows import SUBSCRIPTION_PROVIDER_NAMES
-
-    names = sorted(PRESETS) + list(CHATGPT_SUBSCRIPTION_PROXY_PROVIDER_NAMES) + list(NATIVE_PROVIDER_NAMES)
-    # Ensure supergrok is listed even if already in PRESETS.
-    for name in SUBSCRIPTION_PROVIDER_NAMES:
-        if name not in names:
-            names.append(name)
-    return names
 
 
 def _live_llm_settings(services: Services) -> Any:
@@ -855,13 +963,22 @@ def _effective_llm_endpoint(provider: str, base_url: str) -> str:
     raw empty setting; otherwise a harmless round-trip looks like an endpoint
     move and drops the provider's API key.
     """
-    return (base_url or PRESETS.get((provider or "").casefold(), "")).strip()
+    provider = (provider or "").casefold()
+    default = "https://api.openai.com/v1" if provider == "openai" else PRESETS.get(provider, "")
+    return (base_url or default).strip()
 
 
 def _effective_imagegen_endpoint(provider: str, base_url: str) -> str:
     """Resolve the endpoint an image-generation preset actually uses."""
     preset = IMAGEGEN_PRESETS.get((provider or "").casefold(), {})
     return (base_url or preset.get("base_url", "")).strip()
+
+
+def _profile_endpoint(provider: str, kind: str, base_url: str) -> str:
+    """Resolve the effective credential boundary for a typed model profile."""
+    if kind == "image":
+        return _effective_imagegen_endpoint(provider, base_url)
+    return _effective_llm_endpoint(provider, base_url)
 
 
 def _static_credential_pair(
@@ -953,9 +1070,7 @@ def _valid_image_size(value: str) -> bool:
 # -- room keys --------------------------------------------------------------
 
 
-def _keys_frame(
-    keystore: Keystore, caller_room: str, *, minted: dict[str, Any] | None = None
-) -> dict[str, Any]:
+def _keys_frame(keystore: Keystore, caller_room: str, *, minted: dict[str, Any] | None = None) -> dict[str, Any]:
     keys: list[dict[str, Any]] = []
     for entry in keystore.entries(purpose=None):
         if entry.room != caller_room:
@@ -999,9 +1114,7 @@ def _resolve_key(keystore: Keystore, key_id: str) -> str | None:
     return None
 
 
-def _mint_key(
-    keystore: Keystore, caller_room: str, frame: dict[str, Any], i18n: I18n
-) -> dict[str, Any]:
+def _mint_key(keystore: Keystore, caller_room: str, frame: dict[str, Any], i18n: I18n) -> dict[str, Any]:
     requested_room = str(frame.get("room") or caller_room).strip()
     if not caller_room or requested_room != caller_room:
         return _error("forbidden", i18n)
@@ -1171,9 +1284,7 @@ async def _import_room(
     if room and room != caller_room:
         return _error("forbidden", i18n)
     try:
-        return _room_op_frame(
-            "import", await import_room(services, keystore, path, expected_room=caller_room)
-        )
+        return _room_op_frame("import", await import_room(services, keystore, path, expected_room=caller_room))
     except Exception:
         return _error("op_failed", i18n)
 
@@ -1288,7 +1399,9 @@ def _room_op_frame(action: str, result: dict[str, Any]) -> dict[str, Any]:
 # -- KP skills (Layer B.1/B.2) ----------------------------------------------
 
 
-async def _skills_frame(services: Services, caller_room: str, i18n: I18n, frame: dict[str, Any] | None = None) -> dict[str, Any]:
+async def _skills_frame(
+    services: Services, caller_room: str, i18n: I18n, frame: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Answer `admin_list_skills`/a fresh post-`admin_enable_skill` reply: every discoverable
     skill (`core.skills.available_skills`), each marked `enabled` per the CALLER'S room.
 
@@ -1306,9 +1419,7 @@ async def _skills_frame(services: Services, caller_room: str, i18n: I18n, frame:
         {
             "id": skill.id,
             "name": (skill.name_zh if use_zh and skill.name_zh else skill.name),
-            "description": (
-                skill.description_zh if use_zh and skill.description_zh else skill.description
-            ),
+            "description": (skill.description_zh if use_zh and skill.description_zh else skill.description),
             "content_rating": skill.content_rating,
             "enabled": skill.id in enabled_ids,
         }
@@ -1317,9 +1428,7 @@ async def _skills_frame(services: Services, caller_room: str, i18n: I18n, frame:
     return {"type": "admin_skills", "skills": skills}
 
 
-async def _enable_skill(
-    services: Services, caller_room: str, frame: dict[str, Any], i18n: I18n
-) -> dict[str, Any]:
+async def _enable_skill(services: Services, caller_room: str, frame: dict[str, Any], i18n: I18n) -> dict[str, Any]:
     skill_id = str(frame.get("id") or "").strip()
     known_ids = {skill.id for skill in available_skills()}
     if not skill_id or skill_id not in known_ids:

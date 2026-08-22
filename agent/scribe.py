@@ -158,9 +158,12 @@ Game master: {reply}
 JSON only."""
 
 
-def _scribe_llm(services: Services) -> LLMClient:
+async def _scribe_llm(services: Services, chat_key: str) -> LLMClient:
     """The scribe's client: the dedicated small model when configured, else the
     main client. Cached on the services bundle (one construction per process)."""
+    selected = await services.room_llm(chat_key, "scribe")
+    if selected is not None:
+        return selected
     cached = getattr(services, "_scribe_llm_cache", None)
     if cached is not None:
         return cached
@@ -391,7 +394,9 @@ async def run_scribe(
     )
     try:
         with lane_scope("scribe", chat_key=ctx.chat_key):
-            result = await _scribe_llm(services).chat([{"role": "user", "content": prompt}])
+            result = await (await _scribe_llm(services, ctx.chat_key)).chat(
+                [{"role": "user", "content": prompt}]
+            )
     except Exception as exc:  # noqa: BLE001 — bookkeeping must never break the table
         logger.debug("scribe: llm call failed: %s", exc)
         trace_event(SCRIBE_TRACE_KIND, {"outcome": "llm_failed"}, chat_key=ctx.chat_key)

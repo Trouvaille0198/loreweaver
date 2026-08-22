@@ -8,6 +8,7 @@ fully offline)."""
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,11 +26,11 @@ from core.documents import DocumentStore
 from core.rulepacks import RulePack, load_rulepack
 from core.worldbook import Worldbook
 from infra.config import Settings, get_settings
-from infra.embeddings import Embeddings, OpenAIEmbeddings
+from infra.embeddings import Embeddings, FakeEmbeddings, OpenAIEmbeddings
 from infra.i18n import I18n, get_i18n
 from infra.imagegen import ImageGen, apply_imagegen_overrides, build_imagegen
 from infra.llm import LLMClient
-from infra.providers import MutableLLM
+from infra.providers import MutableLLM, build_llm
 from infra.room_facets import STORAGE_ROOM_STATE, RoomStateFacet
 from infra.runtime_config import (
     DIRECTOR_RUNTIME_KEY,
@@ -41,12 +42,22 @@ from infra.runtime_config import (
     LaneRuntimeConfig,
     RuntimeConfig,
     apply_lane_overrides,
+    apply_overrides,
+    model_profile_parts,
 )
 from infra.store import Store
 from infra.vector import VectorStore
 
 logger = logging.getLogger(__name__)
 ROOM_LLM_SELECTION_KEY = "llm_selection"
+ROOM_MODEL_DEFAULTS: dict[str, Any] = {
+    "main": "",
+    "scribe": "",
+    "director": "",
+    "imagegen": "",
+    "scribe_enabled": True,
+    "director_enabled": True,
+}
 
 
 @dataclass
@@ -77,9 +88,163 @@ class Services:
     # override without losing deployment-provided values.
     base_scribe_settings: Any = field(repr=False)
     base_director_settings: Any = field(repr=False)
+    base_embedding_settings: Any = field(repr=False)
+    base_embeddings: Embeddings = field(repr=False)
+    embedding_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
     # One deployment-wide mutation lock shared by TUI admin frames, chat `.model`
     # commands, and subscription refresh publication. Room turn locks remain separate.
     config_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    _room_llm_cache: dict[str, LLMClient] = field(default_factory=dict, init=False, repr=False)
+    _room_imagegen_cache: dict[str, ImageGen] = field(default_factory=dict, init=False, repr=False)
+
+    async def room_model_selection(self, chat_key: str) -> dict[str, Any]:
+        """Return this room's validated-shape model assignment record."""
+        selection = dict(ROOM_MODEL_DEFAULTS)
+        raw = await self.store.state_get(chat_key, ROOM_LLM_SELECTION_KEY)
+        if not raw:
+            return selection
+        try:
+            decoded = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return selection
+        if not isinstance(decoded, dict):
+            return selection
+        for key, default in ROOM_MODEL_DEFAULTS.items():
+            if key not in decoded:
+                continue
+            selection[key] = bool(decoded[key]) if isinstance(default, bool) else str(decoded[key] or "")
+        return selection
+
+    async def room_lane_enabled(self, chat_key: str, lane: str) -> bool:
+        """Whether a room may run its Scribe or Director lane."""
+        if lane not in {"scribe", "director"}:
+            raise ValueError("lane")
+        globally_enabled = bool(getattr(self.settings, lane).enabled)
+        selection = await self.room_model_selection(chat_key)
+        return globally_enabled and bool(selection[f"{lane}_enabled"])
+
+    async def room_llm(self, chat_key: str, lane: str = "main") -> LLMClient | None:
+        """Build the chat profile assigned to one room lane, or ``None`` to inherit."""
+        if lane not in {"main", "scribe", "director"}:
+            raise ValueError("lane")
+        selection = await self.room_model_selection(chat_key)
+        profile_id = str(selection[lane] or "")
+        if not profile_id:
+            return None
+        cached = self._room_llm_cache.get(profile_id)
+        if cached is not None:
+            return cached
+        saved = await self.llm_profiles.get(profile_id)
+        provider, kind, encoded_model = model_profile_parts(profile_id)
+        if not saved or kind != "chat":
+            return None
+        model = str(saved.get("chat_model") or encoded_model).strip()
+        if not provider or not model:
+            return None
+        patched = self.settings.model_copy(deep=True)
+        patched.llm.provider = provider
+        patched.llm.chat_model = model
+        patched.llm.api_key = saved.get("api_key") or ""
+        patched.llm.base_url = saved.get("base_url") or ""
+        client = build_llm(patched, credentials=self.llm_credentials)
+        self._room_llm_cache[profile_id] = client
+        return client
+
+    async def main_llm(self, chat_key: str) -> LLMClient:
+        """The room's primary model, falling back to the live global client."""
+        return await self.room_llm(chat_key, "main") or self.llm
+
+    async def imagegen_for_room(self, chat_key: str) -> ImageGen | None:
+        """The room's selected image profile, falling back to the global generator."""
+        selection = await self.room_model_selection(chat_key)
+        profile_id = str(selection["imagegen"] or "")
+        if not profile_id:
+            return self.imagegen
+        cached = self._room_imagegen_cache.get(profile_id)
+        if cached is not None:
+            return cached
+        saved = await self.llm_profiles.get(profile_id)
+        provider, kind, encoded_model = model_profile_parts(profile_id)
+        if not saved or kind != "image":
+            return self.imagegen
+        model = str(saved.get("chat_model") or encoded_model).strip()
+        if not provider or not model:
+            return self.imagegen
+        patched = self.settings.model_copy(deep=True)
+        patched.imagegen.provider = provider
+        patched.imagegen.model = model
+        patched.imagegen.api_key = saved.get("api_key") or ""
+        patched.imagegen.base_url = saved.get("base_url") or ""
+        client = build_imagegen(patched, llm_credentials=self.llm_credentials)
+        if client is None:
+            return self.imagegen
+        self._room_imagegen_cache[profile_id] = client
+        return client
+
+    def invalidate_model_profile(self, profile_id: str | None = None) -> None:
+        """Drop cached clients after an admin mutates one or all profiles."""
+        if profile_id is None:
+            self._room_llm_cache.clear()
+            self._room_imagegen_cache.clear()
+            return
+        self._room_llm_cache.pop(profile_id, None)
+        self._room_imagegen_cache.pop(profile_id, None)
+
+    async def reconfigure_embeddings(
+        self,
+        candidate: Embeddings,
+        *,
+        profile_id: str,
+        model: str,
+    ) -> int:
+        """Probe a new client, rebuild every recoverable vector, then swap atomically."""
+        probe = await candidate.embed(["Loreweaver embedding compatibility probe"])
+        if len(probe) != 1 or len(probe[0]) != candidate.dim:
+            actual = len(probe[0]) if len(probe) == 1 else 0
+            raise ValueError(f"embedding probe returned dimension {actual}, expected {candidate.dim}")
+
+        async with self.embedding_lock:
+            current_points = await self.vector_db.vector_store.dump()
+            rebuildable: list[tuple[str, str, dict[str, Any]]] = []
+            skipped = 0
+            for point in current_points:
+                payload = dict(point["payload"])
+                text = str(payload.get("text") or "")
+                if not text:
+                    collection = str(payload.get("collection") or "")
+                    room = str(payload.get("namespace") or payload.get("chat_key") or "")
+                    entry_id = str(payload.get("entry_id") or "")
+                    doc_type = "lore" if collection == "worldbook" else "chronicle" if collection == "chronicle" else ""
+                    document = await self.documents.get(room, doc_type, entry_id) if room and doc_type and entry_id else None
+                    text = str(document.data.get("content" if doc_type == "lore" else "text", "")) if document else ""
+                if text:
+                    payload["text"] = text
+                    rebuildable.append((str(point["id"]), text, payload))
+                else:
+                    skipped += 1
+
+            rebuilt: list[tuple[str, list[float], dict[str, Any]]] = []
+            for offset in range(0, len(rebuildable), 64):
+                batch = rebuildable[offset : offset + 64]
+                vectors = await candidate.embed([text for _point_id, text, _payload in batch])
+                if len(vectors) != len(batch):
+                    raise ValueError("embedding provider returned an incomplete batch")  # i18n-exempt: internal invariant
+                rebuilt.extend(
+                    (point_id, vector, payload)
+                    for (point_id, _text, payload), vector in zip(batch, vectors, strict=True)
+                )
+
+            await self.vector_db.vector_store.replace_all(candidate.dim, rebuilt)
+            self.embeddings = candidate
+            self.vector_db.embeddings = candidate
+            self.worldbook.embeddings = candidate
+            self.settings.llm.embedding_profile = profile_id
+            self.settings.llm.embedding_model = model
+            self.settings.llm.embedding_dim = candidate.dim
+            if skipped:
+                logger.warning("Dropped %d orphaned vectors while rebuilding the Embedding index", skipped)
+            return len(rebuilt)
+
 
     async def room_rulepack(self, ctx: AgentCtx) -> RulePack:
         """The rule system THIS room plays: the active character's system, then the
@@ -142,7 +307,11 @@ def build_services(
     director_runtime_config = LaneRuntimeConfig(store, key=DIRECTOR_RUNTIME_KEY)
     base_scribe_settings = settings.scribe.model_copy(deep=True)
     base_director_settings = settings.director.model_copy(deep=True)
+    base_embedding_settings = settings.llm.model_copy(deep=True)
     imagegen_overrides = imagegen_runtime_config.load_sync()
+    runtime_overrides = runtime_config.load_sync()
+    if runtime_overrides:
+        settings = apply_overrides(settings, runtime_overrides)
     if imagegen_overrides:
         settings = apply_imagegen_overrides(settings, imagegen_overrides)
     scribe_overrides = scribe_runtime_config.load_sync()
@@ -157,7 +326,30 @@ def build_services(
     # and apply any persisted runtime overrides at startup. `build_llm` (inside
     # `MutableLLM`) honors settings.llm.provider + PRESETS (OpenAI/Anthropic/Gemini/
     # OpenAI-compatible).
-    embeddings = embeddings or OpenAIEmbeddings(settings.llm)
+    embedding_settings = settings.llm
+    embedding_profile = settings.llm.embedding_profile.casefold()
+    if embedding_profile:
+        saved_profile = llm_profiles.load_sync().get(embedding_profile, {})
+        profile_provider, profile_kind, encoded_model = model_profile_parts(embedding_profile)
+        if saved_profile and profile_kind == "embedding":
+            embedding_settings = settings.llm.model_copy(
+                update={
+                    "provider": profile_provider,
+                    "api_key": saved_profile.get("api_key") or saved_profile.get("access_token") or "",
+                    "base_url": saved_profile.get("base_url", ""),
+                    "embedding_model": saved_profile.get("chat_model") or encoded_model,
+                    "embedding_dim": int(saved_profile.get("embedding_dim") or settings.llm.embedding_dim),
+                }
+            )
+    supplied_embeddings = embeddings
+    if embeddings is None:
+        embeddings = OpenAIEmbeddings(embedding_settings) if embedding_settings.api_key else FakeEmbeddings(64)
+    if not embedding_profile or supplied_embeddings is not None:
+        base_embeddings = embeddings
+    elif base_embedding_settings.api_key:
+        base_embeddings = OpenAIEmbeddings(base_embedding_settings)
+    else:
+        base_embeddings = FakeEmbeddings(64)
     if llm is None:
         # Warm the credential book cache so subscription providers can resolve
         # OAuth tokens at build_llm time (sync path).
@@ -201,13 +393,25 @@ def build_services(
     documents = DocumentStore(store)
     characters = CharacterManager(store)
     battles = BattleReportManager(store)
+    embedding_lock = asyncio.Lock()
     vector_store = VectorStore(embeddings.dim, path=vector_path)
-    vector_db = VectorDatabaseManager(embeddings, vector_store, i18n, llm=llm)
+    vector_db = VectorDatabaseManager(
+        embeddings,
+        vector_store,
+        i18n,
+        llm=llm,
+        operation_lock=embedding_lock,
+    )
     module_init = ModuleInitializer(store, vector_db, llm, settings, i18n, battles=battles)
     # Worldbook talks the raw `infra.vector.VectorStore` upsert/search/delete
     # API (its own "worldbook" collection), so it takes `vector_store` directly --
     # not the higher-level `VectorDatabaseManager`, which exposes a different surface.
-    worldbook = Worldbook(store, vector_db=vector_store, embeddings=embeddings)
+    worldbook = Worldbook(
+        store,
+        vector_db=vector_store,
+        embeddings=embeddings,
+        operation_lock=embedding_lock,
+    )
     imagegen = build_imagegen(settings, llm_credentials=llm_credentials)
 
     return Services(
@@ -231,8 +435,11 @@ def build_services(
         imagegen_credentials=imagegen_credentials,
         scribe_runtime_config=scribe_runtime_config,
         director_runtime_config=director_runtime_config,
+        embedding_lock=embedding_lock,
         base_scribe_settings=base_scribe_settings,
         base_director_settings=base_director_settings,
+        base_embedding_settings=base_embedding_settings,
+        base_embeddings=base_embeddings,
     )
 
 

@@ -260,6 +260,20 @@ async def test_upsert_is_isolated_between_separate_in_memory_stores():
     assert await store_b.count() == 0
 
 
+async def test_replace_all_changes_dimension_and_keeps_old_index_on_validation_failure():
+    store = VectorStore(dim=2)
+    await store.upsert([("old", [1.0, 0.0], {"tag": "old"})])
+
+    await store.replace_all(3, [("new", [0.0, 1.0, 0.0], {"tag": "new"})])
+
+    assert store.dim == 3
+    assert [hit.id for hit in await store.scroll()] == ["new"]
+    with pytest.raises(ValueError, match=t("infra.vector.dimension_mismatch", expected=4, actual=3)):
+        await store.replace_all(4, [("broken", [1.0, 0.0, 0.0], {})])
+    assert store.dim == 3
+    assert [hit.id for hit in await store.scroll()] == ["new"]
+
+
 # ---------------------------------------------------------------------------
 # dimension validation
 # ---------------------------------------------------------------------------

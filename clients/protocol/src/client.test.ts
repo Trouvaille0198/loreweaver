@@ -457,6 +457,10 @@ describe("WsClient", () => {
       base_url: "",
       api_key_masked: "",
       providers: ["openai", "deepseek"],
+      provider_catalog: [
+        { id: "openai", default_base_url: "https://api.openai.com/v1", auth_type: "api_key" },
+        { id: "deepseek", default_base_url: "https://api.deepseek.com/v1", auth_type: "api_key" },
+      ],
       saved_providers: ["openai"],
       override_active: false,
     })

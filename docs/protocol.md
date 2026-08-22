@@ -607,7 +607,7 @@ Server → client:
   provider catalog, the providers that already have a saved credential (`saved_providers`),
   whether a runtime override is active, and the display-safe image-generation
   status:
-  `{type:"admin_config", provider:string, chat_model:string, base_url:string, api_key_masked:string, providers:string[], saved_providers:string[], override_active:boolean, imagegen?:ImageGenStatus, using_demo?:boolean, subscription_status?:""|"logged_in"|"logged_out"}`
+  `{type:"admin_config", provider:string, chat_model:string, base_url:string, api_key_masked:string, providers:string[], provider_catalog?:ProviderMetadata[], saved_providers:string[], override_active:boolean, imagegen?:ImageGenStatus, using_demo?:boolean, subscription_status?:""|"logged_in"|"logged_out"}`. Each `ProviderMetadata` is `{id:string, default_base_url:string, auth_type:"api_key"|"oauth"|"api_key_or_oauth"|"none"}`. `providers` is the ID-only compatibility projection of `provider_catalog`.
   `using_demo` tracks the live offline fallback so a client can immediately remove
   a stale sample-adventure affordance. A true value alone does not authorize setup;
   only the room-scoped `welcome.features` check may add it.

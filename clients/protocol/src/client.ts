@@ -20,6 +20,7 @@ import {
   type MediaAcceptFrame,
   type MediaFrame,
   type MediaOfferFrame,
+  type ModelKind,
   type PanelIntentKind,
   type PingFrame,
   type PlayerRole,
@@ -92,6 +93,16 @@ function isObject(value: unknown): value is Record<string, unknown> {
 const isStr = (v: unknown): v is string => typeof v === "string"
 const isNum = (v: unknown): v is number => typeof v === "number"
 const isArr = Array.isArray
+const isProviderCatalog = (value: unknown): boolean =>
+  value === undefined ||
+  (isArr(value) &&
+    value.every(
+      (provider) =>
+        isObject(provider) &&
+        isStr(provider.id) &&
+        isStr(provider.default_base_url) &&
+        ["api_key", "oauth", "api_key_or_oauth", "none"].includes(String(provider.auth_type)),
+    ))
 
 // Per-frame-type validation of the load-bearing required fields. A frame that
 // passes the `type` check but is missing/mistyped these (e.g. `{"type":"state"}`
@@ -125,7 +136,8 @@ const serverFrameValidators: Record<string, (f: Record<string, unknown>) => bool
   [FrameType.TurnStatus]: (f) =>
     (f.status === "busy" && isStr(f.actor) && f.actor.length > 0) || f.status === "idle",
   [FrameType.Pong]: (f) => isNum(f.t),
-  [FrameType.AdminConfig]: (f) => isStr(f.provider) && isStr(f.chat_model) && isArr(f.providers),
+  [FrameType.AdminConfig]: (f) =>
+    isStr(f.provider) && isStr(f.chat_model) && isArr(f.providers) && isProviderCatalog(f.provider_catalog),
   [FrameType.AdminModels]: (f) => isStr(f.provider) && isArr(f.models),
   [FrameType.AdminKeys]: (f) => isArr(f.keys),
   [FrameType.AdminRoomOp]: (f) =>
@@ -361,9 +373,10 @@ export class WsClient {
 
   // Ask for a provider's live model catalog. Omit args to list the current provider;
   // pass provider (+ optional apiKey/baseUrl) to preview another before switching.
-  adminListModels(provider?: string, apiKey?: string, baseUrl?: string): void {
+  adminListModels(provider?: string, apiKey?: string, baseUrl?: string, kind?: ModelKind): void {
     const frame: AdminListModelsFrame = { type: FrameType.AdminListModels }
     if (provider) frame.provider = provider
+    if (kind) frame.kind = kind
     if (apiKey !== undefined) frame.api_key = apiKey
     if (baseUrl !== undefined) frame.base_url = baseUrl
     this.send(frame)

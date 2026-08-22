@@ -463,7 +463,7 @@ class IrohServer:
         member.authorize = lambda: self.core._refresh_member_authorization(member)
         welcome = welcome_frame(
             fields,
-            imagegen=self.core.services.imagegen is not None,
+            imagegen=await self.core.services.imagegen_for_room(fields["session_key"]) is not None,
             demo=(
                 fields["role"] == "keeper"
                 and await guided_demo_available(self.core.services, fields["session_key"])
