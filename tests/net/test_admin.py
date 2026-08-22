@@ -698,6 +698,32 @@ async def test_admin_set_model_replaces_provider_scoped_credentials():
     }
 
 
+async def test_admin_set_model_saves_supplied_key_under_selected_provider(tmp_path):
+    services = _services(str(tmp_path))
+    admin = AdminService(services, Keystore())
+
+    result = await admin.dispatch(
+        "keeper",
+        "",
+        {
+            "type": "admin_set_model",
+            "provider": "deepseek",
+            "chat_model": "deepseek-v4-flash",
+            "api_key": "sk-deepseek-test",
+            "base_url": "https://api.deepseek.com/v1",
+        },
+        get_i18n("en"),
+    )
+
+    assert result["type"] == "admin_config"
+    assert result["provider"] == "deepseek"
+    credentials = await services.llm_credentials.all()
+    assert credentials["deepseek"] == {
+        "api_key": "sk-deepseek-test",
+        "base_url": "https://api.deepseek.com/v1",
+    }
+    assert "openai" not in credentials
+
 async def _seed_reset_room(services, chat_key):
     await services.store.state_set(chat_key, "chat_history", '[{"role":"user"}]')
     await services.documents.put(chat_key, "sheet", "Ada", {"name": "Ada", "owner": "player-1"})
@@ -2113,6 +2139,46 @@ async def test_model_credential_persistence_failure_keeps_applied_runtime():
     assert await services.llm_credentials.get("deepseek") == {}
 
 
+async def test_admin_set_llm_lane_configures_and_clears_web_override():
+    services = _services()
+    keystore = Keystore()
+    keeper_key = keystore.add(room="arkham", name="Keeper", role="keeper")
+    server = TuiServer(services, keystore, port=0)
+    url = await _start(server)
+    try:
+        ws, *_ = await _connect_and_join(url, keeper_key, "Keeper")
+        initial = await _send(ws, {"type": "admin_get_config"})
+        assert initial["scribe"]["provider"] == ""
+        assert initial["scribe"]["override_active"] is False
+
+        updated = await _send(
+            ws,
+            {
+                "type": "admin_set_llm_lane",
+                "lane": "scribe",
+                "provider": "deepseek",
+                "chat_model": "deepseek-chat",
+                "api_key": "sk-scribe-secret",
+                "enabled": True,
+            },
+        )
+        assert updated["scribe"]["provider"] == "deepseek"
+        assert updated["scribe"]["chat_model"] == "deepseek-chat"
+        assert updated["scribe"]["api_key_masked"].endswith("cret")
+        assert updated["scribe"]["override_active"] is True
+        assert "sk-scribe-secret" not in json.dumps(updated)
+        assert services.settings.scribe.provider == "deepseek"
+        assert (await services.scribe_runtime_config.get())["api_key"] == "sk-scribe-secret"
+
+        cleared = await _send(ws, {"type": "admin_set_llm_lane", "lane": "scribe", "clear": True})
+        assert cleared["scribe"]["override_active"] is False
+        assert cleared["scribe"]["provider"] == ""
+        assert services.settings.scribe.provider == ""
+        await ws.close()
+    finally:
+        await server.close()
+
+
 async def test_admin_set_imagegen_configures_runtime_and_masks_key():
     import time
 
@@ -2563,6 +2629,63 @@ async def test_deleting_a_room_over_the_wire_drops_its_turn_lock_after_the_frame
             await asyncio.sleep(0.01)
         assert chat_key not in server.hub._turn_locks
         assert chat_key not in server.hub._active_turns
+        await ws.close()
+    finally:
+        await server.close()
+
+
+async def test_admin_llm_profiles_and_room_assignments_are_separate(tmp_path):
+    services = _services(str(tmp_path))
+    keystore = Keystore()
+    keeper_key = keystore.add(room="arkham", name="Keeper", role="keeper")
+    server = TuiServer(services, keystore, port=0)
+    url = await _start(server)
+    try:
+        ws, *_ = await _connect_and_join(url, keeper_key, "Keeper")
+        saved = await _send(
+            ws,
+            {
+                "type": "admin_set_llm",
+                "provider": "deepseek",
+                "chat_model": "deepseek-chat",
+                "api_key": "sk-profile-secret",
+            },
+        )
+        assert saved["type"] == "admin_config"
+        first_id = "deepseek::deepseek-chat"
+        assert any(profile["id"] == first_id for profile in saved["llms"])
+        assert next(profile for profile in saved["llms"] if profile["id"] == first_id)["has_key"] is True
+        assert "sk-profile-secret" not in json.dumps(saved)
+
+        second = await _send(
+            ws,
+            {
+                "type": "admin_set_llm",
+                "provider": "deepseek",
+                "chat_model": "deepseek-reasoner",
+                "api_key": "sk-profile-secret",
+            },
+        )
+        assert {profile["id"] for profile in second["llms"]} == {
+            first_id,
+            "deepseek::deepseek-reasoner",
+        }
+
+        room = await _send(
+            ws,
+            {"type": "admin_set_room_model", "main": "deepseek::deepseek-reasoner", "scribe": ""},
+        )
+        assert room["type"] == "admin_room_config"
+        assert room["stored"]["main"] == "deepseek::deepseek-reasoner"
+        assert room["stored"]["scribe"] == ""
+
+        deleted = await _send(ws, {"type": "admin_delete_llm", "id": first_id})
+        assert deleted["type"] == "admin_config"
+        assert {profile["id"] for profile in deleted["llms"]} == {"deepseek::deepseek-reasoner"}
+
+        deleted = await _send(ws, {"type": "admin_delete_llm", "id": "deepseek::deepseek-reasoner"})
+        assert deleted["type"] == "admin_config"
+        assert deleted["llms"] == []
         await ws.close()
     finally:
         await server.close()

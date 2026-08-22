@@ -41,16 +41,119 @@ OVERRIDE_FIELDS: tuple[str, ...] = (
 )
 
 DEFAULT_KEY = "runtime_config.llm"
+# Dedicated LLM lanes (Scribe and Stage Director) use their own persisted
+# snapshots. Empty provider/model/base-url values intentionally mean "reuse the
+# main client"; the API key remains write-only at the admin boundary.
+LANE_OVERRIDE_FIELDS: tuple[str, ...] = (
+    "enabled",
+    "provider",
+    "api_key",
+    "base_url",
+    "chat_model",
+    "reasoning_effort",
+)
+SCRIBE_RUNTIME_KEY = "runtime_config.scribe"
+DIRECTOR_RUNTIME_KEY = "runtime_config.director"
+
+
+def _decode_lane(raw: str | None) -> dict[str, Any]:
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        key: (bool(value) if key == "enabled" and isinstance(value, bool) else str(value))
+        for key, value in data.items()
+        if key in LANE_OVERRIDE_FIELDS and value is not None
+    }
+
+
+class LaneRuntimeConfig:
+    """Persist one dedicated LLM lane's web-admin overrides."""
+
+    def __init__(self, store: Store, *, key: str) -> None:
+        self._store = store
+        self._key = key
+        self._cache: dict[str, Any] | None = None
+
+    async def load(self) -> dict[str, Any]:
+        self._cache = _decode_lane(await self._store.get(user_key="", store_key=self._key))
+        return dict(self._cache)
+
+    async def get(self) -> dict[str, Any]:
+        if self._cache is None:
+            await self.load()
+        return dict(self._cache or {})
+
+    async def replace(self, **overrides: Any) -> dict[str, Any]:
+        invalid = set(overrides) - set(LANE_OVERRIDE_FIELDS)
+        if invalid:
+            raise ValueError(next(iter(invalid)))
+        current = {
+            key: value
+            for key, value in overrides.items()
+            if value is not None
+        }
+        await self._store.set(user_key="", store_key=self._key, value=json.dumps(current))
+        self._cache = current
+        return dict(current)
+
+    async def clear(self) -> None:
+        await self._store.delete(user_key="", store_key=self._key)
+        self._cache = {}
+
+    def load_sync(self) -> dict[str, Any]:
+        path = self._store.path
+        if path == ":memory:" or not os.path.exists(path):
+            self._cache = {}
+            return {}
+        row = None
+        try:
+            conn = sqlite3.connect(path)
+            try:
+                row = conn.execute(
+                    "SELECT value FROM kv WHERE user_key = '' AND store_key = ?",
+                    (self._key,),
+                ).fetchone()
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            row = None
+        self._cache = _decode_lane(row[0]) if row else {}
+        return dict(self._cache)
+
+
+def apply_lane_overrides(base: Settings, lane: str, overrides: dict[str, Any]) -> Settings:
+    """Apply persisted lane fields to a Settings copy during service boot."""
+    if lane not in {"scribe", "director"}:
+        raise ValueError(lane)
+    filtered = {
+        key: value
+        for key, value in (overrides or {}).items()
+        if key in LANE_OVERRIDE_FIELDS and value is not None
+    }
+    if not filtered:
+        return base.model_copy(deep=True)
+    return base.model_copy(
+        update={lane: getattr(base, lane).model_copy(update=filtered)},
+    )
+
 
 # The per-provider credential book (see `CredentialBook`) remembers each provider's
 # secret so switching providers in the model screen never re-asks for a key. Stored
 # under its own `Store` key, same plaintext-local-DB caveat as the overrides above.
 CREDENTIALS_KEY = "runtime_config.credentials"
-# api_key/base_url for classic providers; subscription OAuth adds optional
-# access_token/refresh_token/expires_at/account_id (unknown keys dropped on load).
+LLM_PROFILES_KEY = "runtime_config.llm_profiles"
+# Each global LLM profile carries its endpoint credential plus the model selected
+# for that profile. Subscription OAuth fields remain optional.
 _CREDENTIAL_FIELDS: tuple[str, ...] = (
     "api_key",
     "base_url",
+    "chat_model",
     "access_token",
     "refresh_token",
     "expires_at",
@@ -352,8 +455,15 @@ class CredentialBook:
             if cred.get("api_key") or cred.get("access_token")
         )
 
-    async def remember(self, provider: str, *, api_key: str = "", base_url: str = "") -> None:
-        """Upsert `provider`'s credential, keeping any field left blank."""
+    async def remember(
+        self,
+        provider: str,
+        *,
+        api_key: str = "",
+        base_url: str = "",
+        chat_model: str = "",
+    ) -> None:
+        """Upsert a global LLM profile, keeping fields left blank."""
         provider = (provider or "").casefold()
         if not provider:
             return
@@ -366,6 +476,8 @@ class CredentialBook:
                 entry["api_key"] = api_key
             if base_url:
                 entry["base_url"] = base_url
+            if chat_model:
+                entry["chat_model"] = chat_model
             if not entry:
                 return
             updated = dict(self._cache)
@@ -373,13 +485,15 @@ class CredentialBook:
             await self._store.set(user_key="", store_key=self._key, value=json.dumps(updated))
             self._cache = updated
 
-    async def replace_static(self, provider: str, *, api_key: str = "", base_url: str = "") -> None:
-        """Replace a provider's static endpoint credential, including explicit clears.
-
-        OAuth fields, if any, are preserved.  This is intentionally different
-        from :meth:`remember`: when an endpoint changes, retaining a blank field
-        could pair the old API key with the new URL on a later switch.
-        """
+    async def replace_static(
+        self,
+        provider: str,
+        *,
+        api_key: str = "",
+        base_url: str = "",
+        chat_model: str = "",
+    ) -> None:
+        """Replace a global profile's static fields, preserving OAuth fields."""
         provider = (provider or "").casefold()
         if not provider:
             return
@@ -387,24 +501,23 @@ class CredentialBook:
             if self._cache is None:
                 await self._load()
             assert self._cache is not None
-            # Build a replacement snapshot off to the side.  Store.set can fail
-            # (disk full/read-only database); publishing the new cache before that
-            # succeeds would make this process believe an old key was cleared while
-            # a restart would load that key again from disk.
             updated = dict(self._cache)
             entry = dict(updated.get(provider, {}))
-            entry.pop("api_key", None)
-            entry.pop("base_url", None)
+            for key in ("api_key", "base_url", "chat_model"):
+                entry.pop(key, None)
             if api_key:
                 entry["api_key"] = api_key
             if base_url:
                 entry["base_url"] = base_url
+            if chat_model:
+                entry["chat_model"] = chat_model
             if entry:
                 updated[provider] = entry
             else:
                 updated.pop(provider, None)
             await self._store.set(user_key="", store_key=self._key, value=json.dumps(updated))
             self._cache = updated
+
 
     async def save_subscription(self, provider: str, token: Any) -> None:
         """Persist a :class:`~infra.oauth_flows.SubscriptionToken` under ``provider``.

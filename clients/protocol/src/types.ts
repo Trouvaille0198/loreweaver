@@ -43,6 +43,7 @@ export const FrameType = {
   // v1.1 additive admin (keeper-gated) frames.
   AdminGetConfig: "admin_get_config",
   AdminSetModel: "admin_set_model",
+  AdminSetLLMLane: "admin_set_llm_lane",
   AdminSetImagegen: "admin_set_imagegen",
   AdminListModels: "admin_list_models",
   AdminListKeys: "admin_list_keys",
@@ -886,6 +887,28 @@ export interface ImageGenStatus {
   configured: boolean
   saved_providers?: string[]
 }
+export interface LLMLaneStatus {
+  enabled: boolean
+  provider: string
+  chat_model: string
+  base_url: string
+  api_key_masked: string
+  override_active: boolean
+}
+
+export interface AdminSetLLMLaneFrame {
+  type: typeof FrameType.AdminSetLLMLane
+  lane: "scribe" | "director"
+  enabled?: boolean
+  provider?: string
+  chat_model?: string
+  base_url?: string
+  api_key?: string
+  clear_api_key?: boolean
+  reasoning_effort?: string
+  clear?: boolean
+}
+
 
 export interface AdminSetImagegenFrame {
   type: typeof FrameType.AdminSetImagegen
@@ -963,14 +986,13 @@ export interface AdminDeleteRoomDataFrame {
 // Room settings (language, house rules) and connections survive every scope.
 export type AdminResetScope = "story" | "chars" | "all"
 
-// In-place campaign restart: wipe part of this room's campaign state while keeping
-// keystore keys and live connections — no backup, no key removal. Contrast
-// AdminDeleteRoomData, which backs up and evicts.
+// In-place campaign restart: wipe part of a campaign while keeping keys and connections.
 export interface AdminResetRoomFrame {
   type: typeof FrameType.AdminResetRoom
   room: string
   scope?: AdminResetScope
 }
+
 
 // Keeper asks the server to run its configured self-update command and re-exec into the
 // new code. No parameters: the command is server-side operator config, never client input.
@@ -997,6 +1019,8 @@ export interface AdminConfigFrame {
   // Providers that already have a saved API key or OAuth grant — the model screen marks these 'ready'.
   saved_providers: string[]
   override_active: boolean
+  scribe?: LLMLaneStatus
+  director?: LLMLaneStatus
   imagegen?: ImageGenStatus
   /** True only while turns route to the server's offline sample Keeper. */
   using_demo?: boolean
@@ -1151,6 +1175,7 @@ export type ClientFrame =
   | AvatarSetFrame
   | AdminGetConfigFrame
   | AdminSetModelFrame
+  | AdminSetLLMLaneFrame
   | AdminSetImagegenFrame
   | AdminListModelsFrame
   | AdminListKeysFrame
