@@ -598,7 +598,8 @@ Client → server:
   engine (Layer B.3); a `kind:"module"` generation installs into the CALLER's own
   room. This is a slow LLM call answered as a normal request/reply — the client
   shows a spinner while it awaits `admin_generated`:
-  `{type:"admin_generate", kind:"skill"|"rule"|"module", description:string}`
+  `{type:"admin_generate", kind:"skill"|"rule"|"module", description:string, locale?:"en"|"zh"}`
+  `locale` selects the author's language and defaults to the connection/server locale.
 
 Server → client:
 

@@ -100,7 +100,7 @@ export function KeeperSkills({ client, theme, themeName, welcome, stateFrame, on
     if (!value) return
     setGenerateResult(undefined)
     setGenerating(true)
-    client.adminGenerate("skill", value)
+    client.adminGenerate("skill", value, locale as "en" | "zh")
   }
 
   // Scoped to this screen; Tab cycles list/description, Esc goes back. When the

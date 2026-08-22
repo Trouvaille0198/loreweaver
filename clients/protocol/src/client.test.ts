@@ -400,7 +400,7 @@ describe("WsClient", () => {
     client.adminListRules()
     client.adminGenerate("skill", "a grim survival horror campaign")
     client.adminGenerate("rule", "a pulp adventure system")
-    client.adminGenerate("module", "a marsh mystery")
+    client.adminGenerate("module", "a marsh mystery", "zh")
 
     expect(sockets[0].sent.map((raw) => JSON.parse(raw))).toEqual([
       { type: FrameType.AdminListSkills },
@@ -409,7 +409,7 @@ describe("WsClient", () => {
       { type: FrameType.AdminListRules },
       { type: FrameType.AdminGenerate, kind: "skill", description: "a grim survival horror campaign" },
       { type: FrameType.AdminGenerate, kind: "rule", description: "a pulp adventure system" },
-      { type: FrameType.AdminGenerate, kind: "module", description: "a marsh mystery" },
+      { type: FrameType.AdminGenerate, kind: "module", description: "a marsh mystery", locale: "zh" },
     ])
   })
 

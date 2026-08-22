@@ -452,8 +452,8 @@ export class WsClient {
   // Author + install a brand-new skill/rule system/module from a description via the matching
   // `agent.forge` generator. Slow (an LLM call) but still a plain request/reply — the caller
   // shows a spinner while awaiting the `admin_generated` reply.
-  adminGenerate(kind: AdminForgeKind, description: string): void {
-    const frame: AdminGenerateFrame = { type: FrameType.AdminGenerate, kind, description }
+  adminGenerate(kind: AdminForgeKind, description: string, locale?: "en" | "zh"): void {
+    const frame: AdminGenerateFrame = { type: FrameType.AdminGenerate, kind, description, ...(locale ? { locale } : {}) }
     this.send(frame)
   }
 

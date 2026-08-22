@@ -1150,6 +1150,8 @@ export interface AdminGenerateFrame {
   type: typeof FrameType.AdminGenerate
   kind: AdminForgeKind
   description: string
+  /** UI locale for localized authoring prompts; falls back to the server locale when omitted. */
+  locale?: "en" | "zh"
 }
 
 export interface AdminGeneratedFrame {
