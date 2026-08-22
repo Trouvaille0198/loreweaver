@@ -64,7 +64,7 @@ export interface AppClient {
   adminListSkills(locale?: string): void
   adminEnableSkill(id: string, on: boolean, locale?: string): void
   adminListRules(): void
-  adminGenerate(kind: AdminForgeKind, description: string): void
+  adminGenerate(kind: AdminForgeKind, description: string, locale?: "en" | "zh"): void
 }
 
 // Picks the transport on connect by the shape of the target: a `ws(s)://` URL -> `WsClient`
@@ -185,8 +185,8 @@ class TransportClient implements AppClient {
   adminListRules(): void {
     this.inner?.adminListRules()
   }
-  adminGenerate(kind: AdminForgeKind, description: string): void {
-    this.inner?.adminGenerate(kind, description)
+  adminGenerate(kind: AdminForgeKind, description: string, locale?: "en" | "zh"): void {
+    this.inner?.adminGenerate(kind, description, locale)
   }
 }
 

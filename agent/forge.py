@@ -603,15 +603,24 @@ async def _owned_module_id(
     return _unique_user_module_id(user_dir, requested_id)
 
 
-def _build_module_messages(services: Services, description: str) -> list[dict]:
-    """The two-message prompt sent to `services.llm.chat` for module authoring: the localized
-    framing text (`agent.forge.module_system_prompt`) as the system message, and the keeper's raw
-    scenario `description` as the user message -- mirrors `_build_messages`/`_build_rulepack_messages`.
+def _build_module_messages(
+    services: Services,
+    description: str,
+    *,
+    locale: str | None = None,
+) -> list[dict]:
+    """Build the module-authoring messages in the caller's locale.
+
+    The page/admin path can use a client locale different from the server default. The
+    conversational tool already carries its locale in ``AgentCtx``; both paths must therefore
+    bind the authoring framing text explicitly instead of reading only ``services.i18n``.
     """
+    i18n = services.i18n.with_locale(locale) if locale else services.i18n
     system_prompt = "\n\n".join(
         (
-            services.i18n.t("agent.forge.module_system_prompt"),
-            services.i18n.t("agent.forge.module_id_requirement"),
+            i18n.t("agent.forge.module_system_prompt"),
+            i18n.t("agent.forge.module_language_requirement"),
+            i18n.t("agent.forge.module_id_requirement"),
         )
     )
     return [
@@ -656,7 +665,7 @@ async def generate_and_install_module(services: Services, ctx: AgentCtx, descrip
 
     content, failure = await _llm_authored(
         services,
-        _build_module_messages(services, description),
+        _build_module_messages(services, description, locale=ctx.locale),
         chat_key=ctx.chat_key,
     )
     if failure is not None:

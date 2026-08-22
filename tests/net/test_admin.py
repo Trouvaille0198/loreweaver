@@ -2305,8 +2305,9 @@ async def test_admin_generate_authors_and_installs_skill_rule_and_module(tmp_pat
             assert rule_reply["id"] == "pulp-adventure"
 
             module_reply = await _send(
-                ws, {"type": "admin_generate", "kind": "module", "description": "a marsh mystery"}
+                ws, {"type": "admin_generate", "kind": "module", "description": "a marsh mystery", "locale": "zh"}
             )
+            assert "你正在根据主持人" in services.llm.calls[2][0][0]["content"]
             assert module_reply["type"] == "admin_generated"
             assert module_reply["ok"] is True
             assert module_reply["name"] == "The Salt Marsh Vanishing"
