@@ -96,7 +96,7 @@ export function KeeperRules({ client, theme, themeName, welcome, stateFrame, onB
     if (!value) return
     setGenerateResult(undefined)
     setGenerating(true)
-    client.adminGenerate("rule", value)
+    client.adminGenerate("rule", value, locale as "en" | "zh")
   }
 
   // Scoped to this screen; Tab cycles list/description, Esc goes back. The list has

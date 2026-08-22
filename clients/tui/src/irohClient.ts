@@ -474,8 +474,8 @@ export class IrohClient implements AppClient {
     this.sendFrame({ type: FrameType.AdminListRules })
   }
 
-  adminGenerate(kind: AdminForgeKind, description: string): void {
-    const frame: AdminGenerateFrame = { type: FrameType.AdminGenerate, kind, description }
+  adminGenerate(kind: AdminForgeKind, description: string, locale?: "en" | "zh"): void {
+    const frame: AdminGenerateFrame = { type: FrameType.AdminGenerate, kind, description, ...(locale ? { locale } : {}) }
     this.sendFrame(frame)
   }
 

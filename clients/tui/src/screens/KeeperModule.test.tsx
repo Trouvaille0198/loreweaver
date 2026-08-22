@@ -10,7 +10,8 @@ import { SPINNER_FRAMES } from "../components/Spinner"
 // present only to satisfy AppClient (this screen never calls them); `adminGenerate` is
 // spied since KeeperModule now drives the describe->generate flow (Layer B.4b).
 class MockClient implements AppClient {
-  connectCalls: string[] = []
+  generateCalls: Array<[string, string]> = []
+  generateLocales: Array<string | undefined> = []
   joinCalls: Array<[string, string | undefined]> = []
   sent: string[] = []
   closed = 0
@@ -49,8 +50,9 @@ class MockClient implements AppClient {
   adminListSkills(): void {}
   adminEnableSkill(_id: string, _on: boolean): void {}
   adminListRules(): void {}
-  adminGenerate(kind: string, description: string): void {
+  adminGenerate(kind: string, description: string, locale?: string): void {
     this.generateCalls.push([kind, description])
+    this.generateLocales.push(locale)
   }
 
   push(frame: ServerFrame): void {
@@ -307,6 +309,7 @@ describe("KeeperModule", () => {
     await harness.flush()
 
     expect(client.generateCalls).toContainEqual(["module", "一座渔民接连失踪的雾港小镇"])
+    expect(client.generateLocales).toContain("zh")
 
     // While awaiting the reply, an ANIMATED spinner shows (never a static caption).
     const pendingFrame = await harness.waitForFrame((t) => t.includes("正在撰写模组"))

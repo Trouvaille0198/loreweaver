@@ -631,18 +631,36 @@ async def _set_llm_profile(services: Services, frame: dict[str, Any], i18n: I18n
         return _error("bad_request", i18n)
     profile_id = _model_profile_id(provider, chat_model)
     saved = await services.llm_profiles.get(profile_id)
+    if not saved:
+        # CredentialBook normalizes keys on lookup; preserve compatibility with
+        # profiles whose model name contains uppercase characters.
+        all_profiles = await services.llm_profiles.all()
+        saved = next(
+            (dict(value) for key, value in all_profiles.items() if str(key).casefold() == profile_id.casefold()),
+            {},
+        )
     legacy_saved = await services.llm_credentials.get(provider)
+    sibling_saved = next(
+        (
+            dict(value)
+            for key, value in (await services.llm_profiles.all()).items()
+            if str(key).partition("::")[0].casefold() == provider
+            and (value.get("api_key") or value.get("access_token"))
+        ),
+        {},
+    )
+    inherited = saved or legacy_saved or sibling_saved
     api_key = (
         str(frame["api_key"]).strip()
-        if "api_key" in frame
-        else saved.get("api_key") or legacy_saved.get("api_key", "")
+        if "api_key" in frame and str(frame["api_key"]).strip()
+        else inherited.get("api_key", "")
     )
     base_url = (
         str(frame["base_url"]).strip()
-        if "base_url" in frame
-        else saved.get("base_url") or legacy_saved.get("base_url", "")
+        if "base_url" in frame and str(frame["base_url"]).strip()
+        else saved.get("base_url") or legacy_saved.get("base_url") or sibling_saved.get("base_url", "")
     )
-    if not api_key and not saved.get("access_token") and not legacy_saved.get("access_token"):
+    if not api_key and not inherited.get("access_token"):
         return _error("set_failed", i18n)
     try:
         await services.llm_profiles.replace_static(
@@ -1348,6 +1366,8 @@ async def _generate(
     if not description:
         return _error("bad_request", i18n)
 
+    requested_locale = str(frame.get("locale") or "").strip()
+    generation_i18n = i18n.with_locale(requested_locale) if requested_locale in {"en", "zh"} else i18n
     room_chat_key = chat_key_for_room(caller_room)
     if kind == "skill":
         result = await generate_and_install_skill(services, description, chat_key=room_chat_key)
@@ -1361,7 +1381,7 @@ async def _generate(
             chat_key=room_chat_key,
             user_id="keeper",
             platform="tui",
-            locale=i18n.locale,
+            locale=generation_i18n.locale,
             fs=fs,
             extra={"role": _KEEPER_ROLE},
         )

@@ -31,7 +31,7 @@ import type { Palette, ThemeName } from "../themes"
 export interface KeeperModuleClient {
   onMessage(cb: (frame: ServerFrame) => void): () => void
   sendInput(text: string): void
-  adminGenerate(kind: AdminForgeKind, description: string): void
+  adminGenerate(kind: AdminForgeKind, description: string, locale?: "en" | "zh"): void
 }
 
 export interface KeeperModuleProps {
@@ -127,7 +127,7 @@ export function KeeperModule({ client, theme, themeName, welcome, stateFrame, on
     if (!value) return
     setGenerateResult(undefined)
     setGenerating(true)
-    client.adminGenerate("module", value)
+    client.adminGenerate("module", value, locale as "en" | "zh")
   }
 
   // Scoped to this screen; Tab cycles path/description, Esc goes back. Each
