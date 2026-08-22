@@ -673,9 +673,10 @@ async def _delete_llm_profile(services: Services, frame: dict[str, Any], i18n: I
         profiles = await services.llm_profiles.all()
         if profile_id in profiles:
             await services.llm_profiles.forget(profile_id)
-        elif "::" not in profile_id:
-            await services.llm_credentials.forget(profile_id)
-            if canonical != profile_id:
+        else:
+            legacy_provider = profile_provider or profile_id
+            await services.llm_credentials.forget(legacy_provider)
+            if canonical != legacy_provider:
                 await services.llm_credentials.forget(canonical)
         live = _live_llm_settings(services)
         if _provider_identity(live.provider) == canonical and (
