@@ -166,6 +166,31 @@ def test_mutable_llm_reports_when_offline_fallback_is_live():
     assert llm.inner is fallback
     assert llm.using_fallback is True
 
+def test_mutable_llm_uses_saved_web_credentials_for_selected_provider():
+    captured: list[Settings] = []
+
+    class Credentials:
+        def get_sync(self, provider: str) -> dict[str, str]:
+            assert provider == "deepseek"
+            return {"api_key": "saved-deepseek-key", "base_url": "https://saved.example/v1"}
+
+    fallback = object()
+
+    def builder(settings: Settings) -> object:
+        captured.append(settings)
+        return object()
+
+    llm = MutableLLM(
+        Settings(llm=LLMSettings(provider="deepseek", api_key="")),
+        builder=builder,
+        credentials=Credentials(),
+        fallback_llm=fallback,
+    )
+
+    assert llm.inner is not fallback
+    assert captured[0].llm.api_key == "saved-deepseek-key"
+    assert captured[0].llm.base_url == "https://saved.example/v1"
+
 
 def _builder_failing_for(bad_provider: str, built=None):
     """A builder that fails for one provider (its optional SDK/env 'missing')

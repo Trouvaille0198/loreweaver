@@ -17,6 +17,7 @@ here persists and hot-reconfigures the live `MutableLLM` exactly like
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import time
 from typing import Any
@@ -28,7 +29,7 @@ from agent.forge import (
     generate_and_install_rulepack,
     generate_and_install_skill,
 )
-from agent.services import Services
+from agent.services import ROOM_LLM_SELECTION_KEY, Services
 from core.rulepacks import available_systems, built_in_rulepack_ids
 from core.skills import available_skills
 from gateway.ops import get_enabled_skills, toggle_enabled_skill
@@ -78,6 +79,11 @@ _ADMIN_REQUESTS: frozenset[str] = frozenset(
     {
         "admin_get_config",
         "admin_set_model",
+        "admin_set_llm",
+        "admin_delete_llm",
+        "admin_get_room_config",
+        "admin_set_room_model",
+        "admin_set_llm_lane",
         "admin_set_imagegen",
         "admin_list_models",
         "admin_list_keys",
@@ -257,6 +263,13 @@ async def _dispatch_admin_frame(
         return _error("forbidden", i18n)
 
     kind = frame.get("type")
+    if kind == "admin_get_room_config":
+        return await _room_config_frame(services, caller_room)
+    if kind == "admin_set_room_model":
+        async with services.config_lock:
+            if reauthorize is not None and not reauthorize():
+                return _error("forbidden", i18n)
+            return await _set_room_model(services, caller_room, frame, i18n)
     if kind == "admin_get_config":
         return await _config_frame(services)
     if kind == "admin_set_model":
@@ -264,6 +277,21 @@ async def _dispatch_admin_frame(
             if reauthorize is not None and not reauthorize():
                 return _error("forbidden", i18n)
             return await _set_model(services, frame, i18n)
+    if kind == "admin_set_llm":
+        async with services.config_lock:
+            if reauthorize is not None and not reauthorize():
+                return _error("forbidden", i18n)
+            return await _set_llm_profile(services, frame, i18n)
+    if kind == "admin_delete_llm":
+        async with services.config_lock:
+            if reauthorize is not None and not reauthorize():
+                return _error("forbidden", i18n)
+            return await _delete_llm_profile(services, frame, i18n)
+    if kind == "admin_set_llm_lane":
+        async with services.config_lock:
+            if reauthorize is not None and not reauthorize():
+                return _error("forbidden", i18n)
+            return await _set_llm_lane(services, frame, i18n)
     if kind == "admin_set_imagegen":
         async with services.config_lock:
             if reauthorize is not None and not reauthorize():
@@ -342,7 +370,10 @@ async def _config_frame(services: Services) -> dict[str, Any]:
         # Providers that already have a saved key — the model screen marks these 'ready' and
         # switching to one never re-asks for its key (see `_set_model`).
         "saved_providers": saved_providers,
+        "llms": await _llm_profiles(services),
         "override_active": bool(overrides),
+        "scribe": await _lane_status(services, "scribe"),
+        "director": await _lane_status(services, "director"),
         "imagegen": await _imagegen_status(services),
         # Lets connected clients remove a stale guided-demo affordance immediately.
         # A true value is global fallback state, not room authorization; adding the
@@ -351,6 +382,172 @@ async def _config_frame(services: Services) -> dict[str, Any]:
         # Optional hint (clients that ignore unknown fields stay compatible).
         "subscription_status": subscription_status,
     }
+
+def _model_profile_id(provider: str, chat_model: str) -> str:
+    return f"{provider.casefold()}::{chat_model.strip()}"
+
+
+def _model_profile_parts(profile_id: str) -> tuple[str, str]:
+    provider, separator, chat_model = profile_id.partition("::")
+    return provider.casefold(), chat_model if separator else ""
+
+
+async def _llm_profiles(services: Services) -> list[dict[str, Any]]:
+    """Return model-specific global profiles, including legacy provider entries."""
+    profiles: dict[str, dict[str, Any]] = {}
+    for profile_id, saved in (await services.llm_profiles.all()).items():
+        provider, encoded_model = _model_profile_parts(str(profile_id))
+        chat_model = saved.get("chat_model", "") or encoded_model
+        if not provider:
+            continue
+        secret = saved.get("api_key") or saved.get("access_token") or ""
+        profiles[str(profile_id)] = {
+            "id": str(profile_id),
+            "provider": provider,
+            "chat_model": chat_model,
+            "base_url": saved.get("base_url", ""),
+            "api_key_masked": mask_secret(secret),
+            "has_key": bool(secret),
+        }
+    for provider, saved in (await services.llm_credentials.all()).items():
+        chat_model = saved.get("chat_model", "")
+        profile_id = _model_profile_id(provider, chat_model) if chat_model else provider
+        if profile_id in profiles:
+            continue
+        secret = saved.get("api_key") or saved.get("access_token") or ""
+        profiles[profile_id] = {
+            "id": profile_id,
+            "provider": provider,
+            "chat_model": chat_model,
+            "base_url": saved.get("base_url", ""),
+            "api_key_masked": mask_secret(secret),
+            "has_key": bool(secret),
+        }
+    return sorted(profiles.values(), key=lambda item: str(item["id"]))
+
+def _default_room_llm_selection() -> dict[str, Any]:
+    return {
+        "main": "",
+        "scribe": "",
+        "director": "",
+        "imagegen": "",
+        "scribe_enabled": True,
+        "director_enabled": True,
+    }
+
+
+async def _room_llm_selection(services: Services, room: str) -> dict[str, Any]:
+    raw = await services.store.state_get(room, ROOM_LLM_SELECTION_KEY)
+    selection = _default_room_llm_selection()
+    if raw:
+        try:
+            decoded = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            decoded = {}
+        if isinstance(decoded, dict):
+            for key in selection:
+                if key in decoded:
+                    if key.endswith("_enabled"):
+                        selection[key] = bool(decoded[key])
+                    else:
+                        selection[key] = str(decoded[key] or "").casefold()
+    return selection
+
+
+async def _room_config_frame(services: Services, room: str) -> dict[str, Any]:
+    profiles = await _llm_profiles(services)
+    selection = await _room_llm_selection(services, room)
+    profile_ids = [str(profile["id"]) for profile in profiles]
+    return {
+        "type": "admin_room_config",
+        "room": room,
+        "active": any(selection[key] for key in ("main", "scribe", "director", "imagegen")),
+        "providers": profile_ids,
+        "saved_providers": profile_ids,
+        "stored": selection,
+    }
+
+
+async def _set_room_model(
+    services: Services,
+    room: str,
+    frame: dict[str, Any],
+    i18n: I18n,
+) -> dict[str, Any]:
+    profiles = {str(profile["id"]) for profile in await _llm_profiles(services)}
+    if frame.get("clear") is True:
+        await services.store.state_delete(room, ROOM_LLM_SELECTION_KEY)
+        return await _room_config_frame(services, room)
+    selection = await _room_llm_selection(services, room)
+    for key in ("main", "scribe", "director", "imagegen"):
+        if key in frame:
+            value = str(frame.get(key) or "").strip().casefold()
+            if value and value not in profiles:
+                return _error("not_found", i18n)
+            selection[key] = value
+    for key in ("scribe_enabled", "director_enabled"):
+        if key in frame:
+            selection[key] = bool(frame[key])
+    await services.store.state_set(room, ROOM_LLM_SELECTION_KEY, json.dumps(selection))
+    return await _room_config_frame(services, room)
+
+
+async def _lane_status(services: Services, lane: str) -> dict[str, Any]:
+    settings = getattr(services.settings, lane)
+    runtime = getattr(services, f"{lane}_runtime_config")
+    overrides = await runtime.get()
+    return {
+        "enabled": bool(settings.enabled),
+        "provider": settings.provider,
+        "chat_model": settings.chat_model,
+        "base_url": settings.base_url,
+        "api_key_masked": mask_secret(settings.api_key),
+        "override_active": bool(overrides),
+    }
+
+def _clear_lane_client_cache(services: Services, lane: str) -> None:
+    attr = f"_{lane}_llm_cache"
+    if hasattr(services, attr):
+        delattr(services, attr)
+
+
+async def _set_llm_lane(services: Services, frame: dict[str, Any], i18n: I18n) -> dict[str, Any]:
+    lane = str(frame.get("lane") or "").strip().casefold()
+    if lane not in {"scribe", "director"}:
+        return _error("bad_request", i18n)
+    runtime = getattr(services, f"{lane}_runtime_config")
+    if frame.get("clear") is True:
+        await runtime.clear()
+        setattr(services.settings, lane, getattr(services, f"base_{lane}_settings").model_copy(deep=True))
+        _clear_lane_client_cache(services, lane)
+        return await _config_frame(services)
+
+    allowed = {"enabled", "provider", "chat_model", "base_url", "reasoning_effort"}
+    current = await runtime.get()
+    for key in allowed:
+        if key in frame:
+            value = frame[key]
+            current[key] = bool(value) if key == "enabled" else str(value or "").strip()
+    if "api_key" in frame:
+        current["api_key"] = str(frame.get("api_key") or "").strip()
+    if frame.get("clear_api_key") is True:
+        current["api_key"] = ""
+    provider = str(current.get("provider") or "").strip().casefold()
+    if provider and not is_known_provider(provider):
+        return _error("unknown_provider", i18n)
+    baseline = getattr(services, f"base_{lane}_settings")
+    previous = getattr(services.settings, lane).model_copy(deep=True)
+    candidate = baseline.model_copy(update=current)
+    try:
+        setattr(services.settings, lane, candidate)
+        _clear_lane_client_cache(services, lane)
+        await runtime.replace(**current)
+    except Exception:
+        logger.exception("admin_set_llm_lane failed (lane=%s)", lane)
+        setattr(services.settings, lane, previous)
+        _clear_lane_client_cache(services, lane)
+        return _error("set_failed", i18n)
+    return await _config_frame(services)
 
 
 async def _set_model(services: Services, frame: dict[str, Any], i18n: I18n) -> dict[str, Any]:
@@ -362,13 +559,11 @@ async def _set_model(services: Services, frame: dict[str, Any], i18n: I18n) -> d
     live = _live_llm_settings(services)
     same_provider = _provider_identity(provider) == _provider_identity(live.provider)
     saved = await _saved_llm_credentials(services, provider)
-
     api_key_supplied = "api_key" in frame
     base_url_supplied = "base_url" in frame
     supplied_api_key = str(frame.get("api_key") or "").strip()
     supplied_base_url = str(frame.get("base_url") or "").strip()
     if provider == "supergrok":
-        # Official SuperGrok OAuth is never sent to a caller-supplied endpoint.
         api_key = ""
         base_url = ""
     else:
@@ -382,8 +577,6 @@ async def _set_model(services: Services, frame: dict[str, Any], i18n: I18n) -> d
             _effective_llm_endpoint(provider, base_url),
             _effective_llm_endpoint(provider, fallback_base_url),
         )
-        # Never couple a credential to a caller-selected endpoint it was not entered for.
-        # An explicitly empty api_key clears it; omission also clears it when the URL changed.
         api_key = (
             supplied_api_key
             if api_key_supplied
@@ -393,10 +586,8 @@ async def _set_model(services: Services, frame: dict[str, Any], i18n: I18n) -> d
     oauth_path = provider == "supergrok" or (
         provider in CHATGPT_SUBSCRIPTION_PROXY_PROVIDER_NAMES and not base_url
     )
-    if oauth_path:
-        sub = await services.llm_credentials.load_subscription(provider)
-        if sub is None:
-            return _error("set_failed", i18n)
+    if oauth_path and await services.llm_credentials.load_subscription(provider) is None:
+        return _error("set_failed", i18n)
 
     supplied_model = str(frame.get("chat_model") or "").strip()
     if supplied_model:
@@ -404,8 +595,7 @@ async def _set_model(services: Services, frame: dict[str, Any], i18n: I18n) -> d
     elif same_provider:
         chat_model = live.chat_model
     else:
-        chat_model = SUBSCRIPTION_DEFAULT_MODELS.get(provider, live.chat_model)
-
+        chat_model = saved.get("chat_model") or SUBSCRIPTION_DEFAULT_MODELS.get(provider, live.chat_model)
     overrides = {
         key: value
         for key, value in current.items()
@@ -419,20 +609,82 @@ async def _set_model(services: Services, frame: dict[str, Any], i18n: I18n) -> d
             "base_url": base_url,
         }
     )
-
     try:
         _reconfigure_llm(services, overrides)
         await services.runtime_config.replace(**overrides)
-        # Remember this provider's credential so the next switch to it is frictionless.
         if not oauth_path and (api_key_supplied or base_url_supplied or api_key or base_url):
             await _replace_llm_static_credentials(
                 services, provider, api_key=api_key, base_url=base_url
             )
     except Exception:
-        # The live LLM may already be reconfigured while persistence/credentials failed;
-        # surface the cause with a traceback so a real defect is not hidden behind the
-        # client-facing "set failed". Never log the key/base_url themselves.
         logger.exception("admin_set_model failed (provider=%s)", provider)
+        return _error("set_failed", i18n)
+    return await _config_frame(services)
+
+async def _set_llm_profile(services: Services, frame: dict[str, Any], i18n: I18n) -> dict[str, Any]:
+    """Save one global provider/model profile without changing the live model."""
+    provider = str(frame.get("provider") or "").strip().casefold()
+    chat_model = str(frame.get("chat_model") or "").strip()
+    if not provider or not is_known_provider(provider):
+        return _error("unknown_provider", i18n)
+    if not chat_model:
+        return _error("bad_request", i18n)
+    profile_id = _model_profile_id(provider, chat_model)
+    saved = await services.llm_profiles.get(profile_id)
+    legacy_saved = await services.llm_credentials.get(provider)
+    api_key = (
+        str(frame["api_key"]).strip()
+        if "api_key" in frame
+        else saved.get("api_key") or legacy_saved.get("api_key", "")
+    )
+    base_url = (
+        str(frame["base_url"]).strip()
+        if "base_url" in frame
+        else saved.get("base_url") or legacy_saved.get("base_url", "")
+    )
+    if not api_key and not saved.get("access_token") and not legacy_saved.get("access_token"):
+        return _error("set_failed", i18n)
+    try:
+        await services.llm_profiles.replace_static(
+            profile_id,
+            api_key=api_key,
+            base_url=base_url,
+            chat_model=chat_model,
+        )
+    except Exception:
+        logger.exception("admin_set_llm failed (profile=%s)", profile_id)
+        return _error("set_failed", i18n)
+    return await _config_frame(services)
+
+
+async def _delete_llm_profile(services: Services, frame: dict[str, Any], i18n: I18n) -> dict[str, Any]:
+    """Delete one provider/model profile without deleting sibling models."""
+    raw_id = str(frame.get("id") or "").strip()
+    provider = str(frame.get("provider") or "").strip().casefold()
+    chat_model = str(frame.get("chat_model") or "").strip()
+    profile_id = raw_id or (_model_profile_id(provider, chat_model) if chat_model else provider)
+    if not profile_id:
+        return _error("bad_request", i18n)
+    profile_provider, profile_model = _model_profile_parts(profile_id)
+    if not profile_provider:
+        profile_provider = provider
+    canonical = canonical_subscription_provider(profile_provider)
+    try:
+        profiles = await services.llm_profiles.all()
+        if profile_id in profiles:
+            await services.llm_profiles.forget(profile_id)
+        elif "::" not in profile_id:
+            await services.llm_credentials.forget(profile_id)
+            if canonical != profile_id:
+                await services.llm_credentials.forget(canonical)
+        live = _live_llm_settings(services)
+        if _provider_identity(live.provider) == canonical and (
+            not profile_model or live.chat_model == profile_model
+        ):
+            _reconfigure_llm(services, {})
+            await services.runtime_config.clear()
+    except Exception:
+        logger.exception("admin_delete_llm failed (profile=%s)", profile_id)
         return _error("set_failed", i18n)
     return await _config_frame(services)
 
@@ -606,16 +858,27 @@ def _static_credential_pair(
 
 
 async def _replace_llm_static_credentials(
-    services: Services, provider: str, *, api_key: str, base_url: str
+    services: Services,
+    provider: str,
+    *,
+    api_key: str,
+    base_url: str,
+    chat_model: str = "",
 ) -> None:
-    """Replace exact + canonical alias credentials so no fallback revives an old key."""
+    """Replace exact + canonical alias profile fields."""
     canonical = canonical_subscription_provider(provider)
     await services.llm_credentials.replace_static(
-        canonical, api_key=api_key, base_url=base_url
+        canonical,
+        api_key=api_key,
+        base_url=base_url,
+        chat_model=chat_model,
     )
     if canonical != provider:
         await services.llm_credentials.replace_static(
-            provider, api_key=api_key, base_url=base_url
+            provider,
+            api_key=api_key,
+            base_url=base_url,
+            chat_model=chat_model,
         )
 
 
