@@ -121,6 +121,41 @@ class VectorStore:
             if conn is not None:
                 self._commit(conn)
 
+    async def replace_all(self, dim: int, points: list[tuple[str, list[float], dict]]) -> None:
+        """Atomically replace the complete index and its vector dimension."""
+        if dim <= 0:
+            raise ValueError("vector dimension must be positive")
+        vectors: dict[str, np.ndarray] = {}
+        payloads: dict[str, dict] = {}
+        for point_id, vector, payload in points:
+            arr = np.asarray(vector, dtype=np.float64)
+            if arr.ndim != 1 or arr.shape[0] != dim:
+                actual = arr.shape[0] if arr.ndim == 1 else arr.size
+                raise ValueError(t("infra.vector.dimension_mismatch", expected=dim, actual=actual))
+            vectors[point_id] = arr
+            payloads[point_id] = dict(payload)
+
+        async with self._lock:
+            conn = self._ensure_conn() if self._path is not None else None
+            if conn is not None:
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    conn.execute("DELETE FROM vectors")
+                    conn.executemany(
+                        "INSERT INTO vectors (id, vector, payload) VALUES (?, ?, ?)",
+                        [
+                            (point_id, json.dumps(vector.tolist()), json.dumps(payloads[point_id]))
+                            for point_id, vector in vectors.items()
+                        ],
+                    )
+                    self._commit(conn)
+                except BaseException:
+                    conn.rollback()
+                    raise
+            self._dim = dim
+            self._vectors = vectors
+            self._payloads = payloads
+
     async def search(self, vector: list[float], *, limit: int = 5, filter: dict | None = None) -> list[VectorHit]:
         async with self._lock:
             query = self._as_vector(vector)

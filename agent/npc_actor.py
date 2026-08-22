@@ -160,8 +160,9 @@ async def voice_npc(
     # Providers apply it only when the deployment runs with reasoning at all.
     if effort not in ("low", "medium", "high"):
         effort = "medium"
+    llm = await services.main_llm(chat_key)
     with lane_scope("npc", chat_key=chat_key, npc=npc.id):
-        result = await services.llm.chat(
+        result = await llm.chat(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},

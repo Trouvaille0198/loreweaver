@@ -9,10 +9,18 @@ import asyncio
 
 import pytest
 
+from agent.services import build_services
 from infra.config import ImageGenSettings, LLMSettings, Settings
 from infra.imagegen import apply_imagegen_overrides
+from infra.llm import FakeLLM
 from infra.providers import MutableLLM
-from infra.runtime_config import ImageGenRuntimeConfig, RuntimeConfig, apply_overrides
+from infra.runtime_config import (
+    LLM_PROFILES_KEY,
+    CredentialBook,
+    ImageGenRuntimeConfig,
+    RuntimeConfig,
+    apply_overrides,
+)
 from infra.store import Store
 
 
@@ -150,6 +158,41 @@ def test_runtime_config_load_sync_is_empty_for_memory_and_missing_file(tmp_path)
     assert RuntimeConfig(Store(":memory:")).load_sync() == {}
     assert RuntimeConfig(Store(str(tmp_path / "absent.db"))).load_sync() == {}
 
+
+def test_build_services_resolves_selected_embedding_profile_on_restart(tmp_path):
+    db = tmp_path / "embedding-profile.db"
+    store = Store(str(db))
+    profile_id = "openai::embedding::text-embedding-3-large"
+    asyncio.run(
+        CredentialBook(store, key=LLM_PROFILES_KEY).replace_static(
+            profile_id,
+            api_key="sk-embedding",
+            base_url="https://embedding.example/v1",
+            chat_model="text-embedding-3-large",
+            kind="embedding",
+            embedding_dim="3072",
+        )
+    )
+    asyncio.run(
+        RuntimeConfig(store).replace(
+            embedding_profile=profile_id,
+            embedding_model="text-embedding-3-large",
+            embedding_dim="3072",
+        )
+    )
+    store.close()
+
+    services = build_services(
+        Settings(data_dir=str(tmp_path)),
+        llm=FakeLLM(script=[]),
+        db_path=str(db),
+    )
+    embedding_settings = services.embeddings._settings
+    assert embedding_settings.api_key == "sk-embedding"
+    assert embedding_settings.base_url == "https://embedding.example/v1"
+    assert embedding_settings.embedding_model == "text-embedding-3-large"
+    assert embedding_settings.embedding_dim == 3072
+    services.store.close()
 
 # ---------------------------------------------------------------------------
 # MutableLLM — runtime swap seen by all consumers (shared Settings mutated)

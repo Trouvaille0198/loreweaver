@@ -28,9 +28,9 @@ from infra.store import Store
 if TYPE_CHECKING:
     from infra.oauth_flows import TokenManager
 
-# The ``llm`` fields a runtime override may set. ``embedding_*``/``temperature``
-# are deliberately left to env config: switching the chat model should not
-# silently change the embedding space a campaign's vectors were built in.
+# Runtime chat and retrieval settings. Embedding changes are persisted here but
+# take effect only when the service is rebuilt; the vector index must use one
+# model/dimension pair consistently.
 OVERRIDE_FIELDS: tuple[str, ...] = (
     "provider",
     "chat_model",
@@ -38,6 +38,9 @@ OVERRIDE_FIELDS: tuple[str, ...] = (
     "base_url",
     "analysis_model",
     "npc_model",
+    "embedding_profile",
+    "embedding_model",
+    "embedding_dim",
 )
 
 DEFAULT_KEY = "runtime_config.llm"
@@ -148,12 +151,30 @@ def apply_lane_overrides(base: Settings, lane: str, overrides: dict[str, Any]) -
 # under its own `Store` key, same plaintext-local-DB caveat as the overrides above.
 CREDENTIALS_KEY = "runtime_config.credentials"
 LLM_PROFILES_KEY = "runtime_config.llm_profiles"
+MODEL_KINDS = frozenset({"chat", "embedding", "image"})
+
+
+def model_profile_id(provider: str, model: str, kind: str = "chat") -> str:
+    provider = provider.casefold()
+    model = model.strip()
+    return f"{provider}::{model}" if kind == "chat" else f"{provider}::{kind}::{model}"
+
+
+def model_profile_parts(profile_id: str) -> tuple[str, str, str]:
+    parts = profile_id.split("::", 2)
+    provider = parts[0].casefold()
+    if len(parts) == 3 and parts[1] in MODEL_KINDS:
+        return provider, parts[1], parts[2]
+    return provider, "chat", parts[1] if len(parts) > 1 else ""
+
 # Each global LLM profile carries its endpoint credential plus the model selected
 # for that profile. Subscription OAuth fields remain optional.
 _CREDENTIAL_FIELDS: tuple[str, ...] = (
     "api_key",
     "base_url",
     "chat_model",
+    "kind",
+    "embedding_dim",
     "access_token",
     "refresh_token",
     "expires_at",
@@ -492,6 +513,8 @@ class CredentialBook:
         api_key: str = "",
         base_url: str = "",
         chat_model: str = "",
+        kind: str = "",
+        embedding_dim: str = "",
     ) -> None:
         """Replace a global profile's static fields, preserving OAuth fields."""
         provider = (provider or "").casefold()
@@ -503,7 +526,7 @@ class CredentialBook:
             assert self._cache is not None
             updated = dict(self._cache)
             entry = dict(updated.get(provider, {}))
-            for key in ("api_key", "base_url", "chat_model"):
+            for key in ("api_key", "base_url", "chat_model", "kind", "embedding_dim"):
                 entry.pop(key, None)
             if api_key:
                 entry["api_key"] = api_key
@@ -511,6 +534,10 @@ class CredentialBook:
                 entry["base_url"] = base_url
             if chat_model:
                 entry["chat_model"] = chat_model
+            if kind:
+                entry["kind"] = kind
+            if embedding_dim:
+                entry["embedding_dim"] = str(embedding_dim)
             if entry:
                 updated[provider] = entry
             else:

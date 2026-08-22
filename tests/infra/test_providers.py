@@ -19,6 +19,7 @@ from infra.providers import (
     from_gemini_response,
     is_known_provider,
     list_models,
+    provider_catalog,
     sanitize_gemini_tool_parameters,
     to_anthropic_messages,
     to_anthropic_tools,
@@ -53,6 +54,41 @@ def test_build_llm_selects_openai_compatible_preset(monkeypatch):
 
     assert isinstance(llm.inner, OpenAILLM)
     assert llm._client.init_kwargs["base_url"] == PRESETS["deepseek"]
+
+
+def test_build_llm_selects_minimax_cn_openai_compatible_preset(monkeypatch):
+    monkeypatch.setattr("infra.llm.AsyncOpenAI", _FakeAsyncOpenAI)
+
+    llm = build_llm(_settings("minimax-cn"))
+
+    assert is_known_provider("minimax-cn")
+    assert isinstance(llm.inner, OpenAILLM)
+    assert llm._client.init_kwargs["base_url"] == "https://api.minimaxi.com/v1"
+
+
+def test_provider_catalog_carries_backend_owned_defaults_and_auth_modes():
+    catalog = {provider["id"]: provider for provider in provider_catalog()}
+
+    assert catalog["minimax-cn"] == {
+        "id": "minimax-cn",
+        "default_base_url": "https://api.minimaxi.com/v1",
+        "auth_type": "api_key",
+        "model_kinds": ["chat", "image"],
+    }
+    assert catalog["openai"]["default_base_url"] == "https://api.openai.com/v1"
+    assert catalog["anthropic"]["default_base_url"] == "https://api.anthropic.com"
+    assert catalog["chatgpt"]["auth_type"] == "api_key_or_oauth"
+    assert catalog["supergrok"]["auth_type"] == "oauth"
+    assert catalog["ollama"]["auth_type"] == "none"
+    assert catalog["openai"]["model_kinds"] == ["chat", "embedding", "image"]
+    assert catalog["siliconflow"] == {
+        "id": "siliconflow",
+        "default_base_url": "https://api.siliconflow.cn/v1",
+        "auth_type": "api_key",
+        "model_kinds": ["chat", "embedding", "image"],
+    }
+    assert catalog["deepseek"]["model_kinds"] == ["chat"]
+    assert catalog["ollama"]["model_kinds"] == ["chat", "embedding"]
 
 
 def test_build_llm_explicit_base_url_overrides_preset(monkeypatch):
@@ -111,13 +147,16 @@ async def test_list_models_does_not_construct_client_for_subscription_providers(
     monkeypatch.setenv("OPENAI_API_KEY", "ambient-secret")
     monkeypatch.setattr("openai.AsyncOpenAI", _unexpected_client)
 
-    assert await list_models(
-        LLMSettings(
-            provider="supergrok",
-            api_key="",
-            base_url="https://stale-proxy.example/v1",
+    assert (
+        await list_models(
+            LLMSettings(
+                provider="supergrok",
+                api_key="",
+                base_url="https://stale-proxy.example/v1",
+            )
         )
-    ) == []
+        == []
+    )
     assert await list_models(LLMSettings(provider="chatgpt", api_key="", base_url="")) == []
     assert calls == []
 
@@ -128,11 +167,33 @@ async def test_list_models_never_raises_when_client_construction_fails(monkeypat
 
     monkeypatch.setattr("openai.AsyncOpenAI", _broken_client)
 
-    models = await list_models(
-        LLMSettings(provider="openai", api_key="sk-test", base_url="not-a-url")
-    )
+    models = await list_models(LLMSettings(provider="openai", api_key="sk-test", base_url="not-a-url"))
 
     assert models == []
+
+
+async def test_list_models_filters_siliconflow_catalog_by_capability(monkeypatch):
+    list_call = AsyncMock(
+        return_value=SimpleNamespace(
+            data=[SimpleNamespace(id="Kwai-Kolors/Kolors")],
+        )
+    )
+    close = AsyncMock()
+    client = SimpleNamespace(models=SimpleNamespace(list=list_call), close=close)
+    monkeypatch.setattr("openai.AsyncOpenAI", lambda **_kwargs: client)
+
+    models = await list_models(
+        LLMSettings(
+            provider="siliconflow",
+            api_key="sk-test",
+            base_url="https://api.siliconflow.cn/v1",
+        ),
+        "image",
+    )
+
+    assert models == ["Kwai-Kolors/Kolors"]
+    list_call.assert_awaited_once_with(extra_query={"sub_type": "text-to-image"})
+    close.assert_awaited_once()
 
 
 def test_mutable_llm_does_not_retry_internal_builder_type_error():
@@ -165,6 +226,7 @@ def test_mutable_llm_reports_when_offline_fallback_is_live():
     llm.apply({})
     assert llm.inner is fallback
     assert llm.using_fallback is True
+
 
 def test_mutable_llm_uses_saved_web_credentials_for_selected_provider():
     captured: list[Settings] = []
@@ -593,9 +655,7 @@ def test_anthropic_thinking_blocks_replay_verbatim_through_the_tool_loop():
     assistant = _assistant_tool_call_message(result)
     assert assistant["provider_blocks"] == [thinking_block, tool_block]
 
-    _, messages = to_anthropic_messages(
-        [assistant, {"role": "tool", "tool_call_id": "toolu_9", "content": "42"}]
-    )
+    _, messages = to_anthropic_messages([assistant, {"role": "tool", "tool_call_id": "toolu_9", "content": "42"}])
     assert messages[0] == {"role": "assistant", "content": [thinking_block, tool_block]}
     assert messages[1]["content"][0]["type"] == "tool_result"
 

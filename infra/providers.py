@@ -5,12 +5,13 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterable
 from inspect import Parameter, signature
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from infra.config import LLMSettings, Settings
 from infra.llm import CACHE_BREAKPOINT_KEY, ChatResult, LLMClient, OpenAILLM, ToolCall, Usage, parse_usage
 from infra.llm_retry import RetryingLLM
 from infra.oauth_flows import (
+    SUBSCRIPTION_PROVIDER_NAMES,
     XAI_API_BASE,
     TokenManager,
     is_subscription_provider,
@@ -30,6 +31,10 @@ PRESETS: dict[str, str] = {
     "together": "https://api.together.xyz/v1",
     "fireworks": "https://api.fireworks.ai/inference/v1",
     "moonshot": "https://api.moonshot.cn/v1",
+    # Verified 2026-08-22 against MiniMax's official OpenAI-compatible API docs:
+    # https://platform.minimaxi.com/docs/api-reference/text-openai-api
+    "minimax-cn": "https://api.minimaxi.com/v1",
+    "siliconflow": "https://api.siliconflow.cn/v1",
     "zhipu": "https://open.bigmodel.cn/api/paas/v4",
     "xai": "https://api.x.ai/v1",
     "supergrok": XAI_API_BASE,
@@ -145,14 +150,9 @@ def is_llm_configured(
     """Whether ``settings`` can build a real client without ambient secrets."""
     llm = settings.llm
     provider = (llm.provider or "openai").casefold()
-    oauth_path = provider == "supergrok" or (
-        provider in CHATGPT_SUBSCRIPTION_PROXY_PROVIDERS and not llm.base_url
-    )
+    oauth_path = provider == "supergrok" or (provider in CHATGPT_SUBSCRIPTION_PROXY_PROVIDERS and not llm.base_url)
     if oauth_path:
-        return (
-            credentials is not None
-            and credentials.load_subscription_sync(provider) is not None
-        )
+        return credentials is not None and credentials.load_subscription_sync(provider) is not None
     if provider in _AUTHLESS_LOCAL_PROVIDERS:
         return True
     return bool(llm.api_key)
@@ -200,6 +200,85 @@ def _build_supergrok(
 NATIVE_PROVIDERS: frozenset[str] = frozenset({"anthropic", "claude", "gemini", "google"})
 NATIVE_PROVIDER_NAMES: tuple[str, ...] = ("anthropic", "gemini")
 
+ProviderAuthType = Literal["api_key", "oauth", "api_key_or_oauth", "none"]
+ModelKind = Literal["chat", "embedding", "image"]
+
+
+class ProviderMetadata(TypedDict):
+    id: str
+    default_base_url: str
+    auth_type: ProviderAuthType
+    model_kinds: list[ModelKind]
+
+
+_PROVIDER_DEFAULT_BASE_URL_OVERRIDES: dict[str, str] = {
+    # AsyncOpenAI supplies this endpoint when base_url is omitted; the catalog
+    # makes that effective default explicit for clients.
+    "openai": "https://api.openai.com/v1",
+    "anthropic": "https://api.anthropic.com",
+}
+
+
+def provider_catalog() -> list[ProviderMetadata]:
+    """Display-safe provider metadata for every accepted public provider key."""
+    names = sorted(PRESETS) + list(CHATGPT_SUBSCRIPTION_PROXY_PROVIDER_NAMES) + list(NATIVE_PROVIDER_NAMES)
+    for name in SUBSCRIPTION_PROVIDER_NAMES:
+        if name not in names:
+            names.append(name)
+
+    catalog: list[ProviderMetadata] = []
+    for name in names:
+        catalog.append(
+            {
+                "id": name,
+                "default_base_url": _PROVIDER_DEFAULT_BASE_URL_OVERRIDES.get(name, PRESETS.get(name, "")),
+                "auth_type": provider_auth_type(name),
+                "model_kinds": list(provider_model_kinds(name)),
+            }
+        )
+    return catalog
+
+
+def provider_auth_type(name: str) -> ProviderAuthType:
+    """Authentication mode for one accepted public provider key."""
+    provider = (name or "").casefold()
+    if provider in _AUTHLESS_LOCAL_PROVIDERS:
+        return "none"
+    if provider == "supergrok":
+        return "oauth"
+    if provider in CHATGPT_SUBSCRIPTION_PROXY_PROVIDERS:
+        return "api_key_or_oauth"
+    return "api_key"
+
+
+def provider_model_kinds(name: str) -> tuple[ModelKind, ...]:
+    """Model surfaces this engine can construct for one public provider key.
+
+    Native chat SDKs do not expose the OpenAI-compatible Embeddings or image
+    generation surfaces used by Loreweaver. Subscription ChatGPT is chat-only;
+    SuperGrok additionally has the xAI image surface. Providers in ``PRESETS``
+    use OpenAI-compatible HTTP and may point at a compatible custom endpoint.
+    """
+    provider = (name or "").casefold()
+    if provider in NATIVE_PROVIDERS or provider in CHATGPT_SUBSCRIPTION_PROXY_PROVIDERS:
+        return ("chat",)
+    if provider == "supergrok":
+        return ("chat", "image")
+    if provider in {"openai", "siliconflow"}:
+        return ("chat", "embedding", "image")
+    if provider in {"minimax-cn", "xai"}:
+        return ("chat", "image")
+    if provider in {"together", "fireworks"}:
+        return ("chat", "embedding", "image")
+    if provider in {"mistral", "ollama", "lmstudio", "vllm", "openrouter"}:
+        return ("chat", "embedding")
+    return ("chat",)
+
+
+def provider_supports_kind(name: str, kind: str) -> bool:
+    """Whether the provider can be represented on the requested engine surface."""
+    return kind in provider_model_kinds(name)
+
 
 def is_known_provider(name: str) -> bool:
     """True if `name` is a recognized provider key (`build_llm` can build it)."""
@@ -212,7 +291,7 @@ def is_known_provider(name: str) -> bool:
     )
 
 
-async def list_models(llm: LLMSettings) -> list[str]:
+async def list_models(llm: LLMSettings, kind: ModelKind | None = None) -> list[str]:
     """Best-effort LIVE model catalog for `llm`'s provider, via the OpenAI-compatible
     ``GET /models`` (DeepSeek, OpenAI, OpenRouter, Groq, … all expose it). Returns a
     sorted list of model IDs, or ``[]`` when the provider is a native SDK (Anthropic/
@@ -224,9 +303,7 @@ async def list_models(llm: LLMSettings) -> list[str]:
     # Official subscription providers do not expose a safe /models discovery
     # path here. In particular, do not let the SDK borrow OPENAI_API_KEY from
     # the process environment when their runtime api_key is intentionally empty.
-    if provider == "supergrok" or (
-        provider in CHATGPT_SUBSCRIPTION_PROXY_PROVIDERS and not llm.base_url
-    ):
+    if provider == "supergrok" or (provider in CHATGPT_SUBSCRIPTION_PROXY_PROVIDERS and not llm.base_url):
         return []
     if not llm.api_key:
         return []
@@ -241,7 +318,17 @@ async def list_models(llm: LLMSettings) -> list[str]:
             timeout=15.0,
             max_retries=0,
         )
-        page = await client.models.list()
+        subtype = {
+            "chat": "chat",
+            "embedding": "embedding",
+            "image": "text-to-image",
+        }.get(kind or "")
+        extra_query = {"sub_type": subtype} if provider == "siliconflow" and subtype else None
+        page = (
+            await client.models.list(extra_query=extra_query)
+            if extra_query is not None
+            else await client.models.list()
+        )
         ids = [str(getattr(model, "id", "") or "") for model in getattr(page, "data", []) or []]
         return sorted({model for model in ids if model})
     except Exception:
@@ -374,9 +461,7 @@ class MutableLLM:
             # Opaque callables follow the current builder contract.
             return self._builder(settings, credentials=self._credentials)
         accepts_credentials = any(
-            parameter.name == "credentials"
-            or parameter.kind is Parameter.VAR_KEYWORD
-            for parameter in parameters
+            parameter.name == "credentials" or parameter.kind is Parameter.VAR_KEYWORD for parameter in parameters
         )
         if accepts_credentials:
             return self._builder(settings, credentials=self._credentials)
@@ -726,9 +811,7 @@ def to_anthropic_messages(
                 )
             )
             continue
-        out.append(
-            _anthropic_breakpoint({"role": "user", "content": _content_to_text(message.get("content"))}, marked)
-        )
+        out.append(_anthropic_breakpoint({"role": "user", "content": _content_to_text(message.get("content"))}, marked))
     if not system_parts:
         return None, out
     system_text = "\n\n".join(system_parts)
@@ -986,7 +1069,9 @@ def from_gemini_response(response: Any) -> ChatResult:
         text = _get_value(response, "text", "")
         if text:
             text_parts.append(text)
-    return ChatResult(content="".join(text_parts) or None, tool_calls=tool_calls, raw=response, usage=parse_usage(response))
+    return ChatResult(
+        content="".join(text_parts) or None, tool_calls=tool_calls, raw=response, usage=parse_usage(response)
+    )
 
 
 def _to_anthropic_tool_choice(tool_choice: str | dict) -> Any:

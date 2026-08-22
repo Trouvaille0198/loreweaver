@@ -24,7 +24,7 @@ import core.rulepacks as rulepacks_module
 import core.skills as skills_module
 import net.keystore as keystore_module
 import net.room_backup as room_backup_module
-from agent.services import build_services
+from agent.services import ROOM_LLM_SELECTION_KEY, build_services
 from gateway.hub import RoomHub
 from gateway.ops import get_enabled_skills, set_enabled_skills
 from gateway.rooms import (
@@ -37,7 +37,7 @@ from gateway.session import SessionSource
 from infra.config import ImageGenSettings, LLMSettings, Settings, TuiSettings
 from infra.embeddings import FakeEmbeddings
 from infra.i18n import get_i18n
-from infra.imagegen import IMAGEGEN_PRESETS
+from infra.imagegen import IMAGEGEN_PRESETS, FakeImageGen
 from infra.llm import FakeLLM, assistant_text
 from infra.media_store import ALLOWED_MEDIA_MIMES, MediaError, MediaStore
 from infra.providers import PRESETS, MutableLLM
@@ -169,9 +169,7 @@ async def test_admin_skills_list_follows_the_caller_locale():
 
     # A request-frame locale overrides the server locale: a Chinese-pinned client on an
     # English-locale server must still get the localized list.
-    pinned = await admin.dispatch(
-        "keeper", "arkham", {"type": "admin_list_skills", "locale": "zh"}, get_i18n("en")
-    )
+    pinned = await admin.dispatch("keeper", "arkham", {"type": "admin_list_skills", "locale": "zh"}, get_i18n("en"))
     romance_pinned = next(s for s in pinned["skills"] if s["id"] == "romance-relationships")
     assert romance_pinned["name"] == "恋爱与关系"
 
@@ -265,11 +263,7 @@ async def test_admin_service_mints_room_scoped_single_use_chat_bind_token():
     assert binding["key_masked"] == "discord:keeper-7"
     # The keystore's own chat_bind row ships masked and NEVER cleartext — its
     # token is a different credential from an invite (join) key.
-    raw = next(
-        item
-        for item in listed["keys"]
-        if item["purpose"] == "chat_bind" and not item["id"].startswith("chat:")
-    )
+    raw = next(item for item in listed["keys"] if item["purpose"] == "chat_bind" and not item["id"].startswith("chat:"))
     assert "key" not in raw
     assert raw["key_masked"] != minted["key"]
 
@@ -300,12 +294,18 @@ async def test_keeper_can_get_and_set_config_list_and_mint_keys():
         assert config["override_active"] is False
         assert "deepseek" in config["providers"] and "anthropic" in config["providers"]
         assert "gpt-subscription" in config["providers"] and "chatgpt" in config["providers"]
+        assert "minimax-cn" in config["providers"]
+        provider_catalog = {provider["id"]: provider for provider in config["provider_catalog"]}
+        assert provider_catalog["minimax-cn"] == {
+            "id": "minimax-cn",
+            "default_base_url": "https://api.minimaxi.com/v1",
+            "auth_type": "api_key",
+            "model_kinds": ["chat", "image"],
+        }
         assert "api_key_masked" in config
 
         # set_model: validated, persisted, and hot-applied to the live MutableLLM.
-        updated = await _send(
-            ws, {"type": "admin_set_model", "provider": "deepseek", "chat_model": "deepseek-chat"}
-        )
+        updated = await _send(ws, {"type": "admin_set_model", "provider": "deepseek", "chat_model": "deepseek-chat"})
         assert updated["type"] == "admin_config"
         assert updated["provider"] == "deepseek"
         assert updated["chat_model"] == "deepseek-chat"
@@ -340,16 +340,12 @@ async def test_keeper_can_get_and_set_config_list_and_mint_keys():
         assert foreign_key not in json.dumps(listed)
 
         # Minting into a different room is forbidden; omission selects caller_room.
-        cross_room = await _send(
-            ws, {"type": "admin_mint_key", "room": "dunwich", "name": "Intruder"}
-        )
+        cross_room = await _send(ws, {"type": "admin_mint_key", "room": "dunwich", "name": "Intruder"})
         assert cross_room["type"] == "admin_error"
         assert cross_room["code"] == "forbidden"
 
         # mint_key returns the fresh key ONCE in cleartext + a refreshed masked list.
-        minted = await _send(
-            ws, {"type": "admin_mint_key", "room": "arkham", "name": "Player One", "role": "player"}
-        )
+        minted = await _send(ws, {"type": "admin_mint_key", "room": "arkham", "name": "Player One", "role": "player"})
         assert minted["type"] == "admin_keys"
         assert minted["minted"]["room"] == "arkham"
         assert minted["minted"]["role"] == "player"
@@ -361,10 +357,7 @@ async def test_keeper_can_get_and_set_config_list_and_mint_keys():
         assert all("..." in entry["key_masked"] or entry["key_masked"] == "" for entry in minted["keys"])
         assert all(entry.get("id") for entry in minted["keys"])
         # Cleartext rides exactly on the join-purpose rows — and only there.
-        assert all(
-            (entry.get("key") is not None) == (entry["purpose"] == "join")
-            for entry in minted["keys"]
-        )
+        assert all((entry.get("key") is not None) == (entry["purpose"] == "join") for entry in minted["keys"])
         assert {entry["key"] for entry in minted["keys"] if entry["purpose"] == "join"} == {
             keeper_key,
             new_key,
@@ -372,9 +365,7 @@ async def test_keeper_can_get_and_set_config_list_and_mint_keys():
 
         # update + delete a key in the keeper's OWN room (arkham) — allowed.
         new_id = next(entry["id"] for entry in minted["keys"] if entry["name"] == "Player One")
-        updated_key = await _send(
-            ws, {"type": "admin_update_key", "id": new_id, "name": "Co-Keeper", "role": "keeper"}
-        )
+        updated_key = await _send(ws, {"type": "admin_update_key", "id": new_id, "name": "Co-Keeper", "role": "keeper"})
         assert updated_key["type"] == "admin_keys"
         changed = next(entry for entry in updated_key["keys"] if entry["id"] == new_id)
         assert changed["name"] == "Co-Keeper"
@@ -438,9 +429,7 @@ async def test_last_keeper_key_cannot_be_demoted_or_deleted():
         assert demote["code"] == "last_keeper"
 
         # With a second keeper key in the room, the FIRST (non-caller) may be demoted.
-        minted = await _send(
-            ws, {"type": "admin_mint_key", "room": "arkham", "name": "Co-Keeper", "role": "keeper"}
-        )
+        minted = await _send(ws, {"type": "admin_mint_key", "room": "arkham", "name": "Co-Keeper", "role": "keeper"})
         second_id = next(entry["id"] for entry in minted["keys"] if entry["name"] == "Co-Keeper")
         demote = await _send(ws, {"type": "admin_update_key", "id": second_id, "role": "player"})
         assert demote["type"] == "admin_keys"
@@ -545,6 +534,7 @@ async def test_player_role_connection_is_refused_every_admin_action():
 
 async def test_admin_set_model_leaves_state_unchanged_when_provider_build_fails():
     """A failed candidate build happens before live or persisted state changes."""
+
     def _raising_builder(settings):
         if (settings.llm.provider or "").lower() == "anthropic":
             raise ValueError("anthropic SDK missing")
@@ -620,12 +610,8 @@ async def test_revoking_chat_binding_evicts_live_direct_member() -> None:
     member = DirectMember()
     session_key = session_key_for_room("arkham")
     await hub.subscribe(session_key, member)
-    listed = await admin.dispatch(
-        "keeper", "arkham", {"type": "admin_list_keys"}, get_i18n("en")
-    )
-    binding_id = next(
-        item["id"] for item in listed["keys"] if item["id"].startswith("chat:")
-    )
+    listed = await admin.dispatch("keeper", "arkham", {"type": "admin_list_keys"}, get_i18n("en"))
+    binding_id = next(item["id"] for item in listed["keys"] if item["id"].startswith("chat:"))
 
     await admin.dispatch(
         "keeper",
@@ -723,6 +709,7 @@ async def test_admin_set_model_saves_supplied_key_under_selected_provider(tmp_pa
         "base_url": "https://api.deepseek.com/v1",
     }
     assert "openai" not in credentials
+
 
 async def _seed_reset_room(services, chat_key):
     await services.store.state_set(chat_key, "chat_history", '[{"role":"user"}]')
@@ -932,7 +919,9 @@ async def test_keeper_can_export_delete_and_import_room_data(tmp_path):
         assert await services.store.get(user_key="", store_key="bound_room.discord:group:table") is None
         assert await services.store.state_get("tui:group:dunwich", "chat_history") == "keep"
         assert await services.vector_db.vector_store.count(filter={"chat_key": chat_key}) == 0
-        assert await services.vector_db.vector_store.count(filter={"collection": "worldbook", "namespace": chat_key}) == 0
+        assert (
+            await services.vector_db.vector_store.count(filter={"collection": "worldbook", "namespace": chat_key}) == 0
+        )
         for base in (
             "skills_enabled",
             "media_enabled",
@@ -982,7 +971,9 @@ async def test_keeper_can_export_delete_and_import_room_data(tmp_path):
         assert restored_npc is not None and restored_npc.data["name"] == "Dr. West"
         assert await services.store.get(user_key="", store_key="bound_room.discord:group:table") == chat_key
         assert await services.vector_db.vector_store.count(filter={"chat_key": chat_key}) == 1
-        assert await services.vector_db.vector_store.count(filter={"collection": "worldbook", "namespace": chat_key}) == 1
+        assert (
+            await services.vector_db.vector_store.count(filter={"collection": "worldbook", "namespace": chat_key}) == 1
+        )
         restored_record, restored_data = await media_store.read_bytes(chat_key, media_record.hash)
         assert restored_record.name == "clue.png"
         assert restored_data == b"private handout"
@@ -1057,9 +1048,7 @@ async def test_room_backup_rejects_a_symlinked_room_directory(tmp_path):
     exported = await export_room(services, Keystore(), room, "snapshot.json")
     snapshot = Path(exported["path"])
     room_dir = snapshot.parent
-    other_room = Path(
-        (await export_room(services, Keystore(), "dunwich", "snapshot.json"))["path"]
-    ).parent
+    other_room = Path((await export_room(services, Keystore(), "dunwich", "snapshot.json"))["path"]).parent
 
     snapshot.unlink()
     room_dir.rmdir()
@@ -1279,9 +1268,7 @@ async def test_room_import_requires_every_vector_owner_field_to_match_target(tmp
             "metadata": {"namespace": foreign_key},
         },
     }
-    snapshot["vector_points"] = [
-        {"id": "forged:0", "vector": [0.2] * 64, "payload": payloads[case]}
-    ]
+    snapshot["vector_points"] = [{"id": "forged:0", "vector": [0.2] * 64, "payload": payloads[case]}]
     source.write_text(json.dumps(snapshot), encoding="utf-8")
 
     with pytest.raises(ValueError, match="vector owned by another room"):
@@ -1604,14 +1591,12 @@ async def test_admin_export_confines_the_path_to_the_backups_directory(tmp_path)
     services = _services(str(tmp_path))
     keystore = Keystore()
     keeper_key = keystore.add(room="arkham", name="Keeper", role="keeper")
-    await services.store.state_set(chat_key_for_room('arkham'), "chat_history", "[]")
+    await services.store.state_set(chat_key_for_room("arkham"), "chat_history", "[]")
     server = TuiServer(services, keystore, port=0)
     url = await _start(server)
     try:
         ws, *_ = await _connect_and_join(url, keeper_key, "Keeper")
-        exported = await _send(
-            ws, {"type": "admin_export_room", "room": "arkham", "path": "/etc/loreweaver-evil.json"}
-        )
+        exported = await _send(ws, {"type": "admin_export_room", "room": "arkham", "path": "/etc/loreweaver-evil.json"})
         assert exported["type"] == "admin_room_op"
         base = str((Path(services.settings.data_dir) / "room_backups").resolve())
         assert exported["path"].startswith(base)  # confined under the backups dir
@@ -1772,9 +1757,7 @@ async def test_new_model_endpoint_never_receives_or_remembers_the_old_key():
         assert changed["type"] == "admin_config"
         assert services.settings.llm.base_url == "https://new.example/v1"
         assert services.settings.llm.api_key == ""
-        assert await services.llm_credentials.get("openai") == {
-            "base_url": "https://new.example/v1"
-        }
+        assert await services.llm_credentials.get("openai") == {"base_url": "https://new.example/v1"}
 
         # A later save with omitted fields must not resurrect the old saved key.
         await _send(ws, {"type": "admin_set_model", "provider": "openai"})
@@ -1802,9 +1785,7 @@ async def test_new_model_endpoint_never_receives_or_remembers_the_old_key():
             ws,
             {"type": "admin_set_model", "provider": "openai", "api_key": ""},
         )
-        assert await services.llm_credentials.get("openai") == {
-            "base_url": "https://third.example/v1"
-        }
+        assert await services.llm_credentials.get("openai") == {"base_url": "https://third.example/v1"}
 
         await ws.close()
     finally:
@@ -2022,9 +2003,7 @@ async def test_new_image_endpoint_never_reuses_or_remembers_the_old_key():
         assert changed["type"] == "admin_config"
         assert services.settings.imagegen.base_url == "https://images-new.example/v1"
         assert services.settings.imagegen.api_key == ""
-        assert await services.imagegen_credentials.get("openai") == {
-            "base_url": "https://images-new.example/v1"
-        }
+        assert await services.imagegen_credentials.get("openai") == {"base_url": "https://images-new.example/v1"}
 
         # Omitted fields on the unchanged endpoint keep the safe, cleared state.
         await _send(
@@ -2181,6 +2160,43 @@ async def test_admin_list_models_returns_the_providers_live_catalog():
         await ws.close()
     finally:
         await server.close()
+
+
+async def test_admin_list_models_filters_siliconflow_and_reuses_same_endpoint_profile_key():
+    services = _services()
+    await services.llm_profiles.replace_static(
+        "siliconflow::embedding::BAAI/bge-m3",
+        api_key="sk-siliconflow",
+        base_url="https://api.siliconflow.cn/v1",
+        chat_model="BAAI/bge-m3",
+        kind="embedding",
+        embedding_dim="1024",
+    )
+    captured = {}
+
+    async def _fake_list_models(settings, kind):
+        captured["settings"] = settings
+        captured["kind"] = kind
+        return ["Kwai-Kolors/Kolors"]
+
+    with patch("net.admin.list_models", new=_fake_list_models):
+        reply = await AdminService(services, Keystore()).dispatch(
+            "keeper",
+            "arkham",
+            {
+                "type": "admin_list_models",
+                "provider": "siliconflow",
+                "kind": "image",
+                "base_url": "https://api.siliconflow.cn/v1",
+            },
+            get_i18n("en"),
+        )
+
+    assert reply["type"] == "admin_models"
+    assert reply["kind"] == "image"
+    assert reply["models"] == ["Kwai-Kolors/Kolors"]
+    assert captured["kind"] == "image"
+    assert captured["settings"].api_key == "sk-siliconflow"
 
 
 async def test_admin_list_rules_returns_the_built_in_systems():
@@ -2351,9 +2367,7 @@ async def test_deleting_a_room_over_the_wire_drops_its_turn_lock_after_the_frame
     url = await _start(server)
     try:
         ws, *_ = await _connect_and_join(url, keeper_key, "Keeper")
-        reply = await _send(
-            ws, {"type": "admin_delete_room_data", "room": "arkham", "backup": False}
-        )
+        reply = await _send(ws, {"type": "admin_delete_room_data", "room": "arkham", "backup": False})
         assert reply["type"] not in {"error", "admin_error"}, reply
         # The reply frame races the server-side disposal by one statement; give it a beat.
         for _ in range(100):
@@ -2411,6 +2425,9 @@ async def test_admin_llm_profiles_and_room_assignments_are_separate(tmp_path):
         assert room["type"] == "admin_room_config"
         assert room["stored"]["main"] == "deepseek::deepseek-reasoner"
         assert room["stored"]["scribe"] == ""
+        selected_llm = FakeLLM(script=[])
+        services._room_llm_cache["deepseek::deepseek-reasoner"] = selected_llm
+        assert await services.main_llm("arkham") is selected_llm
 
         deleted = await _send(ws, {"type": "admin_delete_llm", "id": first_id})
         assert deleted["type"] == "admin_config"
@@ -2419,6 +2436,273 @@ async def test_admin_llm_profiles_and_room_assignments_are_separate(tmp_path):
         deleted = await _send(ws, {"type": "admin_delete_llm", "id": "deepseek::deepseek-reasoner"})
         assert deleted["type"] == "admin_config"
         assert deleted["llms"] == []
+        await ws.close()
+    finally:
+        await server.close()
+
+
+async def test_admin_profile_key_never_crosses_to_a_changed_endpoint(tmp_path):
+    services = _services(str(tmp_path))
+    admin = AdminService(services, Keystore())
+    frame = {
+        "type": "admin_set_llm",
+        "provider": "openai",
+        "chat_model": "gpt-4o",
+        "kind": "chat",
+        "api_key": "sk-private-a",
+        "base_url": "https://gateway-a.example/v1",
+    }
+    saved = await admin.dispatch("keeper", "arkham", frame, get_i18n("en"))
+    assert saved["type"] == "admin_config"
+
+    rejected = await admin.dispatch(
+        "keeper",
+        "arkham",
+        {
+            "type": "admin_set_llm",
+            "provider": "openai",
+            "chat_model": "gpt-4o",
+            "kind": "chat",
+            "base_url": "https://gateway-b.example/v1",
+        },
+        get_i18n("en"),
+    )
+
+    assert rejected["type"] == "admin_error"
+    assert rejected["code"] == "set_failed"
+    persisted = await services.llm_profiles.get("openai::gpt-4o")
+    assert persisted["base_url"] == "https://gateway-a.example/v1"
+    assert persisted["api_key"] == "sk-private-a"
+
+
+async def test_admin_profile_honors_authless_and_provider_capabilities(tmp_path):
+    services = _services(str(tmp_path))
+    admin = AdminService(services, Keystore())
+
+    local = await admin.dispatch(
+        "keeper",
+        "arkham",
+        {
+            "type": "admin_set_llm",
+            "provider": "ollama",
+            "chat_model": "llama3.2",
+            "kind": "chat",
+        },
+        get_i18n("en"),
+    )
+    unsupported = await admin.dispatch(
+        "keeper",
+        "arkham",
+        {
+            "type": "admin_set_llm",
+            "provider": "deepseek",
+            "chat_model": "not-an-embedding-model",
+            "kind": "embedding",
+            "embedding_dim": 1024,
+            "api_key": "sk-test",
+        },
+        get_i18n("en"),
+    )
+
+    assert local["type"] == "admin_config"
+    assert next(profile for profile in local["llms"] if profile["provider"] == "ollama")["has_key"] is False
+    assert unsupported["type"] == "admin_error"
+    assert unsupported["code"] == "bad_request"
+
+
+async def test_admin_model_kinds_gate_embedding_and_room_assignments(tmp_path):
+    services = _services(str(tmp_path))
+    keystore = Keystore()
+    keeper_key = keystore.add(room="arkham", name="Keeper", role="keeper")
+    server = TuiServer(services, keystore, port=0)
+    url = await _start(server)
+    try:
+        ws, *_ = await _connect_and_join(url, keeper_key, "Keeper")
+        chat = await _send(
+            ws,
+            {
+                "type": "admin_set_llm",
+                "provider": "openai",
+                "chat_model": "gpt-4o",
+                "api_key": "sk-shared",
+            },
+        )
+        chat_profile = next(profile for profile in chat["llms"] if profile["chat_model"] == "gpt-4o")
+        assert chat_profile["kind"] == "chat"
+
+        embedding = await _send(
+            ws,
+            {
+                "type": "admin_set_llm",
+                "provider": "openai",
+                "chat_model": "text-embedding-3-small",
+                "kind": "embedding",
+                "embedding_dim": 3,
+            },
+        )
+        embedding_profile = next(
+            profile for profile in embedding["llms"] if profile["chat_model"] == "text-embedding-3-small"
+        )
+        assert embedding_profile["id"] == "openai::embedding::text-embedding-3-small"
+        assert embedding_profile["kind"] == "embedding"
+        assert embedding_profile["embedding_dim"] == 3
+
+        image = await _send(
+            ws,
+            {
+                "type": "admin_set_llm",
+                "provider": "openai",
+                "chat_model": "gpt-image-1",
+                "kind": "image",
+            },
+        )
+        image_profile = next(profile for profile in image["llms"] if profile["chat_model"] == "gpt-image-1")
+        assert image_profile["kind"] == "image"
+
+        rejected = await _send(
+            ws,
+            {
+                "type": "admin_set_embedding",
+                "profile_id": chat_profile["id"],
+                "embedding_dim": 3,
+            },
+        )
+        assert rejected["type"] == "admin_error"
+        assert rejected["code"] == "bad_request"
+
+        await services.vector_db.vector_store.upsert(
+            [
+                (
+                    "module:0",
+                    [0.25] * 64,
+                    {
+                        "text": "The drowned archive lies beneath the chapel.",
+                        "chat_key": "arkham",
+                        "document_id": "module",
+                        "filename": "module.md",
+                        "document_type": "module",
+                        "chunk_index": 0,
+                    },
+                )
+            ]
+        )
+        with patch("net.admin.OpenAIEmbeddings", side_effect=lambda settings: FakeEmbeddings(settings.embedding_dim)):
+            selected = await _send(
+                ws,
+                {
+                    "type": "admin_set_embedding",
+                    "profile_id": embedding_profile["id"],
+                    "embedding_dim": 3,
+                },
+            )
+        assert selected["embedding_profile"] == embedding_profile["id"]
+        assert selected["embedding_model"] == "text-embedding-3-small"
+        assert selected["embedding_dim"] == 3
+        assert selected["embedding_rebuilt"] == 1
+        assert services.embeddings.dim == 3
+        assert services.vector_db.embeddings is services.embeddings
+        assert services.worldbook.embeddings is services.embeddings
+        [rebuilt] = await services.vector_db.vector_store.dump()
+        assert len(rebuilt["vector"]) == 3
+
+        rejected = await _send(ws, {"type": "admin_set_room_model", "main": embedding_profile["id"]})
+        assert rejected["type"] == "admin_error"
+        assert rejected["code"] == "bad_request"
+
+        room = await _send(ws, {"type": "admin_set_room_model", "imagegen": image_profile["id"]})
+        assert room["type"] == "admin_room_config"
+        assert room["stored"]["imagegen"] == image_profile["id"]
+        selected_imagegen = FakeImageGen()
+        services._room_imagegen_cache[image_profile["id"]] = selected_imagegen
+        assert await services.imagegen_for_room("arkham") is selected_imagegen
+
+        deleted = await _send(ws, {"type": "admin_delete_llm", "id": embedding_profile["id"]})
+        assert deleted["embedding_profile"] == ""
+        assert deleted["embedding_rebuilt"] == 1
+        assert services.embeddings is services.base_embeddings
+        assert services.embeddings.dim == 64
+        [restored] = await services.vector_db.vector_store.dump()
+        assert len(restored["vector"]) == 64
+        await ws.close()
+    finally:
+        await server.close()
+
+
+async def test_admin_untyped_model_profiles_remain_chat_compatible(tmp_path):
+    services = _services(str(tmp_path))
+    await services.llm_profiles.replace_static(
+        "deepseek::deepseek-chat",
+        api_key="sk-legacy",
+        chat_model="deepseek-chat",
+    )
+    await services.store.state_set(
+        "arkham",
+        ROOM_LLM_SELECTION_KEY,
+        json.dumps({"main": "deepseek::deepseek-chat"}),
+    )
+    keystore = Keystore()
+    keeper_key = keystore.add(room="arkham", name="Keeper", role="keeper")
+    server = TuiServer(services, keystore, port=0)
+    url = await _start(server)
+    try:
+        ws, *_ = await _connect_and_join(url, keeper_key, "Keeper")
+        config = await _send(ws, {"type": "admin_get_config"})
+        legacy = next(profile for profile in config["llms"] if profile["id"] == "deepseek::deepseek-chat")
+        assert legacy["kind"] == "chat"
+        assert legacy["chat_model"] == "deepseek-chat"
+
+        room = await _send(ws, {"type": "admin_get_room_config"})
+        assert room["stored"]["main"] == "deepseek::deepseek-chat"
+        await ws.close()
+    finally:
+        await server.close()
+
+
+async def test_admin_embedding_hot_swap_failure_keeps_live_index_and_config(tmp_path):
+    class FailingEmbeddings:
+        @property
+        def dim(self) -> int:
+            return 3
+
+        async def embed(self, texts):
+            raise RuntimeError("provider unavailable")
+
+    services = _services(str(tmp_path))
+    profile_id = "openai::embedding::broken-embedding"
+    await services.llm_profiles.replace_static(
+        profile_id,
+        api_key="sk-broken",
+        chat_model="broken-embedding",
+        kind="embedding",
+        embedding_dim="3",
+    )
+    await services.vector_db.vector_store.upsert(
+        [("doc:0", [0.5] * 64, {"text": "Keep this vector", "chat_key": "arkham"})]
+    )
+    original_embeddings = services.embeddings
+    original_points = await services.vector_db.vector_store.dump()
+    keystore = Keystore()
+    keeper_key = keystore.add(room="arkham", name="Keeper", role="keeper")
+    server = TuiServer(services, keystore, port=0)
+    url = await _start(server)
+    try:
+        ws, *_ = await _connect_and_join(url, keeper_key, "Keeper")
+        with patch("net.admin.OpenAIEmbeddings", return_value=FailingEmbeddings()):
+            reply = await _send(
+                ws,
+                {
+                    "type": "admin_set_embedding",
+                    "profile_id": profile_id,
+                    "embedding_dim": 3,
+                },
+            )
+
+        assert reply["type"] == "admin_error"
+        assert reply["code"] == "set_failed"
+        assert await services.runtime_config.get() == {}
+        assert services.embeddings is original_embeddings
+        assert services.embeddings.dim == 64
+        assert await services.vector_db.vector_store.dump() == original_points
         await ws.close()
     finally:
         await server.close()

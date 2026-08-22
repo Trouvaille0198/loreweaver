@@ -146,8 +146,9 @@ async def companion_action(
     user_message = _build_user_message(i18n, situation, recent or [])
     model = services.settings.llm.npc_model or services.settings.llm.chat_model
 
+    llm = await services.main_llm(chat_key)
     with lane_scope("companion", chat_key=chat_key, companion=companion.id):
-        result = await services.llm.chat(
+        result = await llm.chat(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message},

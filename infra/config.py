@@ -20,6 +20,7 @@ class LLMSettings(BaseModel):
     api_key: str = ""
     base_url: str = ""
     chat_model: str = "gpt-4o"
+    embedding_profile: str = ""
     embedding_model: str = "text-embedding-3-small"
     embedding_dim: int = 1536
     analysis_model: str = ""  # large-context model for full-module analysis; falls back to chat_model

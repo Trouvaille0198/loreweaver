@@ -137,8 +137,9 @@ async def _llm_authored(
     NOT an uncaught exception that surfaces as a generic `error` frame (which would leave a client's
     "generating…" spinner stuck forever)."""
     try:
+        llm = await services.main_llm(chat_key) if chat_key else services.llm
         with lane_scope("authoring", chat_key=chat_key or None):
-            result = await services.llm.chat(messages)
+            result = await llm.chat(messages)
     except Exception as exc:
         return None, ForgeResult(False, "", "", "", f"llm_failed: {exc}")  # i18n-exempt
     if chat_key:
