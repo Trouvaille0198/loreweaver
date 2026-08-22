@@ -201,11 +201,7 @@ def _resolve_import_path(services: Services, path: str, expected_room: str) -> P
     candidates = []
     for candidate in root.glob(f"*/{filename}"):
         source = candidate.resolve()
-        if (
-            not candidate.is_symlink()
-            and source.is_relative_to(root)
-            and source.is_file()
-        ):
+        if not candidate.is_symlink() and source.is_relative_to(root) and source.is_file():
             candidates.append(source)
     if len(candidates) != 1:
         raise ValueError("import source is not a unique room backup file")  # i18n-exempt: internal CLI detail
@@ -306,9 +302,7 @@ def _document_point_id_from_payload(payload: dict[str, Any]) -> str | None:
 
 def _rewrite_vector_point(point: dict[str, Any], old_chat_key: str, new_chat_key: str) -> dict[str, Any]:
     copied = dict(point)
-    copied["payload"] = _rewrite_payload_ownership(
-        dict(copied.get("payload") or {}), old_chat_key, new_chat_key
-    )
+    copied["payload"] = _rewrite_payload_ownership(dict(copied.get("payload") or {}), old_chat_key, new_chat_key)
     canonical_document_id = _document_point_id_from_payload(copied["payload"])
     if canonical_document_id is not None:
         # Older backup code namespaced these ids during import even though the
@@ -323,7 +317,7 @@ def _rewrite_vector_point(point: dict[str, Any], old_chat_key: str, new_chat_key
         # manufacture an alias that makes retrieval return the chunk twice.
         copied["id"] = point_id
     elif point_id.startswith(f"{old_chat_key}:"):
-        copied["id"] = f"{new_chat_key}:{point_id[len(old_chat_key) + 1:]}"
+        copied["id"] = f"{new_chat_key}:{point_id[len(old_chat_key) + 1 :]}"
     elif point_id:
         # Unknown legacy vector kinds lack a canonical payload-derived id. If an
         # internal caller ever enables cross-room cloning, keep those global ids
@@ -352,9 +346,7 @@ async def _preflight_vector_import(
 
     incoming_ids = {point_id for point_id, _vector, _payload in points}
     total = await vector_store.count()
-    existing = await vector_store.scroll(
-        limit=max(1, total + MAX_BACKUP_VECTOR_POINTS + 1)
-    )
+    existing = await vector_store.scroll(limit=max(1, total + MAX_BACKUP_VECTOR_POINTS + 1))
     stale_aliases: list[str] = []
     for hit in existing:
         point_id = str(getattr(hit, "id", "") or "")
@@ -400,11 +392,7 @@ async def room_rows(
     enforce_limits: bool = False,
 ) -> list[dict[str, str | None]]:
     rows = await services.store.list_rows(store_key_prefixes=("bound_room.",))
-    selected = [
-        row
-        for row in rows
-        if _matches_room_store_key(str(row["store_key"]), row.get("value"), chat_key)
-    ]
+    selected = [row for row in rows if _matches_room_store_key(str(row["store_key"]), row.get("value"), chat_key)]
     if enforce_limits:
         _bounded_section(
             selected,
@@ -756,17 +744,12 @@ async def _atomic_store_update(
 
             deleted = 0
             regular_deletes = [
-                row
-                for row in delete_rows
-                if not str(row.get("store_key") or "").startswith("bound_room.")
+                row for row in delete_rows if not str(row.get("store_key") or "").startswith("bound_room.")
             ]
             if regular_deletes:
                 cursor = conn.executemany(
                     "DELETE FROM kv WHERE user_key = ? AND store_key = ?",
-                    [
-                        (str(row.get("user_key") or ""), str(row.get("store_key") or ""))
-                        for row in regular_deletes
-                    ],
+                    [(str(row.get("user_key") or ""), str(row.get("store_key") or "")) for row in regular_deletes],
                 )
                 deleted += cursor.rowcount if cursor.rowcount != -1 else len(regular_deletes)
             for row in delete_rows:
@@ -819,10 +802,7 @@ async def _atomic_store_update(
                 if state_rows:
                     conn.executemany(
                         "INSERT OR REPLACE INTO room_state (room, key, value) VALUES (?, ?, ?)",
-                        [
-                            (state_room, str(row.get("key") or ""), row.get("value"))
-                            for row in state_rows
-                        ],
+                        [(state_room, str(row.get("key") or ""), row.get("value")) for row in state_rows],
                     )
             if clear_storages is not None:
                 clear_room, storages = clear_storages
@@ -903,8 +883,7 @@ async def _delete_room_collection_vectors(
     point_ids = [
         str(point["id"])
         for point in points
-        if isinstance(point.get("payload"), dict)
-        and point["payload"].get("collection") in collections
+        if isinstance(point.get("payload"), dict) and point["payload"].get("collection") in collections
     ]
     if point_ids:
         await vector_store.delete(point_ids)
@@ -988,11 +967,7 @@ async def _stage_room_media(
     try:
         for record in records:
             original = media._path(chat_key, record.hash)
-            if (
-                not original.is_file()
-                or original.stat().st_size != record.size
-                or _hash_path(original) != record.hash
-            ):
+            if not original.is_file() or original.stat().st_size != record.size or _hash_path(original) != record.hash:
                 raise ValueError("room media is missing or corrupt")  # i18n-exempt: internal admin op detail
             backup = root / record.hash
             _link_or_copy(original, backup)
@@ -1013,10 +988,7 @@ async def _restore_staged_media(
     for item in staged:
         if not item.original.is_file():
             _link_or_copy(item.staged, item.original)
-        elif (
-            item.original.stat().st_size != item.record.size
-            or _hash_path(item.original) != item.record.hash
-        ):
+        elif item.original.stat().st_size != item.record.size or _hash_path(item.original) != item.record.hash:
             item.original.unlink()
             _link_or_copy(item.staged, item.original)
 
@@ -1379,9 +1351,7 @@ async def import_room(
         if row_id in row_ids:
             raise ValueError("snapshot contains duplicate store rows")
         row_ids.add(row_id)
-        validated_rows.append(
-            {"user_key": user_key, "store_key": rewritten_key, "value": rewritten.get("value")}
-        )
+        validated_rows.append({"user_key": user_key, "store_key": rewritten_key, "value": rewritten.get("value")})
 
     raw_documents = _list_field(raw, "documents")
     _bounded_section(
@@ -1475,6 +1445,7 @@ async def import_room(
                 "parent_id": parent or None,
                 "turn": int(row.get("turn") or 0),
                 "role": str(row.get("role") or ""),
+                "name": str(row.get("name") or ""),
                 "content": str(row.get("content") or ""),
                 "seq": int(row.get("seq") or 0),
             }
@@ -1508,9 +1479,7 @@ async def import_room(
         if not point_id or point_id in vector_ids or len(vector) != vector_dim:
             raise ValueError("invalid vector point")
         if any(
-            isinstance(value, bool)
-            or not isinstance(value, (int, float))
-            or not math.isfinite(float(value))
+            isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value))
             for value in vector
         ):
             raise ValueError("invalid vector point")

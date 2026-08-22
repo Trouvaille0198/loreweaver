@@ -711,6 +711,12 @@ export interface CharacterState {
    * surface — clients fold it into a collapsible card section, not the main
    * grid. Absent from a pre-2.4 server — treat as {} (no skills shown). */
   skills?: Record<string, unknown>
+  /** Additive sheet details for a player's character page. */
+  secondary_attributes?: Record<string, unknown>
+  fields?: Record<string, unknown>
+  equipment?: unknown[]
+  background?: string
+  notes?: string
   status_effects: string[]
   avatar?: MediaRef
 }
@@ -726,6 +732,15 @@ export interface PartyMember {
   // optional so older server payloads without it still type-check.
   ai?: boolean
   avatar?: MediaRef
+  /** Public character-sheet details shown in the web party popup. */
+  system?: string
+  attributes?: Record<string, unknown>
+  skills?: Record<string, unknown>
+  secondary_attributes?: Record<string, unknown>
+  fields?: Record<string, unknown>
+  equipment?: unknown[]
+  background?: string
+  status_effects?: string[]
 }
 
 export interface SceneState {

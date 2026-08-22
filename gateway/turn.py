@@ -122,9 +122,7 @@ async def run_turn(
     i18n = get_i18n(ctx.locale)
     name = actor_name or await _display_name(origin, ctx, services)
     extra = getattr(ctx, "extra", None)
-    interaction_private = bool(
-        isinstance(extra, dict) and extra.get("private_interaction")
-    )
+    interaction_private = bool(isinstance(extra, dict) and extra.get("private_interaction"))
 
     result: KPTurnResult | None = None
     # The id the player line will be persisted under IF this becomes an AI-KP turn
@@ -195,13 +193,9 @@ async def run_turn(
             speaker="system",
             text=command_reply,
             fmt="plain",
-            private=bool(
-                interaction_private or command_failed or (matched_spec and matched_spec.private_reply)
-            ),
+            private=bool(interaction_private or command_failed or (matched_spec and matched_spec.private_reply)),
         )
-        origin_only = bool(
-            interaction_private or command_failed or (matched_spec and matched_spec.private_reply)
-        )
+        origin_only = bool(interaction_private or command_failed or (matched_spec and matched_spec.private_reply))
         if origin_only:
             # Sensitive keeper-command reply (masked API key / keeper-only secret lore /
             # a room join key): unicast to the invoking connection only, never broadcast.
@@ -322,6 +316,7 @@ async def run_turn(
                     on_reply_delta=_emit_reply_delta,
                     on_tool_event=_emit_tool_event,
                     user_record_id=user_record_id,
+                    user_name=name,
                     # The reply is persisted under the id its final frame renders with:
                     # the last streaming epoch's draft id (the final REPLACES that
                     # draft), or a fresh id when nothing streamed. Live and join replay
@@ -334,9 +329,7 @@ async def run_turn(
                 # when no draft is open — the check lane closed it, or nothing ever
                 # streamed — it is unset and the rendered id falls back to the record
                 # id (`origin_id`), the persisted reply's record (join replay).
-                final = Event.narrative(
-                    speaker="kp", text=result.reply, fmt="markdown", frame_id=stream_state["id"]
-                )
+                final = Event.narrative(speaker="kp", text=result.reply, fmt="markdown", frame_id=stream_state["id"])
                 final.origin_id = result.reply_record_id
                 await hub.publish(ctx.chat_key, final)
                 final_published = True
@@ -534,9 +527,7 @@ async def publish_state(hub: RoomHub, services: Services, ctx: AgentCtx, *, rese
         sheet = await resolve_active_character(services, identity_ctx)
         return sheet.name if sheet is not None else fallback
 
-    connected_names = set(
-        await asyncio.gather(*(active_name(identity) for identity in identity_contexts))
-    )
+    connected_names = set(await asyncio.gather(*(active_name(identity) for identity in identity_contexts)))
     online = len({identity_ctx.uid() for identity_ctx, _name in identity_contexts})
 
     async def event_for(member: Member) -> Event:
@@ -569,9 +560,7 @@ async def state_for_ctx(
     that wants to refresh its caller's HUD (`.panel`) attaches this as `Event.panel`."""
     members = hub.members(ctx.chat_key) if members is None else members
     connected_names = (
-        {getattr(member, "name", "") for member in members}
-        if connected_names is None
-        else connected_names
+        {getattr(member, "name", "") for member in members} if connected_names is None else connected_names
     )
     # `members` also lets the pregen cast render claimers by display name, not
     # internal id (see net.state._pregens).
@@ -783,12 +772,7 @@ def _dice_events(entry: dict[str, Any], actor: str) -> list[Event]:
             continue
         events.append(
             Event.dice(
-                actor=str(
-                    payload_actor
-                    or arguments.get("actor")
-                    or arguments.get("name")
-                    or actor
-                ),
+                actor=str(payload_actor or arguments.get("actor") or arguments.get("name") or actor),
                 kind=kind,
                 **fields,
             )

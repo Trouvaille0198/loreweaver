@@ -238,7 +238,7 @@ connections receive `error too_many_connections` before `join` is read.
   simply ignore it:
   `{type:"panel_event", panel:string, payload:any}`
 - `state` — a panel snapshot, sent on `join` and after every turn:
-  `{type:"state", character?:{name,system,resources:[Resource],attributes:{},status_effects:[],avatar?:{hash,mime,size,name?}}, party:[{name,online:boolean,active:boolean,initiative?:int,resources?:[Resource],ai?:boolean,avatar?:{hash,mime,size,name?}}], scene?:{name,focus?}, clock?:{time,round?}, initiative:[{name,value:int,current:boolean}], online:int, usage?:{context_tokens:int,context_window:int,input_tokens:int,output_tokens:int,cache_hit_tokens:int,cache_miss_tokens:int}, variables?:[{id:string,label:string,kind:"number"|"bool"|"text"|"enum",value:number|boolean|string,min?:int,max?:int,hidden?:boolean}], pregens?:[{name:string,claimed_by:string}], systems?:[{id:string,make_char?:string}], reset?:boolean}`
+  `{type:"state", character?:{name,system,resources:[Resource],attributes:{},skills?:{},secondary_attributes?:{},fields?:{},equipment?:[],background?:string,notes?:string,status_effects:[],avatar?:{hash,mime,size,name?}}, party:[{name,online:boolean,active:boolean,initiative?:int,resources?:[Resource],ai?:boolean,avatar?:{hash,mime,size,name?},system?:string,attributes?:{},skills?:{},secondary_attributes?:{},fields?:{},equipment?:[],background?:string,status_effects?:string[]}], scene?:{name,focus?}, clock?:{time,round?}, initiative:[{name,value:int,current:boolean}], online:int, usage?:{context_tokens:int,context_window:int,input_tokens:int,output_tokens:int,cache_hit_tokens:int,cache_miss_tokens:int}, variables?:[{id:string,label:string,kind:"number"|"bool"|"text"|"enum",value:number|boolean|string,min?:int,max?:int,hidden?:boolean}], pregens?:[{name:string,claimed_by:string}], systems?:[{id:string,make_char?:string}], reset?:boolean}`
   `Resource = {id:string, label:string, value:number, max?:number}` — the rule
   system's vital meters (HP, sanity, mana, …) as generic data: a client renders
   the list as meters without knowing any system's field names. Entries arrive in
@@ -256,6 +256,10 @@ connections receive `error too_many_connections` before `join` is read.
   (`{侦查: 70, 聆听: 55, …}` for a CoC sheet) — a long, secondary surface, sent for
   the client to fold into a collapsible card section rather than the main attribute
   grid. Absent from a pre-2.4 server; a client treats a missing key as "no skills".
+  `party[]` may carry the public sheet surfaces (`system`, `attributes`, `skills`,
+  `secondary_attributes`, `fields`, `equipment`, `background`, and
+  `status_effects`) so a client can show another member's details without a second
+  request. Private `notes` remain on the owning viewer's `character` only.
   `variables[].hidden` marks a keeper-connection-only row the keeper has not `.var expose`d yet — players never receive hidden rows at all. `pregens` is the module's claimable cast (`.pc list`/`.pc claim`); `claimed_by` is the claiming member's DISPLAY NAME (the same authoritative name the `welcome` carries; the internal member id is the fallback for a claimer not currently registered), `""` while unclaimed; omitted when no roster exists. `systems` (v2.3) is every rule system this server discovered, each with the dialect word that makes a character in it (`make_char`, absent when the pack declares none) — what a client needs to offer character creation without knowing any rule system, so a pack that ships its own appears in every client's picker with no client release.
   `variables` (optional — omitted when the room has none) is the room's
   deterministic module variables, PLAYER-VISIBLE subset only: keeper-only variables are

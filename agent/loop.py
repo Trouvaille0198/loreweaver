@@ -199,9 +199,7 @@ _TEXT_TOOL_CALL_WRAPPER_RE = re.compile(
     r"<(Deep|use|tool_call|tool_use|function_call|function_calls|invoke)\b[^>]*>.*?</\1\s*>",
     re.DOTALL | re.IGNORECASE,
 )
-_TEXT_TOOL_CALL_MARKER_RE = re.compile(
-    r"<\s*(?:name|tool_name|args|arguments|parameter)\b|mcp__", re.IGNORECASE
-)
+_TEXT_TOOL_CALL_MARKER_RE = re.compile(r"<\s*(?:name|tool_name|args|arguments|parameter)\b|mcp__", re.IGNORECASE)
 
 
 # The FOUR coarse activity categories a room may be told a turn is in (protocol 2.3.1's
@@ -242,7 +240,14 @@ def _strip_text_tool_calls(reply: str) -> str:
 # Tag-name prefixes that may open a machinery block (`_TEXT_TOOL_CALL_WRAPPER_RE`) or an
 # MVU update block — while streaming, text is held from such an opener until it resolves.
 _STREAM_SUSPECT_PREFIXES = (
-    "deep", "use", "tool_call", "tool_use", "function_call", "function_calls", "invoke", "updatevariable",
+    "deep",
+    "use",
+    "tool_call",
+    "tool_use",
+    "function_call",
+    "function_calls",
+    "invoke",
+    "updatevariable",
 )
 _STREAM_TAG_RE = re.compile(r"\s*/?\s*([A-Za-z_][\w-]*)")
 
@@ -386,6 +391,7 @@ async def run_kp_turn(
     *,
     history_key: str | None = None,
     user_record_id: str | None = None,
+    user_name: str = "",
     reply_record_id_provider: Callable[[], str | None] | None = None,
     max_rounds: int = 12,
     output_review: Callable[[str], str] | None = None,
@@ -408,6 +414,7 @@ async def run_kp_turn(
             user_message,
             history_key=history_key,
             user_record_id=user_record_id,
+            user_name=user_name,
             reply_record_id_provider=reply_record_id_provider,
             max_rounds=max_rounds,
             output_review=output_review,
@@ -424,6 +431,7 @@ async def _run_kp_turn_body(
     *,
     history_key: str | None = None,
     user_record_id: str | None = None,
+    user_name: str = "",
     reply_record_id_provider: Callable[[], str | None] | None = None,
     max_rounds: int = 12,
     output_review: Callable[[str], str] | None = None,
@@ -570,9 +578,7 @@ async def _run_kp_turn_body(
             # are model- and vendor-specific, while every provider path here takes a user
             # turn unchanged. The header names it as engine state so the Keeper never reads
             # the state dump as something a player said.
-            base.append(
-                {"role": "user", "content": i18n.t("prompt.state_header") + "\n\n" + parts.volatile}
-            )
+            base.append({"role": "user", "content": i18n.t("prompt.state_header") + "\n\n" + parts.volatile})
         base.append({"role": "user", "content": user_message})
         return base
 
@@ -592,9 +598,7 @@ async def _run_kp_turn_body(
     # M23 WS3: what the hooks injected reaches the model from process memory, so it is
     # written down BEFORE assembly — otherwise the one segment of this prompt that no
     # persisted row explains disappears with the process.
-    await record_hook_injections(
-        services, ctx.chat_key, turn_index, list(ctx.extra.get("hook_injections") or [])
-    )
+    await record_hook_injections(services, ctx.chat_key, turn_index, list(ctx.extra.get("hook_injections") or []))
     # Mutated in place for the whole turn — `clear_continuation` owns provider state keyed
     # by this list's identity, so the recovery rebuild splices rather than rebinds.
     messages: list[dict] = await _assemble_base(advance_timers=True)
@@ -604,7 +608,14 @@ async def _run_kp_turn_body(
     # together, the companion's line preceded the action that prompted it for anyone
     # replaying, and every roll of this turn had no record to sit after until it closed.
     own_user_record_id = await append_message(
-        services, ctx.chat_key, key, role="user", content=user_message, turn=turn_index, record_id=user_record_id
+        services,
+        ctx.chat_key,
+        key,
+        role="user",
+        name=user_name,
+        content=user_message,
+        turn=turn_index,
+        record_id=user_record_id,
     )
     # Where the prefix ends and this turn's tool chatter begins.
     base_len = len(messages)
@@ -647,9 +658,7 @@ async def _run_kp_turn_body(
             model=services.settings.llm.chat_model,
             context_window=services.settings.llm.context_window,
         )
-        fold = await fold_for_overflow(
-            ctx, services, history_key=key, batches_spent=routine_fold.batches
-        )
+        fold = await fold_for_overflow(ctx, services, history_key=key, batches_spent=routine_fold.batches)
         if not fold.entries_folded:
             return False
         # The retry is budgeted as its own call (AGENTS.md: "+ 1 overflow retry"), not as
@@ -990,8 +999,7 @@ def _correction_base_messages(messages: list[dict]) -> list[dict]:
     return [
         message
         for message in messages
-        if message.get("role") != "tool"
-        and not (message.get("role") == "assistant" and message.get("tool_calls"))
+        if message.get("role") != "tool" and not (message.get("role") == "assistant" and message.get("tool_calls"))
     ]
 
 
@@ -1054,7 +1062,7 @@ def _max_rounds_fallback(tool_trace: list[dict], i18n) -> str:
     return "\n\n".join(
         [
             i18n.t("loop.max_rounds"),
-            f'{i18n.t("loop.max_rounds_committed")}\n{_public_committed_results(tool_trace, i18n)}',
+            f"{i18n.t('loop.max_rounds_committed')}\n{_public_committed_results(tool_trace, i18n)}",
         ]
     )
 
@@ -1174,9 +1182,7 @@ def _normalize_tool_arguments(call_name: str, arguments: dict | None) -> dict:
     if actor is None or (isinstance(actor, str) and not actor.strip()):
         normalized.pop("actor", None)
         npc_target = normalized.get("npc_target")
-        if npc_target is None or npc_target == "" or (
-            isinstance(npc_target, (int, float)) and npc_target == 0
-        ):
+        if npc_target is None or npc_target == "" or (isinstance(npc_target, (int, float)) and npc_target == 0):
             normalized.pop("npc_target", None)
     return normalized
 
@@ -1240,8 +1246,7 @@ async def _dispatch_and_record(
             call.name == "initiative_tracker"
             and (call.arguments or {}).get("action") == "next"
             and any(
-                entry.get("name") == "initiative_tracker"
-                and (entry.get("arguments") or {}).get("action") == "next"
+                entry.get("name") == "initiative_tracker" and (entry.get("arguments") or {}).get("action") == "next"
                 for entry in tool_trace
             )
         )
@@ -1424,9 +1429,7 @@ def _record_call(
     return trace_entry
 
 
-async def _announce_tool_event(
-    on_tool_event: Callable[[dict], Awaitable[None]] | None, entry: dict
-) -> None:
+async def _announce_tool_event(on_tool_event: Callable[[dict], Awaitable[None]] | None, entry: dict) -> None:
     """Hand one recorded trace entry to the transport, if it asked for them.
 
     Swallows everything short of cancellation: a transport that cannot publish a dice
@@ -1453,7 +1456,11 @@ def _capped_tool_result(result: str, locale: str) -> str:
     text = result if isinstance(result, str) else str(result)
     if len(text) <= MAX_TOOL_RESULT_CHARS:
         return text
-    return text[:MAX_TOOL_RESULT_CHARS] + "\n\n" + t("loop.tool_result_truncated", locale=locale, kept=MAX_TOOL_RESULT_CHARS)
+    return (
+        text[:MAX_TOOL_RESULT_CHARS]
+        + "\n\n"
+        + t("loop.tool_result_truncated", locale=locale, kept=MAX_TOOL_RESULT_CHARS)
+    )
 
 
 async def _run_turn_checks(
@@ -1518,7 +1525,10 @@ async def _run_turn_checks(
                     services,
                     convo,
                     llm=llm,
-                    tools=[*toolset.schemas(unlocked, phase=phase, capabilities=capabilities), *(subsystem_tools or [])],
+                    tools=[
+                        *toolset.schemas(unlocked, phase=phase, capabilities=capabilities),
+                        *(subsystem_tools or []),
+                    ],
                     tool_choice="auto",
                     temperature=temperature,
                 )

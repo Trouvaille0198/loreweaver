@@ -6,10 +6,52 @@ file pins the raw room_state behaviors backup/reset/CAS consumers rely on.)
 
 from __future__ import annotations
 
+import sqlite3
+
 from infra.store import Store
 
 ROOM = "tui:group:alpha"
 OTHER = "tui:group:beta"
+
+
+async def test_chat_history_records_actor_names_with_an_existing_table(tmp_path):
+    path = tmp_path / "state.sqlite3"
+    conn = sqlite3.connect(path)
+    conn.execute(
+        """
+        CREATE TABLE chat_history (
+            room TEXT NOT NULL,
+            key TEXT NOT NULL,
+            id TEXT NOT NULL,
+            parent_id TEXT,
+            turn INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            seq INTEGER NOT NULL,
+            PRIMARY KEY (room, key, id)
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    store = Store(path)
+    await store.history_append(
+        ROOM,
+        "chat_history",
+        [
+            {
+                "id": "line-1",
+                "parent_id": None,
+                "turn": 1,
+                "role": "user",
+                "name": "林晚",
+                "content": "我推开门。",
+            }
+        ],
+    )
+
+    assert (await store.history_rows(ROOM))[0]["name"] == "林晚"
 
 
 async def test_room_state_rows_are_room_scoped_by_column():
@@ -20,9 +62,7 @@ async def test_room_state_rows_are_room_scoped_by_column():
 
     assert await store.state_get(ROOM, "chat_history") == "[]"
     assert {row["key"] for row in await store.state_list(ROOM)} == {"chat_history", "session_record.current"}
-    assert [row["key"] for row in await store.state_list(ROOM, prefix="session_record.")] == [
-        "session_record.current"
-    ]
+    assert [row["key"] for row in await store.state_list(ROOM, prefix="session_record.")] == ["session_record.current"]
 
     deleted = await store.state_delete_keys(ROOM, keys=["chat_history"], prefixes=["session_record."])
     assert deleted == 2
@@ -50,9 +90,7 @@ async def test_state_set_if_values_is_compare_and_set():
     assert await store.state_get(ROOM, "initiative") == "v2"
     assert await store.state_get(ROOM, "initiative_meta") == "{}"
 
-    stale = await store.state_set_if_values(
-        ROOM, expected=[("initiative", "v1")], updates=[("initiative", "v3")]
-    )
+    stale = await store.state_set_if_values(ROOM, expected=[("initiative", "v1")], updates=[("initiative", "v3")])
     assert stale is False
     assert await store.state_get(ROOM, "initiative") == "v2"  # nothing moved
 
