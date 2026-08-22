@@ -674,6 +674,11 @@ async def generate_and_install_module(services: Services, ctx: AgentCtx, descrip
     assert content is not None  # _llm_authored returns content XOR failure
 
     title = _extract_module_title(content) or description
+    if not _extract_module_title(content):
+        # A provider fallback or a terse refusal is still non-empty text, but it
+        # is not a module source. Reject it before writing or replacing the
+        # room's current scenario.
+        return ForgeResult(False, "", "", "", "invalid_module_output")
     module_id = _slugify(_extract_module_id(content)) or _slugify(title)
     used_hash_id = not module_id
     if used_hash_id:
@@ -701,6 +706,7 @@ async def generate_and_install_module(services: Services, ctx: AgentCtx, descrip
         "module_fulltext",
         "module_init_status",
         "module_init_error",
+        "module_source",
     )
     previous_runtime = {
         key: await services.store.state_get(ctx.chat_key, key) for key in runtime_keys
@@ -779,6 +785,7 @@ async def generate_and_install_module(services: Services, ctx: AgentCtx, descrip
     )
     await services.store.state_set(ctx.chat_key, _module_forge_last_key(ctx.chat_key), record)
     await services.store.state_set(ctx.chat_key, _module_forge_owner_key(ctx.chat_key, requested_id), owner)
+    await services.store.state_set(ctx.chat_key, "module_source", f"{module_id}.md")
 
     return ForgeResult(True, module_id, title, str(target), "", detail=install_note)
 

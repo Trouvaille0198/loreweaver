@@ -2323,7 +2323,7 @@ async def test_admin_generate_authors_and_installs_skill_rule_and_module(tmp_pat
             module_reply = await _send(
                 ws, {"type": "admin_generate", "kind": "module", "description": "a marsh mystery", "locale": "zh"}
             )
-            assert "你正在根据主持人" in services.llm.calls[2][0][0]["content"]
+            assert "你正在根据守秘人" in services.llm.calls[2][0][0]["content"]
             assert module_reply["type"] == "admin_generated"
             assert module_reply["ok"] is True
             assert module_reply["name"] == "The Salt Marsh Vanishing"
@@ -2428,6 +2428,7 @@ async def test_admin_llm_profiles_and_room_assignments_are_separate(tmp_path):
         selected_llm = FakeLLM(script=[])
         services._room_llm_cache["deepseek::deepseek-reasoner"] = selected_llm
         assert await services.main_llm("arkham") is selected_llm
+        assert await services.main_llm("tui:group:arkham") is selected_llm
 
         deleted = await _send(ws, {"type": "admin_delete_llm", "id": first_id})
         assert deleted["type"] == "admin_config"

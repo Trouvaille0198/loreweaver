@@ -19,7 +19,15 @@ _CALL_IDS = count(1)
 
 def demo_kp_responder(messages, tools):
     if messages and messages[0].get("role") == "user" and "system" not in {item.get("role") for item in messages}:
-        return assistant_text(json.dumps(_demo_analysis()))
+        prompt = str(messages[0].get("content") or "")
+        locale = "zh" if "所有自然语言字段" in prompt else "en"
+        if DEMO_MODULE_TEXT not in prompt:
+            # The offline responder only knows the built-in sample adventure.
+            # Returning non-JSON for every other source lets ModuleInitializer's
+            # source-preserving heuristic take over instead of inventing the
+            # sample plot for a user's module.
+            return assistant_text("offline module analysis unavailable")
+        return assistant_text(json.dumps(_demo_analysis(locale), ensure_ascii=False))
 
     last_user = max((index for index, item in enumerate(messages) if item.get("role") == "user"), default=0)
     user_text = str(messages[last_user].get("content", "")).lower()
@@ -94,71 +102,80 @@ def _last_tool_result(messages: list[dict]) -> str:
     return ""
 
 
-def _demo_analysis() -> dict:
+def _demo_analysis(locale: str = "en") -> dict:
+    zh = locale == "zh"
+    sentinel = "灯塔看守人就是凶手" if zh else DEMO_SENTINEL
     return {
-        "summary": t("cli.demo.analysis.summary"),
-        "background": t("cli.demo.analysis.background"),
+        "summary": t("cli.demo.analysis.summary", locale=locale),
+        "background": t("cli.demo.analysis.background", locale=locale),
         "scenes": [
             {
-                "name": "The Salt & Anchor Inn",
-                "focus": "investigation",
-                "description": t("cli.demo.analysis.scene.inn.description"),
-                "keeper_notes": t("cli.demo.analysis.scene.inn.keeper_notes"),
-                "npcs_present": ["Martha"],
+                "name": "盐锚旅店" if zh else "The Salt & Anchor Inn",
+                "focus": "调查" if zh else "investigation",
+                "description": t("cli.demo.analysis.scene.inn.description", locale=locale),
+                "keeper_notes": t("cli.demo.analysis.scene.inn.keeper_notes", locale=locale),
+                "npcs_present": ["玛莎" if zh else "Martha"],
                 "clues": [
                     {
-                        "name": "Tide table",
-                        "description": t("cli.demo.analysis.clue.tide_table.description"),
-                        "discovery_method": "Spot Hidden",
+                        "name": "潮汐表" if zh else "Tide table",
+                        "description": t("cli.demo.analysis.clue.tide_table.description", locale=locale),
+                        "discovery_method": "侦查" if zh else "Spot Hidden",
                     }
                 ],
             }
         ],
         "npcs": [
             {
-                "name": "Martha",
-                "description": t("cli.demo.analysis.npc.martha.description"),
-                "secret": f"{t('cli.demo.analysis.npc.martha.secret')} {DEMO_SENTINEL}",
-                "role": "innkeeper",
+                "name": "玛莎" if zh else "Martha",
+                "description": t("cli.demo.analysis.npc.martha.description", locale=locale),
+                "secret": f"{t('cli.demo.analysis.npc.martha.secret', locale=locale)} {sentinel}",
+                "role": "旅店老板" if zh else "innkeeper",
             },
             {
-                "name": "Elias Crane",
-                "description": t("cli.demo.analysis.npc.elias.description"),
-                "secret": t("cli.demo.analysis.npc.elias.secret"),
-                "role": "antagonist",
+                "name": "伊莱亚斯·克兰" if zh else "Elias Crane",
+                "description": t("cli.demo.analysis.npc.elias.description", locale=locale),
+                "secret": t("cli.demo.analysis.npc.elias.secret", locale=locale),
+                "role": "对立者" if zh else "antagonist",
             },
         ],
         "clues": [
             {
-                "name": "Tide table",
-                "description": t("cli.demo.analysis.clue.tide_table.match_description"),
-                "location": "inn",
-                "leads_to": "lighthouse",
+                "name": "潮汐表" if zh else "Tide table",
+                "description": t("cli.demo.analysis.clue.tide_table.match_description", locale=locale),
+                "location": "旅店" if zh else "inn",
+                "leads_to": "灯塔" if zh else "lighthouse",
             }
         ],
         "timeline": [
-            {"time": "Night 1", "event": t("cli.demo.analysis.timeline.night1"), "involved": ["Elias"]}
+            {
+                "time": "第一夜" if zh else "Night 1",
+                "event": t("cli.demo.analysis.timeline.night1", locale=locale),
+                "involved": ["伊莱亚斯·克兰" if zh else "Elias"],
+            }
         ],
         "threats": [
             {
-                "name": "Deep One thrall",
-                "type": "monster",
-                "description": t("cli.demo.analysis.threat.deep_one.description"),
+                "name": "深潜者奴仆" if zh else "Deep One thrall",
+                "type": "怪物" if zh else "monster",
+                "description": t("cli.demo.analysis.threat.deep_one.description", locale=locale),
                 "stats": {"HP": "13", "STR": "80"},
-                "attacks": ["claw 1d6+db"],
+                "attacks": ["爪击 1d6+db" if zh else "claw 1d6+db"],
                 "san_loss": "1/1d8",
-                "special_abilities": "drag underwater",
-                "location": "lighthouse",
+                "special_abilities": "拖入水下" if zh else "drag underwater",
+                "location": "灯塔" if zh else "lighthouse",
             }
         ],
         "truths": [
             {
-                "name": "The Truth of the Light",
-                "description": t("cli.demo.analysis.truth.light.description", sentinel=DEMO_SENTINEL),
-                "revealed_by": t("cli.demo.analysis.truth.light.revealed_by"),
+                "name": "灯光的真相" if zh else "The Truth of the Light",
+                "description": t("cli.demo.analysis.truth.light.description", locale=locale, sentinel=sentinel),
+                "revealed_by": t("cli.demo.analysis.truth.light.revealed_by", locale=locale),
             }
         ],
-        "opening_facts": [t("cli.demo.analysis.opening_fact.sailors"), t("cli.demo.analysis.opening_fact.light")],
+        "opening_facts": [
+            t("cli.demo.analysis.opening_fact.sailors", locale=locale),
+            t("cli.demo.analysis.opening_fact.light", locale=locale),
+        ],
     }
 
 

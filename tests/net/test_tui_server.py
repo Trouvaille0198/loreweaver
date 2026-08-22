@@ -279,6 +279,26 @@ async def test_oversized_input_is_rejected_without_starting_a_turn():
         await server.close()
 
 
+async def test_input_is_rejected_while_module_import_is_processing():
+    services = _services(responder=lambda messages, tools: assistant_text("should not run"))
+    keystore = Keystore()
+    key = keystore.add(room="import-room", name="Nora")
+    server = TuiServer(services, keystore, port=0)
+    url = await _start(server)
+    try:
+        ws, *_ = await _connect_and_join(url, key, "Nora")
+        await services.store.state_set("tui:group:import-room", "module_init_status", "processing")
+        await ws.send(json.dumps({"type": "input", "text": "开始游戏"}))
+
+        error = await _recv(ws)
+        assert error["type"] == "error"
+        assert error["code"] == "module_initializing"
+        assert not server.turns
+        await ws.close()
+    finally:
+        await server.close()
+
+
 def test_input_too_long_error_has_a_chinese_translation():
     from infra.i18n import get_i18n
     from net.session import error_frame

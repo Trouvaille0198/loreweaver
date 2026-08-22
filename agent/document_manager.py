@@ -36,6 +36,7 @@ dependency.
 
 from __future__ import annotations
 
+import asyncio
 import io
 from datetime import datetime
 from typing import Any
@@ -216,6 +217,7 @@ class VectorDatabaseManager:
         collection_name: str = "trpg_documents",
         max_search_results: int = 15,
         llm: LLMClient | None = None,
+        operation_lock: asyncio.Lock | None = None,
     ) -> None:
         self.embeddings = embeddings
         self.vector_store = vector_store
@@ -223,6 +225,7 @@ class VectorDatabaseManager:
         self.collection_name = collection_name
         self.max_search_results = max_search_results
         self.llm = llm
+        self.operation_lock = operation_lock or asyncio.Lock()
         self.document_processor = DocumentProcessor()
 
     async def store_document(
@@ -233,13 +236,18 @@ class VectorDatabaseManager:
         chat_key: str,
         document_type: str = "module",
     ) -> int:
-        """Chunk, embed and upsert `text_content` into the vector store.
+        async with self.operation_lock:
+            return await self._store_document(document_id, filename, text_content, chat_key, document_type)
 
-        Returns the number of chunks stored. Point ids are deterministic
-        (``f"{document_id}:{chunk_index}"``), so re-storing the same
-        `document_id` overwrites its previously stored chunks at matching
-        indices rather than duplicating them.
-        """
+    async def _store_document(
+        self,
+        document_id: str,
+        filename: str,
+        text_content: str,
+        chat_key: str,
+        document_type: str = "module",
+    ) -> int:
+        """Chunk, embed and atomically publish one document's vectors."""
         chunks = self.document_processor.chunk_text(text_content)
         vectors = await self.embeddings.embed(chunks) if chunks else []
         created_at = datetime.now().isoformat()
@@ -287,12 +295,17 @@ class VectorDatabaseManager:
         document_type: str | None = None,
         limit: int = 5,
     ) -> list[dict[str, Any]]:
-        """Cosine-similarity search over `chat_key`'s documents, optionally
-        narrowed to `document_type`.
+        async with self.operation_lock:
+            return await self._search_documents(query, chat_key, document_type, limit)
 
-        Returns dicts shaped like the source's Qdrant hits:
-        `{id, score, text, filename, document_id, document_type, chunk_index}`.
-        """
+    async def _search_documents(
+        self,
+        query: str,
+        chat_key: str,
+        document_type: str | None = None,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        """Embed a query and search the matching document lane."""
         [query_vector] = await self.embeddings.embed([query])
 
         search_filter: dict[str, Any] = {"chat_key": chat_key}
@@ -315,12 +328,11 @@ class VectorDatabaseManager:
         ]
 
     async def delete_document(self, document_id: str, chat_key: str) -> bool:
-        """Delete every stored chunk of `document_id` scoped to `chat_key`.
+        async with self.operation_lock:
+            return await self._delete_document(document_id, chat_key)
 
-        Returns True on success, including when there was nothing to delete
-        (mirrors the source's behavior); returns False only if the store
-        itself raises.
-        """
+    async def _delete_document(self, document_id: str, chat_key: str) -> bool:
+        """Delete every stored chunk of one room document."""
         try:
             matches = await self.vector_store.scroll(
                 filter={"document_id": document_id, "chat_key": chat_key},

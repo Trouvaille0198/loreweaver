@@ -847,7 +847,12 @@ class ModuleTools(_KnowledgeToolsBase):
             if not fulltext and not chunks:
                 return i18n.t("kp_tools.know.init.no_document")
 
-            await self._services.module_init.initialize(chat_key)
+            await self._services.module_init.initialize(
+                chat_key,
+                locale=ctx.locale,
+                llm=await self._services.main_llm(chat_key),
+                model=await self._services.room_llm_model(chat_key),
+            )
 
             new_status = await store.state_get(chat_key, _status_key(chat_key))
             if new_status == "ready_fallback":
@@ -961,7 +966,13 @@ class DocumentTools(_KnowledgeToolsBase):
                 await self._services.store.state_set(chat_key, _fulltext_key(chat_key), text_content)
                 # `initialize` emits the "analyze"/"build" stages itself (its LLM analysis is the
                 # slow one); we bracket it with the fast read/embed and the final done here.
-                await self._services.module_init.initialize(chat_key, progress=progress)
+                await self._services.module_init.initialize(
+                    chat_key,
+                    progress=progress,
+                    locale=ctx.locale,
+                    llm=await self._services.main_llm(chat_key),
+                    model=await self._services.room_llm_model(chat_key),
+                )
                 status = await self._services.store.state_get(chat_key, _status_key(chat_key))
                 await _emit(progress, "done", status or "")
                 if status == "ready_fallback":
