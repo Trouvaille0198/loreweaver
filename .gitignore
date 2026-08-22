@@ -105,3 +105,6 @@ keeper-key.txt
 
 # --- 《安土》 marketing footage (generated video/stills for the trailer; never publish from here)
 marketing/
+
+# Staging area for copyrighted tabletop source material — kept local, not pushed.
+content-library/

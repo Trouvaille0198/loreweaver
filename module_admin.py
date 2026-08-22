@@ -7,27 +7,42 @@ all responses; ``serve_both.py`` installs it on the web server's AdminService.
 
 from __future__ import annotations
 
+import base64
+import io
 import json
+import zipfile
 from pathlib import Path
 from typing import Any
 
 from agent.context import AgentCtx, LocalFs
 from agent.kp_tools_knowledge import DocumentTools
 from core.documents import KEEPER_VIEWER, MODULE_POOL_ID
+from core.worldbook import LORE_DOC_TYPE
 from net.admin import AdminService, _error
 from net.room_backup import chat_key_for_room
 
 _ALLOWED_SUFFIXES = frozenset({".md", ".markdown", ".txt"})
+_WORLDBOOK_SUFFIXES = frozenset({".json"})
+_BUNDLE_SUFFIX = ".zip"
 _CUSTOM_KINDS = frozenset(
     {
         "module_list",
         "module_detail",
         "module_upload",
+        "module_update",
+        "module_bundle_upload",
         "module_import",
         "module_delete",
+        "worldbook_list",
+        "worldbook_detail",
+        "worldbook_upload",
+        "worldbook_select",
+        "worldbook_disable",
     }
 )
 _MAX_SOURCE_BYTES = 2 * 1024 * 1024
+_MAX_BUNDLE_BYTES = 64 * 1024 * 1024
+_MAX_BUNDLE_FILES = 128
 
 
 def install_module_admin(admin: AdminService) -> AdminService:
@@ -85,15 +100,35 @@ class ModuleAdminService:
             return await self._detail(caller_room, root, str(payload.get("name") or ""))
         if kind == "module_upload":
             return await self._upload(root, payload)
+        if kind == "module_update":
+            return await self._update(caller_room, root, payload)
+        if kind == "module_bundle_upload":
+            return await self._bundle_upload(root, payload)
         if kind == "module_import":
-            return await self._import(caller_room, root, payload, i18n)
+            requested_locale = str(payload.get("locale") or "").replace("_", "-").split("-", 1)[0].casefold()
+            import_i18n = i18n.with_locale(requested_locale) if requested_locale in {"en", "zh"} else i18n
+            return await self._import(caller_room, root, payload, import_i18n)
         if kind == "module_delete":
             return await self._delete(caller_room, root, payload)
-        raise ValueError("unknown module action")
+        worldbook_root = self._worldbook_root()
+        worldbook_root.mkdir(parents=True, exist_ok=True)
+        if kind == "worldbook_list":
+            return await self._worldbook_list(caller_room, worldbook_root)
+        if kind == "worldbook_detail":
+            return await self._worldbook_detail(caller_room, worldbook_root, str(payload.get("name") or ""))
+        if kind == "worldbook_upload":
+            return await self._worldbook_upload(worldbook_root, payload)
+        if kind == "worldbook_select":
+            return await self._worldbook_select(caller_room, worldbook_root, payload, i18n)
+        if kind == "worldbook_disable":
+            return await self._worldbook_disable(caller_room)
+        raise ValueError("unknown admin action")
 
     def _root(self) -> Path:
         return Path(self.services.settings.data_dir).resolve() / "modules"
 
+    def _worldbook_root(self) -> Path:
+        return Path(self.services.settings.data_dir).resolve() / "worldbooks"
     @staticmethod
     def _payload(frame: dict[str, Any]) -> dict[str, Any]:
         raw = frame.get("description")
@@ -137,6 +172,16 @@ class ModuleAdminService:
             if path.is_file() and not path.is_symlink() and path.suffix.casefold() in _ALLOWED_SUFFIXES
         ]
 
+    @staticmethod
+    def _title(content: str, name: str) -> str:
+        for line in content.splitlines():
+            candidate = line.strip()
+            if candidate.startswith("# "):
+                title = candidate[2:].strip()
+                if title:
+                    return title
+        return Path(name).stem
+
     async def _current_name(self, caller_room: str, root: Path, files: list[tuple[str, Path]]) -> str:
         chat_key = chat_key_for_room(caller_room)
         recorded = str(await self.services.store.state_get(chat_key, "module_source") or "")
@@ -161,6 +206,9 @@ class ModuleAdminService:
     async def _list(self, caller_room: str, root: Path) -> dict[str, Any]:
         files = self._files(root)
         current = await self._current_name(caller_room, root, files)
+        chat_key = chat_key_for_room(caller_room)
+        import_status = str(await self.services.store.state_get(chat_key, "module_import_status") or "")
+        importing_name = str(await self.services.store.state_get(chat_key, "module_import_name") or "")
         modules = []
         for name, path in files:
             stat = path.stat()
@@ -170,9 +218,9 @@ class ModuleAdminService:
                     "size": stat.st_size,
                     "modified": int(stat.st_mtime * 1000),
                     "current": name == current,
+                    "importing": name == importing_name and import_status == "processing",
                 }
             )
-        chat_key = chat_key_for_room(caller_room)
         status = str(await self.services.store.state_get(chat_key, "module_init_status") or "")
         return _module_reply(
             "module_list",
@@ -190,6 +238,8 @@ class ModuleAdminService:
         current = await self._current_name(caller_room, root, files)
         chat_key = chat_key_for_room(caller_room)
         status = str(await self.services.store.state_get(chat_key, "module_init_status") or "")
+        import_status = str(await self.services.store.state_get(chat_key, "module_import_status") or "")
+        import_name = str(await self.services.store.state_get(chat_key, "module_import_name") or "")
         pool = None
         if current == name:
             pool = await self.services.documents.get_view(chat_key, "module_pool", MODULE_POOL_ID, KEEPER_VIEWER)
@@ -203,8 +253,14 @@ class ModuleAdminService:
                 "size": stat.st_size,
                 "modified": int(stat.st_mtime * 1000),
                 "content": content,
+                "title": self._title(content, name),
                 "current": current == name,
                 "status": status if current == name else "",
+                "import_status": import_status if import_name == name else "",
+                # The room is unavailable while ANY module is being imported;
+                # mark the current source too so a refreshed page cannot show its
+                # stale pool during the transition.
+                "importing": import_status == "processing",
                 "pool": pool,
             },
         )
@@ -220,12 +276,95 @@ class ModuleAdminService:
         path.write_bytes(raw)
         return _module_reply("module_upload", True, name, {"name": name})
 
+    async def _update(self, caller_room: str, root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+        name, path = self._path(root, str(payload.get("name") or ""))
+        if not path.is_file():
+            return _module_reply("module_update", False, name, {"error": "source_not_found"})
+        current_before = await self._current_name(caller_room, root, self._files(root))
+        content = payload.get("content")
+        if not isinstance(content, str) or not content.strip():
+            return _module_reply("module_update", False, name, {"error": "empty_module_content"})
+        raw = content.encode("utf-8")
+        if len(raw) > _MAX_SOURCE_BYTES:
+            return _module_reply("module_update", False, name, {"error": "module_source_too_large"})
+        path.write_bytes(raw)
+        if current_before == name:
+            # Keep the room/source association while the edited file waits for
+            # an explicit re-import.  Without this marker, a generated module
+            # whose source was discovered by content comparison would look
+            # inactive after its file changed, making deletion unsafe.
+            await self.services.store.state_set(chat_key_for_room(caller_room), "module_source", name)
+        stat = path.stat()
+        return _module_reply(
+            "module_update",
+            True,
+            name,
+            {
+                "name": name,
+                "size": stat.st_size,
+                "modified": int(stat.st_mtime * 1000),
+                "current": current_before == name,
+            },
+        )
+
+    async def _bundle_upload(self, root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+        import pypdf
+
+        name = str(payload.get("name") or "content-library.zip").strip()
+        if Path(name).suffix.casefold() != ".zip" or Path(name).name != name:
+            raise ValueError("invalid bundle filename")
+        encoded = payload.get("archive")
+        if not isinstance(encoded, str):
+            raise ValueError("empty module bundle")
+        raw = base64.b64decode(encoded, validate=True)
+        if len(raw) > _MAX_BUNDLE_BYTES:
+            raise ValueError("module bundle too large")
+        sections: list[str] = []
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            members = [member for member in archive.infolist() if not member.is_dir()]
+            if len(members) > _MAX_BUNDLE_FILES:
+                raise ValueError("too many bundle files")
+            for member in members:
+                candidate = Path(member.filename)
+                if candidate.is_absolute() or ".." in candidate.parts:
+                    raise ValueError("bundle path escapes archive")
+                suffix = candidate.suffix.casefold()
+                if suffix not in {".md", ".markdown", ".txt", ".pdf"}:
+                    continue
+                data = archive.read(member)
+                if suffix == ".pdf":
+                    reader = pypdf.PdfReader(io.BytesIO(data))
+                    text = "\n".join(page.extract_text() or "" for page in reader.pages)
+                else:
+                    text = data.decode("utf-8")
+                if text.strip():
+                    sections.append(f"# Source: {member.filename}\n\n{text.strip()}")
+        if not sections:
+            raise ValueError("bundle has no readable module sources")
+        output_name = Path(name).stem + ".md"
+        _, output = self._path(root, output_name)
+        content = "\n\n---\n\n".join(sections)
+        if len(content.encode("utf-8")) > _MAX_SOURCE_BYTES:
+            raise ValueError("module source too large")
+        output.write_text(content, encoding="utf-8")
+        return _module_reply(
+            "module_bundle_upload",
+            True,
+            output_name,
+            {"name": output_name, "files": len(sections)},
+        )
+
     async def _import(self, caller_room: str, root: Path, payload: dict[str, Any], i18n: Any) -> dict[str, Any]:
         name, path = self._path(root, str(payload.get("name") or ""))
         if not path.is_file():
             return _module_reply("module_import", False, name, {"error": "source_not_found"})
         source_text = path.read_text(encoding="utf-8")
         chat_key = chat_key_for_room(caller_room)
+        # Publish an explicit transition before vector extraction/LLM analysis. The
+        # old pool remains stored for rollback, but every gameplay request is refused
+        # while this marker is present, so it can never be mistaken for the new module.
+        await self.services.store.state_set(chat_key, "module_import_status", "processing")
+        await self.services.store.state_set(chat_key, "module_import_name", name)
         ctx = AgentCtx(
             chat_key=chat_key,
             user_id="keeper",
@@ -240,6 +379,13 @@ class ModuleAdminService:
         ok = status in {"ready", "ready_fallback"} and installed_text == source_text
         if ok:
             await self.services.store.state_set(chat_key, "module_source", name)
+            await self.services.store.state_delete(chat_key, "module_import_status")
+            await self.services.store.state_delete(chat_key, "module_import_name")
+        else:
+            # DocumentTools returns a localized failure string instead of raising when
+            # vector extraction/initialization fails before publishing a final state.
+            await self.services.store.state_set(chat_key, "module_init_error", receipt[-1000:])
+            await self.services.store.state_set(chat_key, "module_import_status", "failed")
         return _module_reply(
             "module_import",
             ok,
@@ -256,6 +402,189 @@ class ModuleAdminService:
             return _module_reply("module_delete", False, name, {"error": "module_in_use"})
         path.unlink()
         return _module_reply("module_delete", True, name, {"name": name})
+    @staticmethod
+    def _safe_worldbook_name(raw: str) -> str:
+        name = raw.strip()
+        path = Path(name)
+        if not name or path.name != name or name in {".", ".."}:
+            raise ValueError("invalid worldbook filename")
+        if any(ord(char) < 32 for char in name):
+            raise ValueError("invalid worldbook filename")
+        if path.suffix.casefold() not in _WORLDBOOK_SUFFIXES:
+            raise ValueError("unsupported worldbook filename")
+        return name
+
+    @classmethod
+    def _worldbook_path(cls, root: Path, raw: str) -> tuple[str, Path]:
+        name = cls._safe_worldbook_name(raw)
+        target = root / name
+        if target.is_symlink():
+            raise ValueError("symlink worldbook source")
+        if target.resolve().parent != root.resolve():
+            raise ValueError("worldbook path escapes source directory")
+        return name, target
+
+    @classmethod
+    def _worldbook_files(cls, root: Path) -> list[tuple[str, Path]]:
+        return [
+            (path.name, path)
+            for path in sorted(root.iterdir(), key=lambda item: item.name.casefold())
+            if path.is_file() and not path.is_symlink() and path.suffix.casefold() in _WORLDBOOK_SUFFIXES
+        ]
+
+    @staticmethod
+    def _worldbook_entries(data: Any) -> list[dict[str, Any]]:
+        if isinstance(data, dict) and "entries" not in data:
+            book = data.get("character_book") or (data.get("data") or {}).get("character_book")
+            if isinstance(book, dict):
+                data = book
+        raw_entries = data.get("entries", []) if isinstance(data, dict) else data
+        return [entry for entry in raw_entries if isinstance(entry, dict)] if isinstance(raw_entries, list) else []
+
+    async def _attached_worldbooks(self, chat_key: str) -> dict[str, list[dict[str, Any]]]:
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for document in await self.services.documents.list(chat_key, LORE_DOC_TYPE):
+            if not document.source:
+                continue
+            grouped.setdefault(document.source, []).append(dict(document.data))
+        return grouped
+
+    @staticmethod
+    def _entry_views(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {
+                "title": str(entry.get("title") or entry.get("comment") or entry.get("name") or "Untitled"),
+                "content": str(entry.get("content") or ""),
+                "keys": entry.get("keys") or entry.get("key") or [],
+                "secret": bool(entry.get("secret", False)),
+            }
+            for entry in entries
+        ]
+
+    async def _worldbook_list(self, caller_room: str, root: Path) -> dict[str, Any]:
+        chat_key = chat_key_for_room(caller_room)
+        current = await self.services.worldbook.active_source(chat_key)
+        attached = await self._attached_worldbooks(chat_key)
+        books_by_name: dict[str, dict[str, Any]] = {}
+        for name, path in self._worldbook_files(root):
+            stat = path.stat()
+            books_by_name[name] = {
+                "name": name,
+                "size": stat.st_size,
+                "modified": int(stat.st_mtime * 1000),
+                "current": current == name,
+                "attached": name in attached,
+                "origin": "room" if name in attached else "library",
+                "entry_count": len(attached.get(name, [])),
+                "source_kind": "file",
+            }
+        for name, entries in attached.items():
+            if name in books_by_name:
+                continue
+            books_by_name[name] = {
+                "name": name,
+                "size": 0,
+                "modified": 0,
+                "current": current == name,
+                "attached": True,
+                "origin": "room",
+                "entry_count": len(entries),
+                "source_kind": "attached",
+            }
+        books = sorted(books_by_name.values(), key=lambda book: str(book["name"]).casefold())
+        visible_current = current if current != "__disabled__" else ""
+        return _module_reply(
+            "worldbook_list",
+            True,
+            visible_current,
+            {"worldbooks": books, "current": visible_current, "enabled": current != "__disabled__"},
+        )
+
+    async def _worldbook_detail(self, caller_room: str, root: Path, raw_name: str) -> dict[str, Any]:
+        name = raw_name.strip()
+        chat_key = chat_key_for_room(caller_room)
+        attached = await self._attached_worldbooks(chat_key)
+        path: Path | None = None
+        try:
+            _, candidate = self._worldbook_path(root, name)
+            if candidate.is_file():
+                path = candidate
+        except ValueError:
+            path = None
+        current = await self.services.worldbook.active_source(chat_key)
+        if path is not None:
+            content = path.read_text(encoding="utf-8-sig")
+            entries = self._worldbook_entries(json.loads(content))
+            stat = path.stat()
+            source_kind = "file"
+            size = stat.st_size
+            modified = int(stat.st_mtime * 1000)
+        elif name in attached:
+            content = ""
+            entries = attached[name]
+            source_kind = "attached"
+            size = 0
+            modified = 0
+        else:
+            return _module_reply("worldbook_detail", False, name, {"error": "source_not_found"})
+        return _module_reply(
+            "worldbook_detail",
+            True,
+            name,
+            {
+                "name": name,
+                "size": size,
+                "modified": modified,
+                "content": content,
+                "current": current == name,
+                "attached": name in attached,
+                "source_kind": source_kind,
+                "entry_count": len(entries),
+                "entries": self._entry_views(entries),
+            },
+        )
+
+    async def _worldbook_upload(self, root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+        name, path = self._worldbook_path(root, str(payload.get("name") or ""))
+        content = payload.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("empty worldbook content")
+        raw = content.encode("utf-8")
+        if len(raw) > _MAX_SOURCE_BYTES:
+            raise ValueError("worldbook source too large")
+        json.loads(content)
+        path.write_bytes(raw)
+        return _module_reply("worldbook_upload", True, name, {"name": name})
+
+    async def _worldbook_select(
+        self, caller_room: str, root: Path, payload: dict[str, Any], i18n: Any
+    ) -> dict[str, Any]:
+        name = str(payload.get("name") or "").strip()
+        chat_key = chat_key_for_room(caller_room)
+        attached = await self._attached_worldbooks(chat_key)
+        source_kind = str(payload.get("source_kind") or "")
+        if source_kind == "attached" and name in attached:
+            await self.services.worldbook.set_active_source(chat_key, name)
+            return _module_reply(
+                "worldbook_select",
+                True,
+                name,
+                {"count": len(attached[name]), "current": name, "source_kind": "attached"},
+            )
+        _, path = self._worldbook_path(root, name)
+        if not path.is_file():
+            return _module_reply("worldbook_select", False, name, {"error": "source_not_found"})
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        count = await self.services.worldbook.import_entries(chat_key, data, source=name, is_keeper=True)
+        if count == 0:
+            return _module_reply("worldbook_select", False, name, {"error": "worldbook_empty"})
+        await self.services.worldbook.set_active_source(chat_key, name)
+        return _module_reply("worldbook_select", True, name, {"count": count, "current": name, "source_kind": "file"})
+
+    async def _worldbook_disable(self, caller_room: str) -> dict[str, Any]:
+        await self.services.worldbook.set_active_source(chat_key_for_room(caller_room), "__disabled__")
+        return _module_reply("worldbook_disable", True, "", {"enabled": False})
+
 
 
 def _module_reply(kind: str, ok: bool, name: str, detail: dict[str, Any]) -> dict[str, Any]:

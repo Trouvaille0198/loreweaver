@@ -124,6 +124,28 @@ async def test_import_sillytavern_character_book_entries():
     assert count == 1
     assert len(await manager.list("chat-a")) == 1
     assert [entry.content for entry in matches] == ["The observatory tracks red stars."]
+async def test_active_worldbook_source_switches_room_injection_without_deleting_entries():
+    manager = Worldbook(Store(":memory:"))
+    await manager.import_entries(
+        "chat-a",
+        {"entries": [{"title": "North", "content": "North setting.", "keys": ["setting"]}]},
+        source="north.json",
+        is_keeper=True,
+    )
+    await manager.import_entries(
+        "chat-a",
+        {"entries": [{"title": "South", "content": "South setting.", "keys": ["setting"]}]},
+        source="south.json",
+        is_keeper=True,
+    )
+
+    await manager.set_active_source("chat-a", "north.json")
+    assert [entry.title for entry in await manager.match("chat-a", "setting", role="keeper")] == ["North"]
+
+    await manager.set_active_source("chat-a", "south.json")
+    assert [entry.title for entry in await manager.match("chat-a", "setting", role="keeper")] == ["South"]
+    assert {entry.title for entry in await manager.list("chat-a")} == {"North", "South"}
+
 
 
 async def test_inject_world_lore_prompt_role_filtering_and_empty_case():

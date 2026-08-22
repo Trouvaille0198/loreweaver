@@ -420,6 +420,19 @@ async def test_analysis_prompt_is_localized_and_always_embeds_the_fixed_schema()
     assert '"opening_facts"' in prompt_en and '"opening_facts"' in prompt_zh
 
 
+async def test_initialize_uses_requested_locale_for_analysis_prompt():
+    store = Store()
+    await store.state_set("chat9", "module_fulltext", MODULE_EN_TEXT)
+    llm = _RecordingLLM(assistant_text("{}"))
+    initializer = _make_initializer(llm=llm, store=store, locale="en")
+
+    await initializer.initialize("chat9", locale="zh-CN")
+
+    prompt = llm.kwargs["messages"][0]["content"]
+    assert "TRPG 模组解析专家" in prompt
+    assert "所有自然语言字段" in prompt
+
+
 # ---------------------------------------------------------------------------
 # _build_knowledge_pools — direct unit coverage of the keeper/player split
 # ---------------------------------------------------------------------------
@@ -517,3 +530,47 @@ def test_fallback_full_analysis_caps_at_twenty_scenes():
     analysis = mi._fallback_full_analysis(text)
 
     assert len(analysis["scenes"]) == 20
+
+
+def test_fallback_full_analysis_extracts_markdown_module_catalog_sections():
+    mi = _make_initializer()
+    text = """# 夜半采核酸
+
+## NPC 设计
+
+### 王璐（采样员）
+
+- 外在形象：戴口罩的采样员。
+
+### 林雪（志愿者）
+
+- 外在形象：穿蓝色马甲。
+
+## 线索链
+
+1. 采样管液体颜色异常。
+2. 地下车库有白色根须。
+
+## 时间表
+
+1. 19:30 引子开始。
+2. 20:00 异常线索浮现。
+
+## 真相揭露
+
+守秘人知道孢子来自地下管道。
+
+## 威胁 / 反派
+
+### 隐默者
+
+- 身体半埋在灰白苔藓中。
+"""
+
+    analysis = mi._fallback_full_analysis(text)
+
+    assert [npc["name"] for npc in analysis["npcs"]] == ["王璐（采样员）", "林雪（志愿者）"]
+    assert len(analysis["clues"]) == 2
+    assert analysis["timeline"][0]["time"] == "19:30"
+    assert len(analysis["truths"]) == 1
+    assert analysis["threats"][0]["name"] == "隐默者"
