@@ -268,3 +268,52 @@ async def test_state_character_attributes_are_the_declared_characteristics_in_pa
     assert list(state["character"]["attributes"]) == ["STR", "CON", "SIZ", "DEX", "APP", "INT", "POW", "EDU", "LUC"]
     assert {"HP", "HPMAX", "SAN", "SANMAX", "MP", "IDEA", "KNOW"}.isdisjoint(state["character"]["attributes"])
     assert {entry["id"] for entry in state["character"]["resources"]} >= {"hp", "san", "mp"}
+
+
+async def test_state_character_includes_private_sheet_details_for_its_owner():
+    """The player's character page gets prose and pack-declared sheet surfaces
+    in the same state snapshot; these fields are additive and remain absent when
+    a sheet has nothing to say."""
+    services = _services()
+    ctx = _room_ctx("character-details-room", user_id="p1")
+    sheet = services.characters.generate_character("coc7", "Nora")
+    sheet.background = "A cautious archivist who distrusts bright rooms."
+    sheet.notes = "Remembers the bell beneath the lake."
+    sheet.equipment = ["Oil lamp", "Brass key"]
+    sheet.secondary_attributes["IDEA"] = 65
+    sheet.occupation = "Archivist"
+    await services.characters.save_character(ctx.user_id, ctx.chat_key, sheet)
+
+    character = (await build_room_state(services, ctx))["character"]
+
+    assert character["background"] == sheet.background
+    assert character["notes"] == sheet.notes
+    assert character["equipment"] == sheet.equipment
+    assert character["secondary_attributes"]["IDEA"] == 65
+    assert character["fields"]["occupation"] == "Archivist"
+
+
+async def test_party_members_include_public_sheet_details_without_private_notes():
+    """The party popup can render other characters from the shared roster, but
+    private notes stay on the owner's ``state.character`` payload only."""
+    services = _services()
+    ctx = _room_ctx("party-details-room", user_id="p1")
+    ash = services.characters.generate_character("coc7", "Ash")
+    ash.background = "A patient investigator."
+    ash.notes = "Private keeper-facing thought."
+    ash.equipment = ["Lantern"]
+    ash.skills["Library Use"] = 70
+    await services.characters.save_character(ctx.user_id, ctx.chat_key, ash)
+
+    bo = services.characters.generate_character("coc7", "Bo")
+    bo.background = "A quiet scout."
+    bo.skills["Stealth"] = 55
+    await services.characters.save_character("p2", ctx.chat_key, bo)
+
+    state = await build_room_state(services, ctx)
+    member = next(entry for entry in state["party"] if entry["name"] == "Bo")
+
+    assert member["background"] == bo.background
+    assert member["skills"]["Stealth"] == 55
+    assert "attributes" in member
+    assert "notes" not in member

@@ -446,6 +446,9 @@ class CharacterManager:
             "name": character.name,
             "system": character.system,
             "resources": character_resources(character),
+            "attributes": dict(character.attributes),
+            "secondary_attributes": dict(getattr(character, "secondary_attributes", {})),
+            "skills": dict(getattr(character, "skills", {})),
             "fields": {
                 name: value
                 for name, value in character.field_values().items()
@@ -454,6 +457,12 @@ class CharacterManager:
             "status_effects": effective_status_effects,
             "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
         }
+        equipment = getattr(character, "equipment", [])
+        if isinstance(equipment, list) and equipment:
+            status_summary["equipment"] = list(equipment)
+        background = getattr(character, "background", "")
+        if isinstance(background, str) and background.strip():
+            status_summary["background"] = background
         if getattr(character, "avatar", None):
             status_summary["avatar"] = character.avatar
         roster[character.name] = status_summary

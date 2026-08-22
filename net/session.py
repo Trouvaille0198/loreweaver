@@ -105,9 +105,7 @@ def resolve_session_fields(keystore: Keystore, key: str, locale: str) -> dict[st
         return None
     client_id = member_id_for_key(key)
     name = entry.name or client_id
-    source = SessionSource(
-        platform="tui", chat_type="group", chat_id=entry.room, user_id=client_id, user_name=name
-    )
+    source = SessionSource(platform="tui", chat_type="group", chat_id=entry.room, user_id=client_id, user_name=name)
     return {
         "id": client_id,
         "user_key": source.user_key(),
@@ -518,6 +516,32 @@ class SessionCore:
             window = entries[-_HISTORY_REPLAY_CAP:]
             before_window = entries[:-_HISTORY_REPLAY_CAP] if len(entries) > _HISTORY_REPLAY_CAP else []
 
+            # Load the room's media history once and interleave it by campaign turn,
+            # so a picture appears at the same point in the story it was generated
+            # (its `turn` stamp from `record_media_history`) instead of being appended
+            # after the whole transcript. Frames whose `turn` falls inside the replayed
+            # window are flushed as the messages of that turn replay; anything newer (or
+            # unstamped) waits until after the transcript.
+            media_raw = await self.services.store.state_get(chat_key, "media_history")
+            media_history = json.loads(media_raw) if media_raw else []
+            media_by_turn: dict[int, list[dict]] = {}
+            if isinstance(media_history, list):
+                for frame in media_history[-MEDIA_HISTORY_REPLAY_CAP:]:
+                    if not (isinstance(frame, dict) and frame.get("type") == "media"):
+                        continue
+                    turn = frame.get("turn")
+                    if not isinstance(turn, int):
+                        turn = 0
+                    media_by_turn.setdefault(turn, []).append(frame)
+
+            async def _flush_media_upto(turn: int) -> None:
+                """Emit every media frame stamped at or below `turn`, in history order."""
+                for t in sorted(media_by_turn):
+                    if t > turn:
+                        break
+                    for frame in media_by_turn.pop(t):
+                        await self._deliver_replay(member, Event.media(frame), replayed)
+
             async def _deliver_anchored(anchor: str) -> None:
                 for record_id, event in events_by_anchor.pop(anchor, []):
                     await self._deliver_replay(member, event, replayed, record_id)
@@ -549,7 +573,15 @@ class SessionCore:
                 anchor = str(entry.get("_lw_id") or "")
                 if text and role == "user" and not text.startswith((".", "/")):
                     await self._deliver_replay(
-                        member, Event.narrative(speaker="player", text=text, fmt="plain"), replayed, anchor
+                        member,
+                        Event.narrative(
+                            speaker="player",
+                            name=str(entry.get("_lw_name") or ""),
+                            text=text,
+                            fmt="plain",
+                        ),
+                        replayed,
+                        anchor,
                     )
                 elif text and role == "assistant":
                     await self._deliver_replay(
@@ -560,19 +592,21 @@ class SessionCore:
                 # after the reply. The legacy room_state blob has no ids: nothing anchors.
                 if anchor:
                     await _deliver_anchored(anchor)
+                # …and any picture generated within this turn, so it lands beside the
+                # story moment it belongs to rather than at the tail of the transcript.
+                await _flush_media_upto(int(entry.get("_lw_turn") or entry.get("turn") or 0))
             if legacy_blob:
                 await _deliver_anchored("")
-            media_raw = await self.services.store.state_get(chat_key, "media_history")
-            media_history = json.loads(media_raw) if media_raw else []
-            if isinstance(media_history, list):
-                for frame in media_history[-MEDIA_HISTORY_REPLAY_CAP:]:
-                    if isinstance(frame, dict) and frame.get("type") == "media":
-                        await self._deliver_replay(member, Event.media(frame), replayed)
+            # Frames stamped for a turn outside the replayed window (or unstamped)
+            # trail the transcript, in history order.
+            await _flush_media_upto(float("inf"))
             audio_items = await list_audio_items(self.services.store, chat_key)
             for frame in audio_items[-MEDIA_HISTORY_REPLAY_CAP:]:
                 await self._deliver_replay(member, Event.audio(frame), replayed)
             if audio_items or await has_audio_state(self.services.store, chat_key):
-                await self._deliver_replay(member, Event.audio(await audio_state_frame(self.services.store, chat_key)), replayed)
+                await self._deliver_replay(
+                    member, Event.audio(await audio_state_frame(self.services.store, chat_key)), replayed
+                )
             # The room's upload policy greets a joining member (UPSTREAM item 14, from
             # the studio): the toggle reply used to be unicast to the issuing keeper, so
             # everyone else could only learn "uploads are off" from their first refused
@@ -694,9 +728,10 @@ class SessionCore:
                         reauthorize=lambda: self._refresh_member_authorization(member),
                     )
                 await member.send_frame(reply)
-                if kind in {"admin_delete_room", "admin_delete_room_data"} and reply.get(
-                    "type"
-                ) not in {"error", "admin_error"}:
+                if kind in {"admin_delete_room", "admin_delete_room_data"} and reply.get("type") not in {
+                    "error",
+                    "admin_error",
+                }:
                     # The dispatch above retired the room while HOLDING its turn lock, so
                     # `delete_room_data`'s in-op disposal necessarily declined (a held lock
                     # must never be swapped out from under its holder). The `async with`
@@ -789,10 +824,14 @@ class SessionCore:
         if existing is not None:
             if is_audio_mime(existing.mime):
                 audio_frame = await self._publish_audio_item(member, existing)
-                await member.send_frame({"type": "media_accept", "upload_id": "", "existing": True, "audio": audio_frame})
+                await member.send_frame(
+                    {"type": "media_accept", "upload_id": "", "existing": True, "audio": audio_frame}
+                )
             else:
                 media_frame = self._media_frame(existing, member)
-                await member.send_frame({"type": "media_accept", "upload_id": "", "existing": True, "media": media_frame})
+                await member.send_frame(
+                    {"type": "media_accept", "upload_id": "", "existing": True, "media": media_frame}
+                )
                 await self._publish_media(member, media_frame)
             return
 
@@ -936,11 +975,7 @@ class SessionCore:
 
     def _drop_pending_room(self, session_key: str) -> None:
         """Invalidate every uncommitted offer before replacing/deleting room state."""
-        stale = [
-            upload_id
-            for upload_id, pending in self._pending_media.items()
-            if pending.room == session_key
-        ]
+        stale = [upload_id for upload_id, pending in self._pending_media.items() if pending.room == session_key]
         for upload_id in stale:
             self._pending_media.pop(upload_id, None)
 

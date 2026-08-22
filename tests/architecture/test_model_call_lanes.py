@@ -44,6 +44,7 @@ MODEL_CALL_LANES: dict[str, str] = {
     "agent/module_initializer.py": AUTHORING,
     "agent/document_manager.py": AUTHORING,
     "agent/char_from_persona.py": AUTHORING,
+    "gateway/commands/media.py": AUTHORING,
     "infra/llm_retry.py": PLUMBING,
     "infra/providers.py": PLUMBING,
 }

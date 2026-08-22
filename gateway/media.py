@@ -36,7 +36,17 @@ async def record_media_history(store: Store, chat_key: str, frame: dict[str, Any
         history = []
     if not isinstance(history, list):
         history = []
-    history.append(dict(frame))
+    # Stamp the campaign turn so a join replay can interleave the picture at the
+    # same point in the story it was generated (see `_replay_history_body`). A
+    # frame that already carries one (a re-recorded upload) keeps it.
+    if "turn" not in frame:
+        try:
+            from agent.chronicle import chronicle_turn
+
+            frame = dict(frame, turn=await chronicle_turn(store, chat_key))
+        except Exception:
+            frame = dict(frame, turn=0)
+    history.append(frame)
     await store.state_set(chat_key, store_key, json.dumps(history[-MEDIA_HISTORY_REPLAY_CAP:], ensure_ascii=False),
     )
 

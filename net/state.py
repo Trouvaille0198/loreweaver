@@ -170,6 +170,23 @@ async def _character_payload(
         "skills": _wire_skills(sheet),
         "status_effects": status_effects,
     }
+    # Character prose and the pack-declared secondary surfaces are private to
+    # the owning player's sheet. They are additive wire fields: old clients
+    # ignore them, while a character page can show the complete card without
+    # making a second command round-trip.
+    for key in ("background", "notes"):
+        value = getattr(sheet, key, "")
+        if isinstance(value, str) and value.strip():
+            payload[key] = value
+    equipment = getattr(sheet, "equipment", [])
+    if isinstance(equipment, list) and equipment:
+        payload["equipment"] = list(equipment)
+    secondary = getattr(sheet, "secondary_attributes", {})
+    if isinstance(secondary, dict) and secondary:
+        payload["secondary_attributes"] = dict(secondary)
+    fields = sheet.field_values()
+    if fields:
+        payload["fields"] = fields
     avatar = getattr(sheet, "avatar", None)
     if isinstance(avatar, dict):
         payload["avatar"] = avatar
@@ -253,6 +270,19 @@ async def _party(
         avatar = member.get("avatar")
         if isinstance(avatar, dict):
             payload["avatar"] = avatar
+        for key in (
+            "system",
+            "attributes",
+            "skills",
+            "secondary_attributes",
+            "fields",
+            "equipment",
+            "background",
+            "status_effects",
+        ):
+            value = member.get(key)
+            if value not in (None, "", [], {}):
+                payload[key] = value
         system = str(member.get("system", "") or "")
         if system not in label_maps:
             label_maps[system] = resource_label_map(system, locale)

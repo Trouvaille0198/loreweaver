@@ -49,10 +49,18 @@ async def load_chain(services: Services, chat_key: str, key: str) -> list[dict]:
     """
     leaf = await services.store.state_get(chat_key, leaf_key(key))
     records = await services.store.history_chain(chat_key, key, leaf)
-    return [
-        {"role": record["role"], "content": record["content"], "_lw_turn": record["turn"], "_lw_id": record["id"]}
-        for record in records
-    ]
+    messages: list[dict] = []
+    for record in records:
+        message = {
+            "role": record["role"],
+            "content": record["content"],
+            "_lw_turn": record["turn"],
+            "_lw_id": record["id"],
+        }
+        if record.get("name"):
+            message["_lw_name"] = record["name"]
+        messages.append(message)
+    return messages
 
 
 async def append_message(
@@ -64,6 +72,7 @@ async def append_message(
     content: str,
     turn: int,
     record_id: str | None = None,
+    name: str = "",
 ) -> str:
     """Append ONE message (`user` or `assistant`) after the current leaf; return its id.
 
@@ -81,14 +90,30 @@ async def append_message(
     await services.store.history_append(
         chat_key,
         key,
-        [{"id": record_id, "parent_id": parent, "turn": turn, "role": role, "content": content}],
+        [
+            {
+                "id": record_id,
+                "parent_id": parent,
+                "turn": turn,
+                "role": role,
+                "name": name,
+                "content": content,
+            }
+        ],
     )
     await services.store.state_set(chat_key, leaf_key(key), record_id)
     return record_id
 
 
 async def append_turn(
-    services: Services, chat_key: str, key: str, *, user_message: str, reply: str, turn: int
+    services: Services,
+    chat_key: str,
+    key: str,
+    *,
+    user_message: str,
+    reply: str,
+    turn: int,
+    user_name: str = "",
 ) -> str:
     """Append a whole turn — player message then final reply — and return the new leaf id.
 
@@ -97,7 +122,15 @@ async def append_turn(
     (`append_message`, see there); this is the one-shot form for callers that hold a
     finished exchange (tests, imports).
     """
-    await append_message(services, chat_key, key, role="user", content=user_message, turn=turn)
+    await append_message(
+        services,
+        chat_key,
+        key,
+        role="user",
+        name=user_name,
+        content=user_message,
+        turn=turn,
+    )
     return await append_message(services, chat_key, key, role="assistant", content=reply, turn=turn)
 
 
@@ -154,7 +187,9 @@ async def leaf_at_or_before(services: Services, chat_key: str, key: str, turn: i
     return None
 
 
-async def trim_folded(services: Services, chat_key: str, key: str, chain: list[dict], folded_through: int) -> list[dict]:
+async def trim_folded(
+    services: Services, chat_key: str, key: str, chain: list[dict], folded_through: int
+) -> list[dict]:
     """Drop the turns the chronicle has already folded into its rolling summary.
 
     THE truncation point (M20 A2), and idempotent: it keys off the summary's cumulative
@@ -199,6 +234,7 @@ async def migrate_legacy_blob(services: Services, chat_key: str, key: str) -> bo
                 "parent_id": parent,
                 "turn": int(message.get("_lw_turn", 0) or 0),
                 "role": str(message.get("role", "")),
+                "name": str(message.get("_lw_name", "")),
                 "content": str(message.get("content", "")),
             }
         )

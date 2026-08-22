@@ -417,9 +417,7 @@ async def test_revoked_connection_cannot_keep_receiving_passive_room_events():
     url = await _start(server)
     try:
         ws, welcome, *_ = await _connect_and_join(url, key)
-        session_key = SessionSource(
-            platform="tui", chat_type="group", chat_id="arkham"
-        ).chat_key()
+        session_key = SessionSource(platform="tui", chat_type="group", chat_id="arkham").chat_key()
         assert server.hub.online(session_key) == 1
 
         keystore.remove(key)
@@ -581,7 +579,9 @@ async def test_ws_avatar_set_binds_only_own_character(tmp_path):
     digest = hashlib.sha256(data).hexdigest()
     try:
         ws, welcome, *_ = await _connect_and_join(url, key, "Ada")
-        await services.characters.save_character(welcome["you"]["id"], "tui:group:avatar-room", CharacterSheet("Ada Sheet", "CoC"))
+        await services.characters.save_character(
+            welcome["you"]["id"], "tui:group:avatar-room", CharacterSheet("Ada Sheet", "CoC")
+        )
 
         await ws.send(
             json.dumps(
@@ -625,7 +625,9 @@ async def test_ws_avatar_set_rejects_cross_room_hash(tmp_path):
     try:
         ws_a, *_ = await _connect_and_join(url, key_a, "Ada")
         ws_b, welcome_b, *_ = await _connect_and_join(url, key_b, "Ben")
-        await services.characters.save_character(welcome_b["you"]["id"], "tui:group:avatar-b", CharacterSheet("Ben Sheet", "CoC"))
+        await services.characters.save_character(
+            welcome_b["you"]["id"], "tui:group:avatar-b", CharacterSheet("Ben Sheet", "CoC")
+        )
 
         await ws_a.send(
             json.dumps(
@@ -901,9 +903,7 @@ async def test_kp_turn_after_module_seed_has_no_sentinel_leak_and_uses_keeper_to
 
         assert server.turns, "no turn was recorded"
         last_trace = server.turns[-1].tool_trace
-        assert any(t["name"] == "get_module_summary" and t["keeper_only"] for t in last_trace), (
-            "keeper tool not used"
-        )
+        assert any(t["name"] == "get_module_summary" and t["keeper_only"] for t in last_trace), "keeper tool not used"
 
         await ws.close()
     finally:
@@ -1044,7 +1044,10 @@ async def test_build_room_state_reports_character_party_and_clock():
     ctx = _room_ctx("state-room", user_id="tui:abc123")
 
     await toolset.dispatch("create_character", ctx, {"name": "Nora Vance", "system": "coc7", "auto_generate": False})
-    await services.store.state_set(ctx.chat_key, "game_clock", json.dumps({"current_time": "Night 1, 22:00"}),
+    await services.store.state_set(
+        ctx.chat_key,
+        "game_clock",
+        json.dumps({"current_time": "Night 1, 22:00"}),
     )
 
     state = await build_room_state(services, ctx)
@@ -1104,12 +1107,11 @@ async def test_build_room_state_pregen_claimed_by_is_the_member_display_name():
     await pregen_add(services.documents, ctx.chat_key, sheet, source="card:test")
 
     # Claim WITHOUT a recorded name (an older claim): bare state keeps the id…
-    status, _ = await pregen_claim(
-        services.documents, ctx.chat_key, "Nora Vance", "tui:member-9", services.characters
-    )
+    status, _ = await pregen_claim(services.documents, ctx.chat_key, "Nora Vance", "tui:member-9", services.characters)
     assert status == "ok"
     bare = await build_room_state(services, ctx)
     assert bare["pregens"][0]["claimed_by"] == "tui:member-9"
+
     # …but the live member registry resolves it.
     class FakeMember:
         id = "tui:member-9"
@@ -1121,9 +1123,10 @@ async def test_build_room_state_pregen_claimed_by_is_the_member_display_name():
     # A claim that RECORDS the display name sends it even with no members at all.
     from core.pregen_roster import pregen_release
 
-    assert await pregen_release(
-        services.documents, ctx.chat_key, "Nora Vance", "tui:member-9", services.characters
-    ) == "ok"
+    assert (
+        await pregen_release(services.documents, ctx.chat_key, "Nora Vance", "tui:member-9", services.characters)
+        == "ok"
+    )
     await pregen_claim(
         services.documents,
         ctx.chat_key,
@@ -1136,9 +1139,10 @@ async def test_build_room_state_pregen_claimed_by_is_the_member_display_name():
     assert replayed["pregens"][0]["claimed_by"] == "粉肠"
 
     # Release clears the name along with the claim.
-    assert await pregen_release(
-        services.documents, ctx.chat_key, "Nora Vance", "tui:member-9", services.characters
-    ) == "ok"
+    assert (
+        await pregen_release(services.documents, ctx.chat_key, "Nora Vance", "tui:member-9", services.characters)
+        == "ok"
+    )
     freed = await build_room_state(services, ctx)
     assert freed["pregens"][0]["claimed_by"] == ""
 
@@ -1279,11 +1283,21 @@ async def test_replay_narrative_ids_are_stable_across_joins_and_match_the_persis
     try:
         chat_key = _room_ctx("replay-id-room").chat_key
         await append_message(
-            services, chat_key, DEFAULT_HISTORY_KEY, role="user", content="开始汐浦送灯", turn=1,
+            services,
+            chat_key,
+            DEFAULT_HISTORY_KEY,
+            role="user",
+            content="开始汐浦送灯",
+            turn=1,
             record_id="user-msg-0001",
         )
         await append_message(
-            services, chat_key, DEFAULT_HISTORY_KEY, role="assistant", content="**BGM** 开场……", turn=1,
+            services,
+            chat_key,
+            DEFAULT_HISTORY_KEY,
+            role="assistant",
+            content="**BGM** 开场……",
+            turn=1,
             record_id="kp-reply-0002",
         )
 
@@ -1521,7 +1535,9 @@ async def test_a_roll_typed_during_the_join_replay_is_delivered_once():
         await server.hub.publish(member.session_key, Event.narrative_delta(speaker="kp", text="Rai", frame_id="fx"))
         await server.hub.publish(member.session_key, Event.narrative_delta(speaker="kp", text="n.", frame_id="fx"))
         await append_message(services, chat_key, DEFAULT_HISTORY_KEY, role="user", content="I go on", turn=2)
-        reply_id = await append_message(services, chat_key, DEFAULT_HISTORY_KEY, role="assistant", content="Rain.", turn=2)
+        reply_id = await append_message(
+            services, chat_key, DEFAULT_HISTORY_KEY, role="assistant", content="Rain.", turn=2
+        )
         final = Event.narrative(speaker="kp", text="Rain.", fmt="markdown", frame_id="fx")
         final.origin_id = reply_id
         await server.hub.publish(member.session_key, final)
@@ -1574,6 +1590,7 @@ async def test_join_replays_recent_chat_history_to_the_joiner_only():
             user_message="I open the door",
             reply="The door creaks open onto a dark hallway.",
             turn=1,
+            user_name="Ann",
         )
 
         ws_ann = await websockets.connect(url)
@@ -1587,6 +1604,7 @@ async def test_join_replays_recent_chat_history_to_the_joiner_only():
 
         assert replay1["type"] == "narrative"
         assert replay1["speaker"] == "player"
+        assert replay1["name"] == "Ann"
         assert replay1["text"] == "I open the door"
         assert replay2["type"] == "narrative"
         assert replay2["speaker"] == "kp"
@@ -1600,6 +1618,7 @@ async def test_join_replays_recent_chat_history_to_the_joiner_only():
         bob_replay1 = await _recv(ws_bob)
         bob_replay2 = await _recv(ws_bob)
         await _recv(ws_bob)  # state
+        assert bob_replay1["name"] == "Ann"
         assert bob_replay1["text"] == "I open the door"
         assert bob_replay2["text"] == "The door creaks open onto a dark hallway."
 
@@ -1805,12 +1824,16 @@ async def test_kp_toolset_is_hub_wired_so_companion_act_drives_a_live_turn():
 
     def responder(messages, tools):
         if tools is None:  # the companion actor's own call (no KP tools attached)
-            return assistant_text(json.dumps({"action": "I raise my lantern toward the sound", "dialogue": "Who's there?"}))
+            return assistant_text(
+                json.dumps({"action": "I raise my lantern toward the sound", "dialogue": "Who's there?"})
+            )
         return assistant_text("Silas' lantern throws the dark back a step. What next?")  # KP resolving it
 
     services = _services(responder=responder)
     ctx = _room_ctx("companions")
-    await CompanionTools(services).add_companion(ctx, name="Silas", persona="A steady lamplighter.", playstyle="cautious")
+    await CompanionTools(services).add_companion(
+        ctx, name="Silas", persona="A steady lamplighter.", playstyle="cautious"
+    )
     await services.battles.start_session(ctx.chat_key)
 
     server = TuiServer(services, Keystore(), port=0)
