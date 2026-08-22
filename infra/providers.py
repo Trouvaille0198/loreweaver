@@ -335,11 +335,38 @@ class MutableLLM:
             )
             return self._fallback_llm
 
+    def _with_saved_credentials(self, settings: Settings) -> Settings:
+        """Resolve the selected provider's web-saved credential before building.
+
+        Runtime model selection and the per-provider credential book are separate
+        persisted records. A restart must combine them before the configured
+        client is built; otherwise a valid Model-screen setup silently degrades
+        to the offline fallback when the runtime snapshot omits its secret.
+        """
+        if self._credentials is None:
+            return settings
+        provider = (settings.llm.provider or "openai").casefold()
+        saved = self._credentials.get_sync(provider)
+        updates: dict[str, str] = {}
+        if not settings.llm.api_key and saved.get("api_key"):
+            updates["api_key"] = saved["api_key"]
+        if not settings.llm.base_url and saved.get("base_url"):
+            updates["base_url"] = saved["base_url"]
+        if not updates:
+            return settings
+        return settings.model_copy(update={"llm": settings.llm.model_copy(update=updates)})
+
     def _call_builder(self, settings: Settings) -> LLMClient:
+        settings = self._with_saved_credentials(settings)
         if self._fallback_llm is not None and not is_llm_configured(
             settings,
             credentials=self._credentials,
         ):
+            logger.warning(
+                "LLM provider=%r model=%r has no usable web/env credential; serving the offline fallback",
+                settings.llm.provider,
+                settings.llm.chat_model,
+            )
             return self._fallback_llm
         try:
             parameters = signature(self._builder).parameters.values()

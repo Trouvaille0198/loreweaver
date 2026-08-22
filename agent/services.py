@@ -11,6 +11,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from agent.context import AgentCtx
 from agent.document_manager import VectorDatabaseManager
@@ -30,11 +31,22 @@ from infra.imagegen import ImageGen, apply_imagegen_overrides, build_imagegen
 from infra.llm import LLMClient
 from infra.providers import MutableLLM
 from infra.room_facets import STORAGE_ROOM_STATE, RoomStateFacet
-from infra.runtime_config import CredentialBook, ImageGenCredentialBook, ImageGenRuntimeConfig, RuntimeConfig
+from infra.runtime_config import (
+    DIRECTOR_RUNTIME_KEY,
+    LLM_PROFILES_KEY,
+    SCRIBE_RUNTIME_KEY,
+    CredentialBook,
+    ImageGenCredentialBook,
+    ImageGenRuntimeConfig,
+    LaneRuntimeConfig,
+    RuntimeConfig,
+    apply_lane_overrides,
+)
 from infra.store import Store
 from infra.vector import VectorStore
 
 logger = logging.getLogger(__name__)
+ROOM_LLM_SELECTION_KEY = "llm_selection"
 
 
 @dataclass
@@ -56,8 +68,15 @@ class Services:
     embeddings: Embeddings
     runtime_config: RuntimeConfig
     llm_credentials: CredentialBook
+    llm_profiles: CredentialBook
     imagegen_runtime_config: ImageGenRuntimeConfig
     imagegen_credentials: ImageGenCredentialBook
+    scribe_runtime_config: LaneRuntimeConfig
+    director_runtime_config: LaneRuntimeConfig
+    # Environment/settings baselines let the web admin clear a runtime lane
+    # override without losing deployment-provided values.
+    base_scribe_settings: Any = field(repr=False)
+    base_director_settings: Any = field(repr=False)
     # One deployment-wide mutation lock shared by TUI admin frames, chat `.model`
     # commands, and subscription refresh publication. Room turn locks remain separate.
     config_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
@@ -116,18 +135,29 @@ def build_services(
     store = store or Store(db_path)
     runtime_config = RuntimeConfig(store)
     llm_credentials = CredentialBook(store)
+    llm_profiles = CredentialBook(store, key=LLM_PROFILES_KEY)
     imagegen_runtime_config = ImageGenRuntimeConfig(store)
     imagegen_credentials = ImageGenCredentialBook(store)
+    scribe_runtime_config = LaneRuntimeConfig(store, key=SCRIBE_RUNTIME_KEY)
+    director_runtime_config = LaneRuntimeConfig(store, key=DIRECTOR_RUNTIME_KEY)
+    base_scribe_settings = settings.scribe.model_copy(deep=True)
+    base_director_settings = settings.director.model_copy(deep=True)
     imagegen_overrides = imagegen_runtime_config.load_sync()
     if imagegen_overrides:
         settings = apply_imagegen_overrides(settings, imagegen_overrides)
-    embeddings = embeddings or OpenAIEmbeddings(settings.llm)
+    scribe_overrides = scribe_runtime_config.load_sync()
+    if scribe_overrides:
+        settings = apply_lane_overrides(settings, "scribe", scribe_overrides)
+    director_overrides = director_runtime_config.load_sync()
+    if director_overrides:
+        settings = apply_lane_overrides(settings, "director", director_overrides)
     # An injected `llm` (e.g. FakeLLM in tests) is used verbatim and left
     # UNWRAPPED so those paths stay byte-compatible. Otherwise wrap in a
     # `MutableLLM` whose provider/model the `.model` admin command can hot-swap,
     # and apply any persisted runtime overrides at startup. `build_llm` (inside
-    # MutableLLM) honors settings.llm.provider + PRESETS (OpenAI/Anthropic/Gemini/
+    # `MutableLLM`) honors settings.llm.provider + PRESETS (OpenAI/Anthropic/Gemini/
     # OpenAI-compatible).
+    embeddings = embeddings or OpenAIEmbeddings(settings.llm)
     if llm is None:
         # Warm the credential book cache so subscription providers can resolve
         # OAuth tokens at build_llm time (sync path).
@@ -196,8 +226,13 @@ def build_services(
         embeddings=embeddings,
         runtime_config=runtime_config,
         llm_credentials=llm_credentials,
+        llm_profiles=llm_profiles,
         imagegen_runtime_config=imagegen_runtime_config,
         imagegen_credentials=imagegen_credentials,
+        scribe_runtime_config=scribe_runtime_config,
+        director_runtime_config=director_runtime_config,
+        base_scribe_settings=base_scribe_settings,
+        base_director_settings=base_director_settings,
     )
 
 
@@ -230,6 +265,14 @@ ROOM_FACETS = (
             "fresh session at the same table wants to keep"
         ),
         state_keys=frozenset({_RULE_VARIANT_KEY}),
+        storages=frozenset({STORAGE_ROOM_STATE}),
+    ),
+    RoomStateFacet(
+        name="llm_selection",
+        owner="agent.services",
+        reset_scope=None,
+        survives_because="The room chooses which global LLM profile each job uses.",
+        state_keys=frozenset({ROOM_LLM_SELECTION_KEY}),
         storages=frozenset({STORAGE_ROOM_STATE}),
     ),
 )
