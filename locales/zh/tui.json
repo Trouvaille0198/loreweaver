@@ -30,6 +30,8 @@
   "tui.error.demo_unavailable": "仅当离线演示启用且房间为空时，守秘人才能载入示例冒险。本房间未发生任何改动。",
   "tui.error.forbidden": "该操作需要守秘人密钥。",
   "tui.error.input_too_long": "消息最多可输入 4,000 个字符，本次内容未发送。",
+  "tui.error.module_initializing": "模组正在导入并分析中，知识库尚未就绪，暂时不能开始游戏。",
+  "tui.error.module_not_ready": "模组导入未完成，知识库尚未就绪。请重新导入模组后再开始游戏。",
   "tui.error.join_timeout": "等待加入（join）消息超时。",
   "tui.error.media_bad_hash": "媒体校验和无效。",
   "tui.error.media_bad_mime": "仅接受受支持的图片和音频文件。",

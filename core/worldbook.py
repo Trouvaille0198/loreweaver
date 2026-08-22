@@ -21,6 +21,7 @@ must never reach a prompt).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import random
 import re
@@ -165,13 +166,25 @@ class Worldbook:
     entry, insertion-ordered by `seq` — the old `worldbook.{ns}.{id}` rows and
     the separate index row are gone). The vector index and match/render logic
     stay here; the entry SECRECY contract lives in the `lore` document
-    projection (`core.documents`)."""
+    projection (`core.documents`).
 
-    def __init__(self, store: Any, vector_db: Any = None, embeddings: Any = None) -> None:
+    The active source is a room setting. It lets a keeper switch between
+    imported worldbooks without destroying the room's previously imported
+    entries; hand-authored entries with no provenance remain available.
+    """
+
+    def __init__(
+        self,
+        store: Any,
+        vector_db: Any = None,
+        embeddings: Any = None,
+        operation_lock: asyncio.Lock | None = None,
+    ) -> None:
         self.store = store
         self.documents = DocumentStore(store)
         self.vector_db = vector_db
         self.embeddings = embeddings
+        self.operation_lock = operation_lock or asyncio.Lock()
 
     async def add(self, chat_key: str, entry: LoreEntry, *, source: str = "") -> LoreEntry:
         entry = LoreEntry.from_dict(entry.to_dict())
@@ -203,6 +216,27 @@ class Worldbook:
             return [entry for entry in entries if entry.scope == scope]
         return entries
 
+    async def active_source(self, chat_key: str) -> str:
+        """Return the room's selected worldbook source, or ``""`` for all sources."""
+        raw = await self.store.state_get(chat_key, _ACTIVE_SOURCE_STATE_KEY)
+        return str(raw or "")
+
+    async def set_active_source(self, chat_key: str, source: str) -> None:
+        """Select one imported source, or ``_DISABLED_SOURCE`` to hide all lore."""
+        await self.store.state_set(chat_key, _ACTIVE_SOURCE_STATE_KEY, source.strip())
+
+    async def _active_entry_ids(self, chat_key: str, entries: list[LoreEntry]) -> set[str] | None:
+        source = await self.active_source(chat_key)
+        if not source:
+            return None
+        if source == _DISABLED_SOURCE:
+            return set()
+        documents = await self.documents.list(chat_key, LORE_DOC_TYPE)
+        sources = {doc.id: doc.source for doc in documents}
+        # Entries authored in the room have no import provenance and stay available
+        # regardless of which imported worldbook is selected.
+        return {entry.id for entry in entries if not sources.get(entry.id) or sources.get(entry.id) == source}
+
     async def update(self, chat_key: str, id_or_title: str, **fields: Any) -> LoreEntry | None:
         current = await self.get(chat_key, id_or_title)
         if current is None:
@@ -217,6 +251,10 @@ class Worldbook:
         return updated
 
     async def remove(self, chat_key: str, id_or_title: str) -> bool:
+        async with self.operation_lock:
+            return await self._remove_unlocked(chat_key, id_or_title)
+
+    async def _remove_unlocked(self, chat_key: str, id_or_title: str) -> bool:
         entry = await self.get(chat_key, id_or_title)
         if entry is None:
             return False
@@ -226,12 +264,11 @@ class Worldbook:
         return True
 
     async def remove_by_source(self, chat_key: str, source: str) -> int:
-        """Delete every lore entry a given import source wrote (document provenance,
-        ``meta.source``), vectors included. The primitive behind replace-on-reimport:
-        `add` deliberately re-ids on collision rather than overwriting, so without a
-        removal first a re-import always stacks. Entries imported before provenance
-        was recorded carry no source and are never matched — a room upgraded across
-        that boundary stacks once more, then replaces forever after."""
+        async with self.operation_lock:
+            return await self._remove_by_source_unlocked(chat_key, source)
+
+    async def _remove_by_source_unlocked(self, chat_key: str, source: str) -> int:
+        """Delete every lore entry and vector written by one import source."""
         if not source:
             return 0
         removed = 0
@@ -365,6 +402,9 @@ class Worldbook:
         context = context_text or ""
         rng = rng or _RNG
         entries = [entry for entry in await self.list(chat_key) if entry.enabled]
+        active_ids = await self._active_entry_ids(chat_key, entries)
+        if active_ids is not None:
+            entries = [entry for entry in entries if entry.id in active_ids]
         timers = await self._load_timers(chat_key)
         turn = int(timers.get("turn", 0)) + (1 if advance_timers else 0)
         timer_entries = timers.get("entries", {})
@@ -394,6 +434,8 @@ class Worldbook:
                 selected[entry.id] = entry
 
         for entry in await self._semantic_hits(chat_key, context, limit=limit):
+            if active_ids is not None and entry.id not in active_ids:
+                continue
             if entry.id in selected:
                 continue
             if _sticky_active(entry) or _timer_eligible(entry):
@@ -449,6 +491,10 @@ class Worldbook:
         await self.store.state_set(chat_key, _TIMERS_STATE_KEY, json.dumps(timers, ensure_ascii=False))
 
     async def _upsert_vector(self, chat_key: str, entry: LoreEntry) -> None:
+        async with self.operation_lock:
+            await self._upsert_vector_unlocked(chat_key, entry)
+
+    async def _upsert_vector_unlocked(self, chat_key: str, entry: LoreEntry) -> None:
         if self.vector_db is None or self.embeddings is None:
             return
         namespace = _namespace(chat_key, entry.scope)
@@ -463,12 +509,17 @@ class Worldbook:
                         "namespace": namespace,
                         "entry_id": entry.id,
                         "scope": entry.scope,
+                        "text": entry.content,
                     },
                 )
             ]
         )
 
     async def _semantic_hits(self, chat_key: str, context: str, *, limit: int) -> list[LoreEntry]:
+        async with self.operation_lock:
+            return await self._semantic_hits_unlocked(chat_key, context, limit=limit)
+
+    async def _semantic_hits_unlocked(self, chat_key: str, context: str, *, limit: int) -> list[LoreEntry]:
         if self.vector_db is None or self.embeddings is None or not context.strip():
             return []
         [vector] = await self.embeddings.embed([context])
@@ -644,6 +695,8 @@ def _vector_id(namespace: str, entry_id: str) -> str:
 
 
 _TIMERS_STATE_KEY = "worldbook_timers"
+_ACTIVE_SOURCE_STATE_KEY = "worldbook_active_source"
+_DISABLED_SOURCE = "__disabled__"
 
 
 def _scan_window(context: str, scan_depth: int) -> str:
@@ -858,6 +911,13 @@ ROOM_FACETS = (
         # Sticky/cooldown/delay windows count the narrative session's turns, so they
         # restart with it — unlike the entries they gate, which are module content.
         state_keys=frozenset({_TIMERS_STATE_KEY}),
+        storages=frozenset({STORAGE_ROOM_STATE}),
+    ),
+    RoomStateFacet(
+        name="worldbook_selection",
+        owner="core.worldbook",
+        reset_scope="all",
+        state_keys=frozenset({_ACTIVE_SOURCE_STATE_KEY}),
         storages=frozenset({STORAGE_ROOM_STATE}),
     ),
     RoomStateFacet(

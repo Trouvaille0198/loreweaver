@@ -101,6 +101,14 @@ class Services:
         """Return this room's validated-shape model assignment record."""
         selection = dict(ROOM_MODEL_DEFAULTS)
         raw = await self.store.state_get(chat_key, ROOM_LLM_SELECTION_KEY)
+        # Keeper admin frames are addressed by the human room name (for example
+        # ``table``), while live TUI turns carry the canonical session key
+        # (``tui:group:table``). Read either spelling so an assignment made in
+        # the web model screen is also used by authoring, turns, and image lanes.
+        if not raw and chat_key.startswith("tui:group:"):
+            raw = await self.store.state_get(chat_key.removeprefix("tui:group:"), ROOM_LLM_SELECTION_KEY)
+        elif not raw and not chat_key.startswith("tui:group:"):
+            raw = await self.store.state_get(f"tui:group:{chat_key}", ROOM_LLM_SELECTION_KEY)
         if not raw:
             return selection
         try:
@@ -153,6 +161,24 @@ class Services:
     async def main_llm(self, chat_key: str) -> LLMClient:
         """The room's primary model, falling back to the live global client."""
         return await self.room_llm(chat_key, "main") or self.llm
+
+    async def room_llm_model(self, chat_key: str, lane: str = "main") -> str:
+        """Return the selected room model name, or the deployment default."""
+        if lane not in {"main", "scribe", "director"}:
+            raise ValueError("lane")
+        selection = await self.room_model_selection(chat_key)
+        profile_id = str(selection[lane] or "")
+        if profile_id:
+            saved = await self.llm_profiles.get(profile_id)
+            provider, kind, encoded_model = model_profile_parts(profile_id)
+            if saved and kind == "chat" and provider:
+                model = str(saved.get("chat_model") or encoded_model).strip()
+                if model:
+                    return model
+        if lane == "main":
+            return self.settings.llm.analysis_model or self.settings.llm.chat_model
+        lane_settings = getattr(self.settings, lane)
+        return str(lane_settings.chat_model or self.settings.llm.chat_model)
 
     async def imagegen_for_room(self, chat_key: str) -> ImageGen | None:
         """The room's selected image profile, falling back to the global generator."""

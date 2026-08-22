@@ -30,6 +30,8 @@
   "tui.error.demo_unavailable": "The sample adventure is available only to a Keeper in an empty room while the offline demo is active. Your room was not changed.",
   "tui.error.forbidden": "That action requires a keeper key.",
   "tui.error.input_too_long": "Messages may contain at most 4,000 characters. Nothing was sent.",
+  "tui.error.module_initializing": "The module is being imported and analyzed. Its knowledge pool is not ready, so play is temporarily locked.",
+  "tui.error.module_not_ready": "The module import did not complete, so its knowledge pool is not ready. Re-import the module before playing.",
   "tui.error.join_timeout": "Timed out waiting for your join message.",
   "tui.error.media_bad_hash": "The media checksum is invalid.",
   "tui.error.media_bad_mime": "Only supported image and audio files are accepted.",

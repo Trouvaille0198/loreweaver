@@ -24,14 +24,11 @@ two things differ from the source:
   re-localized per locale — the model must always emit these exact field
   names regardless of the operator's chosen locale.
 
-``_build_knowledge_pools`` and ``_fallback_full_analysis`` are ported
-byte-for-byte per the source's data shapes, including their literal Chinese
-default values (e.g. the fallback's ``"探索"`` focus / ``"场景{i+1}"`` scene
-name). These are TRPG *game data* defaults, the same sanctioned exemption
-`core.character_manager`'s skill names and
-`core.prompt_sections.summarize_knowledge_item`'s glue literals use (see
-those modules' docstrings) — not user-facing UI text, so they stay literal
-instead of going through i18n.
+``_build_knowledge_pools`` keeps the source data shapes and literal Chinese
+defaults (for example ``"探索"`` / ``"场景{i+1}"``). When no usable model
+response is available, the fallback also extracts the common Markdown
+headings and lists used by module authors, so an offline import still has a
+useful NPC/clue/truth/timeline catalog instead of only a paragraph summary.
 """
 
 from __future__ import annotations
@@ -226,7 +223,14 @@ class ModuleInitializer:
         self.i18n = i18n
         self.battles = battles
 
-    async def initialize(self, chat_key: str, progress: ProgressCb = None) -> None:
+    async def initialize(
+        self,
+        chat_key: str,
+        progress: ProgressCb = None,
+        locale: str | None = None,
+        llm: LLMClient | None = None,
+        model: str | None = None,
+    ) -> None:
         """Run (or skip, if already running) full-module analysis for `chat_key`.
 
         Orchestrates: read the stored module full text (or reassemble it
@@ -266,7 +270,14 @@ class ModuleInitializer:
             # potentially slow analysis can leave stale dates in the sidebar.
             await self.store.state_delete(chat_key, "game_clock")
             await _emit(progress, "analyze")
-            outcome = await self._analyze_full_text(full_text, doc_name, chat_key)
+            outcome = await self._analyze_full_text(
+                full_text,
+                doc_name,
+                chat_key,
+                locale=locale,
+                llm=llm,
+                model=model,
+            )
             await _emit(progress, "build")
             keeper_pool, player_pool = self._build_knowledge_pools(outcome.analysis)
 
@@ -328,19 +339,29 @@ class ModuleInitializer:
         doc_name = chunks[0].get("filename") or self.i18n.t("module.default_document_name")
         return full_text, doc_name
 
-    async def _analyze_full_text(self, full_text: str, doc_name: str, chat_key: str) -> _AnalysisOutcome:
+    async def _analyze_full_text(
+        self,
+        full_text: str,
+        doc_name: str,
+        chat_key: str,
+        *,
+        locale: str | None = None,
+        llm: LLMClient | None = None,
+        model: str | None = None,
+    ) -> _AnalysisOutcome:
         """Analyze with one retry, then return an explicit fallback outcome."""
-        prompt = self._build_analysis_prompt(full_text, doc_name)
-        model = self.settings.llm.analysis_model or self.settings.llm.chat_model
+        prompt = self._build_analysis_prompt(full_text, doc_name, locale=locale)
+        client = llm or self.llm
+        selected_model = model or self.settings.llm.analysis_model or self.settings.llm.chat_model
 
         last_error = ""
         for attempt in range(2):
             try:
                 with lane_scope("authoring"):
-                    result = await self.llm.chat(
+                    result = await client.chat(
                         messages=[{"role": "user", "content": prompt}],
                         temperature=0.3,
-                        model=model,
+                        model=selected_model,
                     )
                 # A response consumed provider tokens even when its JSON is
                 # malformed, so account for usage before parsing it.
@@ -348,7 +369,7 @@ class ModuleInitializer:
                     self.store,
                     chat_key,
                     result.usage,
-                    model=model,
+                    model=selected_model,
                     context_window=self.settings.llm.context_window,
                 )
                 analysis = _extract_json_object(result.content or "", self.i18n)
@@ -373,24 +394,27 @@ class ModuleInitializer:
             error_summary=last_error,
         )
 
-    def _build_analysis_prompt(self, full_text: str, doc_name: str) -> str:
+    def _build_analysis_prompt(self, full_text: str, doc_name: str, *, locale: str | None = None) -> str:
         """Render the full-text analysis prompt sent to the LLM: localized
         framing text (`module.analysis_prompt`) wrapping the fixed JSON
         schema contract the model must emit (`_ANALYSIS_JSON_SCHEMA`)."""
         truncated = full_text[:_MAX_ANALYSIS_CHARS]
-        return self.i18n.t(
+        requested = str(locale or self.i18n.locale).replace("_", "-").split("-", 1)[0].casefold()
+        prompt_i18n = self.i18n.with_locale(requested) if requested in {"en", "zh"} else self.i18n
+        return prompt_i18n.t(
             "module.analysis_prompt",
-            doc_name=doc_name or self.i18n.t("module.default_document_name"),
+            doc_name=doc_name or prompt_i18n.t("module.default_document_name"),
             full_text=truncated,
             schema=_ANALYSIS_JSON_SCHEMA,
         )
 
     def _fallback_full_analysis(self, text: str) -> dict:
-        """Offline heuristic analysis used when the LLM call fails or returns
-        unparsable JSON: no LLM, just paragraph-splitting + truncation.
+        """Build a useful local analysis when the LLM response is unusable.
 
-        Ported verbatim (data shape and literal defaults) from the source's
-        ``_fallback_full_analysis`` — see the module docstring.
+        The paragraph-derived scenes preserve the original offline behavior;
+        Markdown sections provide deterministic structure for the keeper
+        catalog when a source contains headings such as ``NPC``/``线索``/
+        ``真相``/``时间线``.
         """
         paragraphs = [p.strip() for p in text.split("\n\n") if len(p.strip()) > 50]
         scenes = []
@@ -406,16 +430,163 @@ class ModuleInitializer:
                 }
             )
 
+        npc_section = self._markdown_section(text, ("npc", "人物", "角色"))
+        clue_section = self._markdown_section(text, ("线索", "clue"))
+        truth_section = self._markdown_section(text, ("真相", "truth"))
+        timeline_section = self._markdown_section(text, ("时间线", "时间表", "timeline"))
+        threat_section = self._markdown_section(text, ("威胁", "反派", "threat"))
+
+        npcs = []
+        for heading, body in self._markdown_subsections(npc_section):
+            name = self._clean_markdown(heading)
+            if name:
+                npcs.append(
+                    {
+                        "name": name,
+                        "description": self._clean_markdown(body)[:800],
+                        "secret": "",
+                        "role": "",
+                    }
+                )
+        if not npcs:
+            for entry in self._markdown_list_entries(npc_section):
+                npcs.append({"name": entry[:80], "description": entry, "secret": "", "role": ""})
+
+        clues = []
+        for entry in self._markdown_list_entries(clue_section):
+            name, description = self._split_label(entry, "线索")
+            clues.append(
+                {
+                    "name": name,
+                    "description": description,
+                    "location": "",
+                    "leads_to": "",
+                }
+            )
+
+        truths = []
+        if truth_section:
+            subsections = self._markdown_subsections(truth_section)
+            if subsections:
+                truths = [
+                    {
+                        "name": self._clean_markdown(heading),
+                        "description": self._clean_markdown(body)[:2000],
+                        "revealed_by": "",
+                    }
+                    for heading, body in subsections
+                    if self._clean_markdown(body)
+                ]
+            else:
+                truths = [{"name": "模组真相", "description": self._clean_markdown(truth_section)[:2000], "revealed_by": ""}]
+
+        timeline = []
+        for entry in self._markdown_list_entries(timeline_section):
+            time, event = self._split_label(entry, "时间点")
+            timeline.append({"time": time, "event": event, "involved": []})
+
+        threats = []
+        threat_blocks = self._markdown_subsections(threat_section)
+        if threat_blocks:
+            threats = [
+                {
+                    "name": self._clean_markdown(heading),
+                    "type": "",
+                    "description": self._clean_markdown(body)[:1000],
+                    "location": "",
+                }
+                for heading, body in threat_blocks
+                if self._clean_markdown(body)
+            ]
+        elif threat_section:
+            threats = [{"name": "模组威胁", "type": "", "description": self._clean_markdown(threat_section)[:1000], "location": ""}]
+
         return {
             "scenes": scenes,
-            "npcs": [],
-            "clues": [],
-            "timeline": [],
+            "npcs": npcs,
+            "clues": clues,
+            "timeline": timeline,
             "background": text[:500] if len(text) > 500 else text,
-            "threats": [],
-            "truths": [],
+            "threats": threats,
+            "truths": truths,
             "summary": text[:100] if len(text) > 100 else text,
         }
+
+    @staticmethod
+    def _markdown_section(text: str, patterns: tuple[str, ...]) -> str:
+        """Return the body of the first matching Markdown heading section."""
+        lines = text.splitlines()
+        heading_re = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+        match_index = -1
+        level = 0
+        for index, line in enumerate(lines):
+            match = heading_re.match(line.strip())
+            if not match:
+                continue
+            heading = re.sub(r"[*`_]", "", match.group(2)).casefold()
+            if any(pattern.casefold() in heading for pattern in patterns):
+                match_index = index
+                level = len(match.group(1))
+                break
+        if match_index < 0:
+            return ""
+        end = len(lines)
+        for index in range(match_index + 1, len(lines)):
+            match = heading_re.match(lines[index].strip())
+            if match and len(match.group(1)) <= level:
+                end = index
+                break
+        return "\n".join(lines[match_index + 1 : end]).strip()
+
+    @staticmethod
+    def _markdown_subsections(text: str) -> list[tuple[str, str]]:
+        """Extract child heading blocks from a Markdown section body."""
+        if not text:
+            return []
+        lines = text.splitlines()
+        heading_re = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+        headings = [(index, len(match.group(1)), match.group(2)) for index, line in enumerate(lines) if (match := heading_re.match(line.strip()))]
+        blocks = []
+        for position, (start, level, heading) in enumerate(headings):
+            end = len(lines)
+            for next_start, next_level, _ in headings[position + 1 :]:
+                if next_level <= level:
+                    end = next_start
+                    break
+            body = "\n".join(lines[start + 1 : end]).strip()
+            if body:
+                blocks.append((heading, body))
+        return blocks
+
+    @staticmethod
+    def _markdown_list_entries(text: str) -> list[str]:
+        if not text:
+            return []
+        entries = []
+        for line in text.splitlines():
+            match = re.match(r"^\s*(?:[-*]|\d+[.)])\s+(.+?)\s*$", line)
+            if match:
+                value = ModuleInitializer._clean_markdown(match.group(1))
+                if value:
+                    entries.append(value)
+        return entries
+
+    @staticmethod
+    def _clean_markdown(value: str) -> str:
+        value = re.sub(r"[*`_]", "", value)
+        value = re.sub(r"\s+", " ", value)
+        return value.strip()
+
+    @classmethod
+    def _split_label(cls, value: str, default: str) -> tuple[str, str]:
+        cleaned = cls._clean_markdown(value)
+        clock = re.match(r"^(\d{1,2}:\d{2})\s+(.+)$", cleaned)
+        if clock:
+            return clock.group(1), clock.group(2).strip()
+        match = re.match(r"^([^：:]{1,80})[：:]\s*(.+)$", cleaned)
+        if match:
+            return match.group(1).strip(), match.group(2).strip()
+        return default, cleaned
 
     def _build_knowledge_pools(self, analysis: dict) -> tuple[dict, dict]:
         """Split `analysis` into `(keeper_pool, player_pool)`.
@@ -501,7 +672,16 @@ ROOM_FACETS = (
         # player knowledge pools built from it. They install together and they leave
         # together — a status without its text is what a half-cleaned room looks like.
         doc_types=frozenset({"module_pool"}),
-        state_keys=frozenset({"module_fulltext", "module_init_status", "module_init_error"}),
+        state_keys=frozenset(
+            {
+                "module_fulltext",
+                "module_source",
+                "module_init_status",
+                "module_init_error",
+                "module_import_status",
+                "module_import_name",
+            }
+        ),
         storages=frozenset({STORAGE_DOCUMENTS, STORAGE_ROOM_STATE}),
     ),
 )

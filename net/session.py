@@ -1071,6 +1071,14 @@ class SessionCore:
                 ):
                     await member.send_frame(error_frame("demo_unavailable", i18n))
                     return
+                module_status = await self.services.store.state_get(member.session_key, "module_init_status")
+                import_status = await self.services.store.state_get(member.session_key, "module_import_status")
+                if module_status == "processing" or import_status == "processing":
+                    await member.send_frame(error_frame("module_initializing", i18n))
+                    return
+                if import_status == "failed":
+                    await member.send_frame(error_frame("module_not_ready", i18n))
+                    return
                 result = await run_turn(
                     self.hub,
                     self.services,

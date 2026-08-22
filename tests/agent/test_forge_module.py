@@ -233,6 +233,22 @@ async def test_empty_llm_response_is_rejected(tmp_path: Path) -> None:
         forge_module._USER_MODULE_DIR = original_user_dir
 
 
+async def test_non_markdown_llm_response_is_rejected(tmp_path: Path) -> None:
+    services = _services("The lantern gutters low. Tell me what you do next.")
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path / "modules"
+    try:
+        result = await generate_and_install_module(services, ctx, "anything")
+
+        assert not result.ok
+        assert result.error == "invalid_module_output"
+        assert not (tmp_path / "modules").exists() or list((tmp_path / "modules").iterdir()) == []
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
 async def test_cjk_title_without_usable_id_gets_stable_content_hash_id(tmp_path: Path) -> None:
     generated = "# 黄泉归影\n\n一场发生在黄泉渡口的调查。"
     expected_id = f"module-{hashlib.sha256(generated.encode('utf-8')).hexdigest()[:8]}"
