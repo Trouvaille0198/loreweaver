@@ -155,10 +155,13 @@ _RULE_NO_GENERATION = '- This module allows NO image generation (the author\'s c
 _RULE_GENERATION = "- Ask for an image only when a picture genuinely says more than the words did. Most beats do not need one."  # i18n-exempt: model-facing prompt text
 
 
-def _director_llm(services: Services) -> LLMClient:
+async def _director_llm(services: Services, chat_key: str) -> LLMClient:
     """The Director's client: a dedicated model when configured, else the main one.
     Unlike the Scribe this defaults to the MAIN model — beats are rare and taste is
     the whole job. Cached on the services bundle (one construction per process)."""
+    selected = await services.room_llm(chat_key, "director")
+    if selected is not None:
+        return selected
     cached = getattr(services, "_director_llm_cache", None)
     if cached is not None:
         return cached
@@ -276,7 +279,8 @@ async def _generate_subject(
         return None, IMAGE_PACK_ONLY
     if not kit.allows_template("image"):
         return None, IMAGE_TEMPLATE_DENIED
-    if services.imagegen is None:
+    imagegen = await services.imagegen_for_room(ctx.chat_key)
+    if imagegen is None:
         return None, IMAGE_NO_PROVIDER
     entry = kit.subject(subject_id)
     if entry is None or not entry.generatable:
@@ -301,7 +305,7 @@ async def _generate_subject(
     )
     try:
         reference = entry.ref_path.read_bytes() if entry.ref_path is not None else None
-        data, mime = await services.imagegen.generate(
+        data, mime = await imagegen.generate(
             full_prompt,
             size=services.settings.imagegen.size,
             reference=reference,
@@ -465,7 +469,9 @@ async def run_director(
     prompt = _build_prompt(kit, beat, player_text, reply_text, trackers, scene)
     try:
         with lane_scope("director", chat_key=ctx.chat_key):
-            result = await _director_llm(services).chat([{"role": "user", "content": prompt}])
+            result = await (await _director_llm(services, ctx.chat_key)).chat(
+                [{"role": "user", "content": prompt}]
+            )
     except Exception as exc:  # noqa: BLE001 — presentation must never break the table
         logger.debug("director: llm call failed: %s", exc)
         _trace(blocks=0, cues=0, prepared=0, image={"outcome": IMAGE_PROVIDER_FAILED})

@@ -183,7 +183,7 @@ from core.mvu_compat import mvu_apply_text
 from core.rulepacks import RulePack
 from core.skills import unlocked_tools_for
 from infra.i18n import t
-from infra.llm import CACHE_BREAKPOINT_KEY, ChatResult, Usage
+from infra.llm import CACHE_BREAKPOINT_KEY, ChatResult, LLMClient, Usage
 from infra.llm_errors import is_context_overflow, is_context_overflow_stop
 from infra.model_call_trace import lane_scope, set_lane_field
 from infra.usage_stats import record_context_overflow
@@ -457,6 +457,7 @@ async def _run_kp_turn_body(
     renders with, so a join replay (which renders the persisted record id)
     replaces the live line in place instead of duplicating it.
     """
+    room_llm = await services.main_llm(ctx.chat_key)
     i18n = services.i18n.with_locale(ctx.locale)
     # AgentCtx instances may be reused by gateways. Never let a direct tool call
     # or an earlier turn's unconsumed dice payload attach to this turn's trace.
@@ -667,7 +668,7 @@ async def _run_kp_turn_body(
             gate.finish_round(discard=True)
         # The conversation genuinely changed underneath any provider-side continuation
         # state, so retire it before re-sending.
-        _clear_llm_continuation(services, messages)
+        _clear_llm_continuation(services, messages, llm=room_llm)
         tail = messages[base_len:]
         # Not a new turn: the worldbook's sticky/cooldown windows already ticked for it
         # when the prompt was first assembled.
@@ -694,6 +695,7 @@ async def _run_kp_turn_body(
             result = await _chat_with_continuation_cleanup(
                 services,
                 messages,
+                llm=room_llm,
                 tools=round_tools,
                 tool_choice="auto",
                 temperature=services.settings.llm.temperature,
@@ -724,7 +726,7 @@ async def _run_kp_turn_body(
                 "content": "loop.provider_content",
             }.get(category, "loop.unavailable")
             reply = i18n.t(message_key)
-            _clear_llm_continuation(services, messages)
+            _clear_llm_continuation(services, messages, llm=room_llm)
             if output_review is not None:
                 reply = output_review(reply)
             # A failed turn commits nothing: the player message persisted at the start
@@ -775,7 +777,7 @@ async def _run_kp_turn_body(
                     on_tool_event=on_tool_event,
                 )
             except (asyncio.CancelledError, Exception):
-                _clear_llm_continuation(services, messages)
+                _clear_llm_continuation(services, messages, llm=room_llm)
                 raise
             continue
 
@@ -813,6 +815,7 @@ async def _run_kp_turn_body(
             hook_engine=hook_engine,
             temperature=services.settings.llm.temperature,
             on_tool_event=on_tool_event,
+            llm=room_llm,
         )
 
     if reply is None:  # max_rounds exhausted without ever reaching a plain-text reply
@@ -823,16 +826,17 @@ async def _run_kp_turn_body(
                 tool_trace,
                 i18n,
                 turn_usage,
+                llm=room_llm,
                 temperature=services.settings.llm.temperature,
                 gate=gate,
             )
         except asyncio.CancelledError:
-            _clear_llm_continuation(services, messages)
+            _clear_llm_continuation(services, messages, llm=room_llm)
             raise
         if reply is None:
             reply = _max_rounds_fallback(tool_trace, i18n)
 
-    _clear_llm_continuation(services, messages)
+    _clear_llm_continuation(services, messages, llm=room_llm)
     # MVU compatibility (imported SillyTavern cards whose scaffolding instructs the model to
     # emit <UpdateVariable> text blocks): parse the blocks, apply their commands to the room's
     # MVU variable tree through validated deterministic code, and strip the blocks from the
@@ -941,9 +945,14 @@ def _accumulate_usage(turn_usage: Usage, result: ChatResult) -> None:
     turn_usage.cache_miss_tokens = result.usage.cache_miss_tokens
 
 
-def _clear_llm_continuation(services: Services, messages: list[dict]) -> None:
+def _clear_llm_continuation(
+    services: Services,
+    messages: list[dict],
+    *,
+    llm: LLMClient | None = None,
+) -> None:
     """Release optional provider state after a conversation list is retired."""
-    clear = getattr(services.llm, "clear_continuation", None)
+    clear = getattr(llm or services.llm, "clear_continuation", None)
     if callable(clear):
         try:
             clear(messages)
@@ -955,6 +964,7 @@ async def _chat_with_continuation_cleanup(
     services: Services,
     messages: list[dict],
     *,
+    llm: LLMClient | None = None,
     tools: list[dict],
     tool_choice: str | dict,
     temperature: float | None,
@@ -962,7 +972,8 @@ async def _chat_with_continuation_cleanup(
 ) -> ChatResult:
     """Call the LLM and release list-owned state if the turn is cancelled."""
     try:
-        return await services.llm.chat(
+        client = llm or services.llm
+        return await client.chat(
             messages,
             tools=tools,
             tool_choice=tool_choice,
@@ -970,7 +981,7 @@ async def _chat_with_continuation_cleanup(
             on_text_delta=on_text_delta,
         )
     except asyncio.CancelledError:
-        _clear_llm_continuation(services, messages)
+        _clear_llm_continuation(services, messages, llm=llm)
         raise
 
 
@@ -1055,6 +1066,7 @@ async def _run_max_rounds_finalizer(
     i18n,
     turn_usage: Usage,
     *,
+    llm: LLMClient,
     temperature: float | None,
     gate: _ReplyStreamGate | None = None,
 ) -> str | None:
@@ -1089,6 +1101,7 @@ async def _run_max_rounds_finalizer(
         result = await _chat_with_continuation_cleanup(
             services,
             convo,
+            llm=llm,
             tools=[],
             tool_choice="none",
             temperature=temperature,
@@ -1099,12 +1112,12 @@ async def _run_max_rounds_finalizer(
         raise
     except Exception:
         logger.warning("max-rounds finalizer failed", exc_info=True)
-        _clear_llm_continuation(services, convo)
+        _clear_llm_continuation(services, convo, llm=llm)
         if gate is not None:
             gate.finish_round(discard=True)
         return None
 
-    _clear_llm_continuation(services, convo)
+    _clear_llm_continuation(services, convo, llm=llm)
     _accumulate_usage(turn_usage, result)
     if gate is not None:
         gate.finish_round(discard=False)
@@ -1453,6 +1466,7 @@ async def _run_turn_checks(
     i18n,
     unlocked: set[str] | None = None,
     *,
+    llm: LLMClient,
     phase: str | None = None,
     capabilities: set[str] | None = None,
     room_pack: RulePack | None = None,
@@ -1503,6 +1517,7 @@ async def _run_turn_checks(
                 result = await _chat_with_continuation_cleanup(
                     services,
                     convo,
+                    llm=llm,
                     tools=[*toolset.schemas(unlocked, phase=phase, capabilities=capabilities), *(subsystem_tools or [])],
                     tool_choice="auto",
                     temperature=temperature,
@@ -1511,7 +1526,7 @@ async def _run_turn_checks(
                 raise
             except Exception:
                 logger.warning("turn check %s skipped: LLM chat failed", check.id, exc_info=True)
-                _clear_llm_continuation(services, convo)
+                _clear_llm_continuation(services, convo, llm=llm)
                 return reply
             spent += 1
             if result.tool_calls:
@@ -1531,13 +1546,13 @@ async def _run_turn_checks(
                         on_tool_event=on_tool_event,
                     )
                 except (asyncio.CancelledError, Exception):
-                    _clear_llm_continuation(services, convo)
+                    _clear_llm_continuation(services, convo, llm=llm)
                     raise
                 awaiting_narration = True
                 continue
             reply = result.content or reply
             awaiting_narration = False
-    _clear_llm_continuation(services, convo)
+    _clear_llm_continuation(services, convo, llm=llm)
     return reply
 
 

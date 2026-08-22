@@ -134,6 +134,20 @@ def test_openaiembeddings_forwards_api_key_and_base_url(fake_async_openai):
     assert embeddings._client.init_kwargs == {"api_key": "sk-test", "base_url": "https://api.deepseek.com/v1"}
 
 
+def test_openaiembeddings_accepts_full_embeddings_endpoint(fake_async_openai):
+    settings = LLMSettings(api_key="sk-test", base_url="https://api.example.test/v1/embeddings")
+    embeddings = OpenAIEmbeddings(settings)
+
+    assert embeddings._client.init_kwargs["base_url"] == "https://api.example.test/v1"
+
+
+def test_openaiembeddings_does_not_borrow_ambient_key(fake_async_openai, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "ambient-must-not-leak")
+    embeddings = OpenAIEmbeddings(LLMSettings(api_key="", base_url="http://localhost:11434/v1"))
+
+    assert embeddings._client.init_kwargs["api_key"] == "missing"
+
+
 async def test_openaiembeddings_empty_input_short_circuits_without_a_call(fake_async_openai):
     embeddings = OpenAIEmbeddings(LLMSettings(api_key="sk-test"))
 
@@ -157,3 +171,14 @@ async def test_openaiembeddings_maps_response_data_to_vectors(fake_async_openai)
     assert kwargs["model"] == "text-embedding-3-small"
     assert kwargs["input"] == ["first", "second"]
     assert kwargs["dimensions"] == 3
+
+
+async def test_openaiembeddings_omits_dimensions_for_fixed_bge_model(fake_async_openai):
+    settings = LLMSettings(api_key="sk-test", embedding_model="BAAI/bge-m3", embedding_dim=1024)
+    embeddings = OpenAIEmbeddings(settings)
+    embeddings._client.create.return_value = SimpleNamespace(data=[SimpleNamespace(embedding=[0.1] * 1024)])
+
+    result = await embeddings.embed(["probe"])
+
+    assert len(result[0]) == 1024
+    assert "dimensions" not in embeddings._client.create.call_args.kwargs

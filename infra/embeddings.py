@@ -31,7 +31,12 @@ class OpenAIEmbeddings:
 
     def __init__(self, settings: LLMSettings) -> None:
         self._settings = settings
-        self._client = AsyncOpenAI(api_key=settings.api_key or None, base_url=settings.base_url or None)
+        self._client = AsyncOpenAI(
+            # Never let the SDK borrow an unrelated ambient OPENAI_API_KEY.
+            # Authless OpenAI-compatible local servers accept this placeholder.
+            api_key=settings.api_key or "missing",
+            base_url=_embedding_base_url(settings.base_url) or None,
+        )
 
     @property
     def dim(self) -> int:
@@ -40,12 +45,30 @@ class OpenAIEmbeddings:
     async def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        response = await self._client.embeddings.create(
-            model=self._settings.embedding_model,
-            input=texts,
-            dimensions=self._settings.embedding_dim,
-        )
+        kwargs = {
+            "model": self._settings.embedding_model,
+            "input": texts,
+        }
+        if _supports_dimensions(self._settings.embedding_model):
+            kwargs["dimensions"] = self._settings.embedding_dim
+        response = await self._client.embeddings.create(**kwargs)
         return [item.embedding for item in response.data]
+
+
+def _embedding_base_url(base_url: str) -> str:
+    """Accept an OpenAI API root or a pasted full ``/embeddings`` endpoint."""
+    base = str(base_url or "").rstrip("/")
+    return base[: -len("/embeddings")] if base.casefold().endswith("/embeddings") else base
+
+
+def _supports_dimensions(model: str) -> bool:
+    """Whether the model family documents a configurable output dimension.
+
+    OpenAI ``text-embedding-3`` and Qwen3 Embedding expose this field. Fixed
+    dimension families such as BGE reject it on OpenAI-compatible providers.
+    """
+    model_id = str(model or "").casefold()
+    return "text-embedding-3" in model_id or "qwen3-embedding" in model_id
 
 
 class FakeEmbeddings:

@@ -446,7 +446,9 @@ async def run_scribe_pass(
     sites, so the hub path and the inline CLI path (`gateway.runner`) cannot drift —
     the same reason the companion gate sits here.
     """
-    if ctx.platform == "companion" or not services.settings.scribe.enabled or result.turn <= 0:
+    if ctx.platform == "companion" or result.turn <= 0 or not await services.room_lane_enabled(
+        ctx.chat_key, "scribe"
+    ):
         return
     names = [str(entry.get("name", "")) for entry in result.tool_trace]
     try:
@@ -459,7 +461,7 @@ async def run_scribe_pass(
         if hub is not None:
             if outcome.changed:
                 await publish_state(hub, services, ctx)
-            if outcome.beat and services.settings.director.enabled:
+            if outcome.beat and await services.room_lane_enabled(ctx.chat_key, "director"):
                 # The Director receives the PLAYER-VISIBLE turn — what was broadcast —
                 # plus the beat KIND. Nothing keeper-side crosses this call; that is
                 # the whole isolation contract (tests/architecture).

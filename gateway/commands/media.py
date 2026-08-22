@@ -266,7 +266,8 @@ class MediaCommands:
             return ctx.i18n.t("commands.avatar.usage")
         if not await is_media_enabled(ctx.services.store, ctx.chat_key):
             return ctx.i18n.t("commands.avatar.media_disabled")
-        if ctx.services.imagegen is None:
+        imagegen = await ctx.services.imagegen_for_room(ctx.chat_key)
+        if imagegen is None:
             return ctx.i18n.t("commands.avatar.not_configured")
 
         # Resolve the target and enforce the keeper gate BEFORE consuming the shared
@@ -296,7 +297,7 @@ class MediaCommands:
                 Event(kind="system", text=ctx.i18n.t("commands.avatar.generating"), data={"level": "info", "spinner": True}),
             )
         try:
-            data, mime = await ctx.services.imagegen.generate(prompt, size=ctx.services.settings.imagegen.size)
+            data, mime = await imagegen.generate(prompt, size=ctx.services.settings.imagegen.size)
             settings = ctx.services.settings.tui
             store = MediaStore(
                 ctx.services.store,
