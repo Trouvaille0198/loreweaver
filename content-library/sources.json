@@ -1,0 +1,86 @@
+{
+  "generated_at": "2026-08-22",
+  "purpose": "Loreweaver deployment staging catalog for tabletop-game source material",
+  "bundled": [
+    {
+      "id": "coc7-quickstart-the-haunting",
+      "title": "Call of Cthulhu 7th Edition Quick-Start Rules",
+      "system": "coc7",
+      "kind": "official_free_pdf",
+      "includes": ["The Haunting", "quick-start rules", "pregenerated investigators"],
+      "local_path": "external/free-official/coc7/call-of-cthulhu-7e-quickstart-the-haunting.pdf",
+      "source_page": "https://www.chaosium.com/cthulhu-quickstart/",
+      "source_file": "https://www.chaosium.com/content/FreePDFs/CoC/CHA23131%20Call%20of%20Cthulhu%207th%20Edition%20Quick-Start%20Rules.pdf",
+      "sha256": "39b6a53915ddf9f48831ae45ac7180b6c7d5fc7bf49e1b7fe764c28ed1885436",
+      "downloaded_at": "2026-08-22",
+      "redistribution": "verify publisher terms before public redistribution"
+    },
+    {
+      "id": "coc7-the-lightless-beacon",
+      "title": "The Lightless Beacon",
+      "system": "coc7",
+      "kind": "official_free_pdf",
+      "local_path": "external/free-official/coc7/the-lightless-beacon.pdf",
+      "source_page": "https://www.chaosium.com/we-are-all-us-free-adventures/",
+      "source_file": "https://www.chaosium.com/content/FreePDFs/WeAreAllUs/2019/The%20Lightless%20Beacon%20-%20Call%20of%20Cthulhu.pdf",
+      "sha256": "14437ca4eca3b6c05b22403bdad30bdb8668f1837e0a2d0ee42e49c160d8aa07",
+      "downloaded_at": "2026-08-22",
+      "redistribution": "verify publisher terms before public redistribution"
+    }
+  ],
+  "source_links": [
+    {
+      "id": "dnd-oneshotsmith",
+      "title": "OneShotsmith",
+      "system": "dnd5e",
+      "kind": "generator",
+      "url": "https://github.com/rages4calm/oneshotsmith",
+      "online_url": "https://carl-prewitt.com/oneshot",
+      "notes": "D&D 5e one-shot generator with Markdown export; no generated adventure is bundled."
+    },
+    {
+      "id": "dnd-adventure",
+      "title": "D&D Adventure",
+      "system": "dnd5e",
+      "kind": "html_archive",
+      "url": "https://www.dndadventure.com/",
+      "example_urls": [
+        "https://www.dndadventure.com/html/adventures/adv_the_betrayal_intro.html",
+        "https://www.dndadventure.com/campaigns/masks-of-destiny/masks-destiny-campaign-overview-notes/"
+      ],
+      "notes": "Free HTML resources; review copyright and convert only material you are entitled to use."
+    },
+    {
+      "id": "coc7-order-of-the-stone",
+      "title": "The Order of the Stone",
+      "system": "coc7",
+      "kind": "commercial_product",
+      "url": "https://chaosium.itch.io/the-order-of-the-stone-free",
+      "notes": "The page currently points to a paid Chaosium product; not bundled."
+    },
+    {
+      "id": "coc7-mythos-japan-swampman",
+      "title": "Who Is the Swampman?",
+      "system": "coc7",
+      "kind": "third_party_scenario",
+      "url": "https://mythosjapan.itch.io/who-is-the-swampman",
+      "notes": "Check the product page's current price and license before downloading or redistributing."
+    },
+    {
+      "id": "coc7-mythos-japan-poisoned-soup",
+      "title": "Poisoned Soup",
+      "system": "coc7",
+      "kind": "third_party_scenario",
+      "url": "https://mythosjapan.itch.io/poisoned-soup",
+      "notes": "Check the product page's current price and license before downloading or redistributing."
+    },
+    {
+      "id": "coc-archive",
+      "title": "Call of Cthulhu Scenario Archive",
+      "system": "coc7",
+      "kind": "reference_archive",
+      "url": "https://github.com/jamesbroadhead/coc_archive",
+      "notes": "The repository states that individual copyrights remain with original authors; link only."
+    }
+  ]
+}
