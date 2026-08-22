@@ -24,12 +24,11 @@ The SHA-256 values are recorded in `sources.json`.
 
 ## Import workflow
 
-Loreweaver's module upload path accepts text-oriented sources. Convert a reference PDF locally, inspect the result, and upload the resulting `.md` or `.txt` file:
+Loreweaver's module upload path accepts text-oriented sources. Verify the locally downloaded PDFs (SHA-256 against `sources.json`) and, when `pdftotext` (poppler-utils) is installed, convert them to text:
 
 ```console
-pdftotext -layout \
-  content-library/external/free-official/coc7/the-lightless-beacon.pdf \
-  /tmp/the-lightless-beacon.txt
+./prepare-sources.sh --check-only          # verify integrity
+./prepare-sources.sh --convert ./converted # verify + pdftotext into ./converted/<id>.txt
 ```
 
 Then use the Keeper module-management surface to upload the text file and import it into the room. The module analyzer will extract scenes, NPCs, clues, timeline, threats, and keeper-only truths.
