@@ -6,6 +6,7 @@ import shlex
 from typing import Any
 
 from agent import npc as npc_records
+from core.prompt_sections import inject_game_state_prompt
 from gateway.audio import add_audio_item, build_audio_control, list_audio_items, resolve_audio_item, update_audio_item
 from gateway.avatar import AvatarError, set_target_avatar, set_user_avatar
 from gateway.commands.rooms import _is_keeper
@@ -19,6 +20,7 @@ from gateway.ops import (
 from gateway.turn import publish_state
 from infra.imagegen import ImageGenError
 from infra.media_store import ALLOWED_AUDIO_MIMES, ALLOWED_IMAGE_MIMES, MediaError, MediaStore
+from infra.model_call_trace import lane_scope
 
 # `.audio` / `.bgm` / `.ambience` / `.sfx` subcommand vocabularies.
 _AUDIO_LIST_WORDS = {"", "list", "ls", "show", "列表", "查看"}
@@ -38,6 +40,52 @@ def _shell_words(text: str) -> list[str]:
         return shlex.split(text)
     except ValueError:
         return text.split()
+
+
+# Intents that ask for a depiction of the table's LIVE state, expanded via the LLM
+# against the player-visible game-state panel. Anything else is a plain prompt.
+_LIVE_STATE_INTENTS = frozenset(
+    {
+        "current scene",
+        "scene",
+        "场景",
+        "当前场景",
+        "現在場景",
+        "current character",
+        "character",
+        "角色",
+        "当前角色",
+        "當前角色",
+        "我",
+        "self",
+        "portrait of me",
+        "combat",
+        "battle",
+        "战斗",
+        "戰鬥",
+        "当前战斗",
+        "當前戰鬥",
+        "current combat",
+    }
+)
+
+
+def _is_live_state_intent(prompt: str) -> bool:
+    """True when the trimmed description reads as a "depict the current X" intent.
+
+    Uses a whole-token match on a bounded intent vocabulary (bilingual) so a normal
+    descriptive sentence is never mistaken for an intent and routed to the LLM."""
+    return prompt.casefold().strip() in _LIVE_STATE_INTENTS
+
+
+# A bare `.image <kind>` word maps to the live-state intent the LLM expands against
+# the room's player-visible state. `combat` is a scene-type image (same kind).
+_KIND_INTENTS = {
+    "scene": "当前场景",
+    "portrait": "当前角色",
+    "item": "当前物品",
+    "combat": "当前战斗",
+}
 
 
 async def _resolve_avatar_target(ctx: CommandCtx, target: str) -> Any | None:
@@ -251,6 +299,137 @@ class MediaCommands:
         if sub in _AVATAR_GEN_WORDS:
             return await self._avatar_generate(ctx, rest)
         return ctx.i18n.t("commands.avatar.usage")
+
+    async def cmd_image(self, ctx: CommandCtx) -> str:
+        """`.image [scene|portrait|item|combat] [description]` — Keeper-only: generate a
+        player-visible image handout and publish it to the room media stream, WITHOUT
+        attaching it to any character's avatar slot. Unlike `.avatar`, the image is
+        pure room content (a scene, an item, a portrait) with no target sheet.
+
+        A bare kind word (`.image scene` / `.image portrait` / `.image item` /
+        `.image combat`) or a live-state phrase (`当前场景`, `当前角色`, `战斗`, `self`)
+        is expanded by the LLM against the room's player-visible game state (scene,
+        roster, clues, combat, world changes — a keeper-secret-free projection) into a
+        concrete image prompt; an optional extra description is folded into that intent
+        (`.image scene 迷雾中的灯塔`). Any other description is sent to the image
+        provider verbatim."""
+        tokens = _shell_words(ctx.args)
+        if not tokens:
+            return ctx.i18n.t("commands.image.usage")
+        kind = "scene"
+        kind_word = False
+        if tokens[0].casefold() in {"scene", "portrait", "item", "combat"}:
+            kind = tokens[0].casefold()
+            kind_word = True
+            tokens = tokens[1:]
+        extra = " ".join(tokens).strip()
+        # LLM-assisted expansion happens when the request names the table's live
+        # state: a bare kind word (`.image scene`), a live-state phrase
+        # (`当前场景` / `战斗` / …), or a kind word with extra detail
+        # (`.image scene 迷雾中的灯塔`). Anything else is a plain prompt.
+        if kind_word:
+            intent = _KIND_INTENTS.get(kind, "")
+            prompt = f"{intent} {extra}".strip() if extra else intent
+        elif _is_live_state_intent(extra):
+            intent = extra
+            prompt = extra
+        else:
+            intent = ""
+            prompt = extra
+        if not prompt:
+            return ctx.i18n.t("commands.image.usage")
+        return await self._generate_image(ctx, kind, prompt, intent=intent)
+
+    async def _generate_image(
+        self, ctx: CommandCtx, kind: str, prompt: str, *, intent: str
+    ) -> str:
+        """Shared image-handout generation: expand a live-state intent via the LLM
+        (when the prompt signals one), generate, and publish to the room media stream."""
+        if not await is_media_enabled(ctx.services.store, ctx.chat_key):
+            return ctx.i18n.t("commands.avatar.media_disabled")
+        imagegen = await ctx.services.imagegen_for_room(ctx.chat_key)
+        if imagegen is None:
+            return ctx.i18n.t("commands.avatar.not_configured")
+        if not allow_imagegen_request(ctx.services, ctx.chat_key):
+            return ctx.i18n.t("commands.avatar.rate_limited")
+
+        if ctx.router.hub is not None:
+            await ctx.router.hub.publish(
+                ctx.chat_key,
+                Event(kind="system", text=ctx.i18n.t("commands.image.generating"), data={"level": "info", "spinner": True}),
+            )
+        try:
+            prompt = await self._expand_image_prompt(ctx, kind, prompt, force=bool(intent))
+            data, mime = await imagegen.generate(prompt, size=ctx.services.settings.imagegen.size)
+            record = await self._store_image_blob(ctx, data, mime, image_name(kind, prompt))
+            await publish_media(
+                ctx.router.hub,
+                ctx.services.store,
+                ctx.chat_key,
+                media_frame(record, from_name="KP"),
+            )
+            return ctx.i18n.t("commands.image.generated", kind=kind, file=record.name, hash=record.hash[:12])
+        except ImageGenError as exc:
+            return ctx.i18n.t(f"commands.avatar.error.{exc.code}")
+        except Exception as exc:
+            return ctx.i18n.t("commands.image.failed", error=str(exc))
+
+    async def _expand_image_prompt(self, ctx: CommandCtx, kind: str, prompt: str, *, force: bool = False) -> str:
+        """Expand a "generate the current X" request into a concrete image prompt.
+
+        With `force` (a bare kind word or a live-state phrase routed by `cmd_image`), an
+        AUTHORING-lane LLM call turns the room's PLAYER-VISIBLE game state (via
+        `core.prompt_sections.inject_game_state_prompt` — the keeper-secret-free
+        battle-status panel) plus the intent into a single detailed image prompt.
+        Otherwise the prompt is returned unchanged so the command stays a plain
+        prompt-to-image pass-through."""
+        if not force and not _is_live_state_intent(prompt):
+            return prompt
+        state = await inject_game_state_prompt(ctx.raw_ctx, ctx.services.characters, ctx.services.store, ctx.i18n)
+        if not state.strip():
+            return prompt
+        messages = [
+            {
+                "role": "system",
+                "content": ctx.i18n.t("commands.image.expand_system"),
+            },
+            {
+                "role": "user",
+                "content": ctx.i18n.t(
+                    "commands.image.expand_user",
+                    kind=kind,
+                    intent=prompt,
+                    state=state,
+                ),
+            },
+        ]
+        try:
+            with lane_scope("authoring", chat_key=ctx.chat_key):
+                result = await ctx.services.llm.chat(messages)
+            expanded = (getattr(result, "content", "") or "").strip()
+            return expanded if expanded else prompt
+        except Exception:
+            return prompt
+
+    async def _store_image_blob(
+        self, ctx: CommandCtx, data: bytes, mime: str, name: str
+    ) -> Any:
+        """Persist a generated image blob into the room's media store."""
+        settings = ctx.services.settings.tui
+        store = MediaStore(
+            ctx.services.store,
+            ctx.services.settings.data_dir,
+            max_file_bytes=settings.media_max_file_bytes,
+            room_quota_bytes=settings.media_room_quota_bytes,
+            allowed_mimes=ALLOWED_IMAGE_MIMES,
+        )
+        return await store.register_blob(
+            room=ctx.chat_key,
+            data=data,
+            mime=mime,
+            name=name,
+            uploader=ctx.user_id,
+        )
 
     async def _avatar_clear(self, ctx: CommandCtx) -> str:
         try:

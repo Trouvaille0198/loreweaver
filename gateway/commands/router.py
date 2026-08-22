@@ -395,6 +395,16 @@ class CommandRouter(
             ),
             CommandSpec("avatar", self.cmd_avatar, ["avatar"], ["avatar", "头像"], None, "commands.help.avatar"),
             CommandSpec(
+                "image",
+                self.cmd_image,
+                ["image"],
+                ["image", "图片", "圖片", "生图", "生圖"],
+                None,
+                "commands.help.image",
+                required_level=int(PrivilegeLevel.GROUP_ADMIN),
+                keeper_help=True,
+            ),
+            CommandSpec(
                 "audio",
                 self.cmd_audio,
                 ["audio"],

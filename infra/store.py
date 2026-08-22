@@ -116,12 +116,16 @@ class Store:
                 parent_id TEXT,
                 turn INTEGER NOT NULL,
                 role TEXT NOT NULL,
+                name TEXT NOT NULL DEFAULT '',
                 content TEXT NOT NULL,
                 seq INTEGER NOT NULL,
                 PRIMARY KEY (room, key, id)
             )
             """
         )
+        history_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(chat_history)")}
+        if "name" not in history_columns:
+            conn.execute("ALTER TABLE chat_history ADD COLUMN name TEXT NOT NULL DEFAULT ''")
         # M20 D: turn-boundary snapshots of the half of a room that is NOT append-only —
         # `room_state` (including the history leaf pointer) and `documents`. A ring, sized
         # by the chronicle's no-future lag window, because undo is capped there too: past
@@ -216,9 +220,7 @@ class Store:
             self._commit(conn)
             return cursor.rowcount if cursor.rowcount != -1 else len(items)
 
-    async def delete_rows_if_value(
-        self, rows: Iterable[tuple[str, str, str]]
-    ) -> int:
+    async def delete_rows_if_value(self, rows: Iterable[tuple[str, str, str]]) -> int:
         """Delete rows only while their value still matches the caller's read."""
         items = list(rows)
         if not items:
@@ -350,9 +352,7 @@ class Store:
     async def doc_delete_type(self, room: str, doc_type: str) -> int:
         async with self._lock:
             conn = self._ensure_conn()
-            cursor = conn.execute(
-                "DELETE FROM documents WHERE room = ? AND type = ?", (room, doc_type)
-            )
+            cursor = conn.execute("DELETE FROM documents WHERE room = ? AND type = ?", (room, doc_type))
             self._commit(conn)
             return cursor.rowcount if cursor.rowcount != -1 else 0
 
@@ -385,9 +385,7 @@ class Store:
     async def state_get(self, room: str, key: str) -> str | None:
         async with self._lock:
             conn = self._ensure_conn()
-            row = conn.execute(
-                "SELECT value FROM room_state WHERE room = ? AND key = ?", (room, key)
-            ).fetchone()
+            row = conn.execute("SELECT value FROM room_state WHERE room = ? AND key = ?", (room, key)).fetchone()
             return row[0] if row is not None else None
 
     async def state_set(self, room: str, key: str, value: str | None) -> None:
@@ -410,9 +408,7 @@ class Store:
         async with self._lock:
             conn = self._ensure_conn()
             if prefix is None:
-                rows = conn.execute(
-                    "SELECT key, value FROM room_state WHERE room = ?", (room,)
-                ).fetchall()
+                rows = conn.execute("SELECT key, value FROM room_state WHERE room = ?", (room,)).fetchall()
             else:
                 escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
                 rows = conn.execute(
@@ -451,9 +447,7 @@ class Store:
             self._commit(conn)
             return cursor.rowcount if cursor.rowcount != -1 else 0
 
-    async def replace_room_content(
-        self, room: str, *, documents: list[dict], state: list[dict]
-    ) -> None:
+    async def replace_room_content(self, room: str, *, documents: list[dict], state: list[dict]) -> None:
         """Replace ALL of `room`'s document and room_state rows in ONE transaction.
 
         The undo restore's batch boundary: `doc_put`/`state_set` deliberately commit
@@ -504,7 +498,7 @@ class Store:
     # ------------------------------------------------------------------
 
     async def history_append(self, room: str, key: str, records: Iterable[dict[str, Any]]) -> None:
-        """Append `records` (each `{id, parent_id, turn, role, content}`) in order.
+        """Append `records` (each `{id, parent_id, turn, role, name, content}`) in order.
 
         Append-only in fact, not just in name: an id that already exists is left exactly
         as it was. A branch created by an undo re-uses the same parent, so two children of
@@ -519,8 +513,8 @@ class Store:
                 "SELECT COALESCE(MAX(seq), 0) FROM chat_history WHERE room = ? AND key = ?", (room, key)
             ).fetchone()[0]
             conn.executemany(
-                "INSERT OR IGNORE INTO chat_history (room, key, id, parent_id, turn, role, content, seq)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO chat_history (room, key, id, parent_id, turn, role, name, content, seq)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         room,
@@ -529,6 +523,7 @@ class Store:
                         record.get("parent_id") or None,
                         int(record.get("turn", 0) or 0),
                         str(record.get("role", "")),
+                        str(record.get("name", "")),
                         str(record.get("content", "")),
                         seq + offset,
                     )
@@ -548,7 +543,7 @@ class Store:
         async with self._lock:
             conn = self._ensure_conn()
             rows = conn.execute(
-                "SELECT id, parent_id, turn, role, content FROM chat_history WHERE room = ? AND key = ?",
+                "SELECT id, parent_id, turn, role, name, content FROM chat_history WHERE room = ? AND key = ?",
                 (room, key),
             ).fetchall()
         by_id = {row[0]: row for row in rows}
@@ -557,8 +552,17 @@ class Store:
         seen: set[str] = set()
         while cursor and cursor in by_id and cursor not in seen:
             seen.add(cursor)
-            record_id, parent_id, turn, role, content = by_id[cursor]
-            chain.append({"id": record_id, "parent_id": parent_id, "turn": turn, "role": role, "content": content})
+            record_id, parent_id, turn, role, name, content = by_id[cursor]
+            chain.append(
+                {
+                    "id": record_id,
+                    "parent_id": parent_id,
+                    "turn": turn,
+                    "role": role,
+                    "name": name,
+                    "content": content,
+                }
+            )
             cursor = parent_id
         chain.reverse()
         return chain
@@ -570,13 +574,20 @@ class Store:
         async with self._lock:
             conn = self._ensure_conn()
             row = conn.execute(
-                "SELECT id, parent_id, turn, role, content FROM chat_history WHERE room = ? AND key = ? AND id = ?",
+                "SELECT id, parent_id, turn, role, name, content FROM chat_history WHERE room = ? AND key = ? AND id = ?",
                 (room, key, record_id),
             ).fetchone()
         if row is None:
             return None
-        found_id, parent_id, turn, role, content = row
-        return {"id": found_id, "parent_id": parent_id, "turn": turn, "role": role, "content": content}
+        found_id, parent_id, turn, role, name, content = row
+        return {
+            "id": found_id,
+            "parent_id": parent_id,
+            "turn": turn,
+            "role": role,
+            "name": name,
+            "content": content,
+        }
 
     async def history_delete_room(self, room: str) -> int:
         async with self._lock:
@@ -590,11 +601,20 @@ class Store:
         async with self._lock:
             conn = self._ensure_conn()
             rows = conn.execute(
-                "SELECT key, id, parent_id, turn, role, content, seq FROM chat_history WHERE room = ? ORDER BY seq",
+                "SELECT key, id, parent_id, turn, role, name, content, seq FROM chat_history WHERE room = ? ORDER BY seq",
                 (room,),
             ).fetchall()
         return [
-            {"key": r[0], "id": r[1], "parent_id": r[2], "turn": r[3], "role": r[4], "content": r[5], "seq": r[6]}
+            {
+                "key": r[0],
+                "id": r[1],
+                "parent_id": r[2],
+                "turn": r[3],
+                "role": r[4],
+                "name": r[5],
+                "content": r[6],
+                "seq": r[7],
+            }
             for r in rows
         ]
 
@@ -630,9 +650,7 @@ class Store:
         """The turns this room has snapshots for, newest first."""
         async with self._lock:
             conn = self._ensure_conn()
-            rows = conn.execute(
-                "SELECT turn FROM room_snapshots WHERE room = ? ORDER BY turn DESC", (room,)
-            ).fetchall()
+            rows = conn.execute("SELECT turn FROM room_snapshots WHERE room = ? ORDER BY turn DESC", (room,)).fetchall()
             return [int(row[0]) for row in rows]
 
     async def snapshot_delete_room(self, room: str) -> int:
