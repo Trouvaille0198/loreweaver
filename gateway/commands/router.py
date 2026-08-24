@@ -553,6 +553,19 @@ class CommandRouter(
                 private_reply=True,
             ),
             CommandSpec(
+                "forge",
+                self.cmd_forge,
+                ["forge"],
+                ["forge", "锻造", "鑄造"],
+                None,
+                "commands.forge.help",
+                required_level=int(PrivilegeLevel.GROUP_ADMIN),
+                # Generation streams progress stages to the issuer and the reply carries
+                # server-side paths and keeper material — keep it off the room bus.
+                private_reply=True,
+                keeper_help=True,
+            ),
+            CommandSpec(
                 "room",
                 self.cmd_room,
                 ["room"],

@@ -43,9 +43,11 @@
   "commands.image.failed": "图片生成失败：{error}",
   "commands.image.generated": "已发送图片到房间（{kind}）：{file}（{hash}）。",
   "commands.image.generating": "正在生成图片…",
-  "commands.image.usage": "用法：.image [scene|portrait|item] <描述>",
+  "commands.image.no_recent_text": "没有最近的守秘人叙述可用于生图。请先推进一回合，或用 `.image <描述>`。",
+  "commands.image.usage": "用法：.image [scene|portrait|clue|combat] <描述>",
+  "commands.image.reference_hint": "参考图仅作为风格与氛围参考：保留其中的环境、光线、氛围和构图，但不要将图中的人物或人脸提取为主体或加以再现。",
   "commands.image.expand_system": "你根据桌游当前状态和守秘人的意图，产出一段具体的图像生成提示词。下面的状态就是玩家当前已知的全部信息——不要发明或透露任何超出它的内容。只输出图像提示词本身，不要任何说明。",
-  "commands.image.expand_user": "意图：{intent}\n\n当前玩家可见的游戏状态：\n{state}\n\n写一段详细的图像提示词（主体、场景、光线、氛围、构图），在给定状态下忠实呈现该意图。用中文输出。",
+  "commands.image.expand_user": "意图：{intent}\n\n当前玩家可见的游戏状态：\n{state}\n\n补充场景素材（房间已知、玩家可见的信息）：\n{material}\n\n写一段详细的图像提示词（主体、场景、光线、氛围、构图），在给定状态下忠实呈现该意图，并参考这些素材。用中文输出。",
   "commands.bind.done": "已将守秘人身份绑定至房间 {room}。",
   "commands.bind.invalid": "绑定密钥无效、已过期或已经使用。",
   "commands.bind.private_only": "请在与机器人的私聊中使用此命令。",
@@ -154,6 +156,10 @@
   "commands.help.undo": "把房间往回退一两个回合（守秘人）。",
   "commands.init.result": "先攻 {name}：{result}",
   "commands.inline.result": "内联 {expression}：{result}",
+  "commands.forge.help": "根据描述生成并安装新模组（.forge <描述> [--pack] [--system <id>] [--extends <id>] [--media <ids>] [--companion <ids>]）。",
+  "commands.forge.usage": "用法：.forge <模组描述> [--pack] [--system coc7|dnd5e|wod] [--extends <基础>] [--media cover,scenes,npcs,items] [--companion skills,rulepacks,cards]",
+  "commands.forge.missing_value": "{option} 缺少取值。",
+  "commands.forge.failed": "模组生成失败：{error}",
   "commands.jrrp.result": "今日人品：{luck}",
   "commands.language.done": "房间语言已切换为中文。",
   "commands.language.usage": "用法：.language en|zh",
@@ -259,5 +265,6 @@
   "commands.undo.done": "已回退 {turns} 个回合，房间回到第 {turn} 回合结束时的样子。所有人的记录也已清空对齐。",
   "commands.undo.too_deep": "最多只能往回退 {depth} 个回合——这是战役摘要还没折叠掉的那一段；再往前退，故事和摘要说的就不是一回事了。",
   "commands.undo.unavailable": "没有可回退到的回合存档点。可用：{turns}",
-  "commands.undo.usage": "用法：.undo [回合数]"
+  "commands.undo.usage": "用法：.undo [回合数]",
+  "commands.forge.done": "已生成模组：{name}"
 }

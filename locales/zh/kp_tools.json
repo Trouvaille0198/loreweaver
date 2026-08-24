@@ -250,6 +250,7 @@
   "kp_tools.know.upload.file_missing": "❌ 指定的文件不存在",
   "kp_tools.know.upload.init_done": "🔄 模组知识池初始化已完成（状态：{status}）",
   "kp_tools.know.upload.init_done_fallback": "⚠️ 模组知识池使用了降级后备分析。请重试初始化或重新导入模组以进行完整分析。最近错误：{error}",
+  "kp_tools.know.upload.assets_imported": "🖼️ 已将 {count} 张模组配图导入本房间。",
   "kp_tools.know.upload.parse_failed": "❌ 文件处理失败：{error}",
   "kp_tools.map.draw.done": "✅ SVG 地图已发送：{name}（{hash}）",
   "kp_tools.map.draw.failed": "❌ 绘制 SVG 地图失败：{error}",

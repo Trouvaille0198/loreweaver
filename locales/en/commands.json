@@ -43,9 +43,11 @@
   "commands.image.failed": "Image generation failed: {error}",
   "commands.image.generated": "Image sent to the room ({kind}): {file} ({hash}).",
   "commands.image.generating": "Generating image...",
-  "commands.image.usage": "Usage: .image [scene|portrait|item] <description>",
+  "commands.image.no_recent_text": "No recent Keeper narration to depict. Run a turn first, or use `.image <description>`.",
+  "commands.image.usage": "Usage: .image [scene|portrait|clue|combat] <description>",
+  "commands.image.reference_hint": "The reference image is only a style/atmosphere guide: keep its environment, lighting, mood and composition, but do NOT extract or reproduce any person or face from it as the subject.",
   "commands.image.expand_system": "You turn a tabletop game state and a Keeper's intent into a single detailed image-generation prompt. The state below is exactly what the players currently know — never invent or reveal anything beyond it. Output ONLY the image prompt, no commentary.",
-  "commands.image.expand_user": "Intent: {intent}\n\nCurrent player-visible game state:\n{state}\n\nWrite ONE detailed image prompt (subject, setting, lighting, mood, composition) that depicts the intent faithfully within this state. English output.",
+  "commands.image.expand_user": "Intent: {intent}\n\nCurrent player-visible game state:\n{state}\n\nAdditional scene material (what the room knows the players can see):\n{material}\n\nWrite ONE detailed image prompt (subject, setting, lighting, mood, composition) that depicts the intent faithfully within this state, drawing on the material. English output.",
   "commands.bind.done": "Keeper identity bound to room {room}.",
   "commands.bind.invalid": "That binding token is invalid, expired, or already used.",
   "commands.bind.private_only": "Use this command in a private chat with the bot.",
@@ -154,6 +156,10 @@
   "commands.help.undo": "Rewind the room by a turn or two (keeper).",
   "commands.init.result": "Initiative {name}: {result}",
   "commands.inline.result": "Inline {expression}: {result}",
+  "commands.forge.help": "Author and install a new module from a description (.forge <desc> [--pack] [--system <id>] [--extends <id>] [--media <ids>] [--companion <ids>]).",
+  "commands.forge.usage": "Usage: .forge <module description> [--pack] [--system coc7|dnd5e|wod] [--extends <base>] [--media cover,scenes,npcs,items] [--companion skills,rulepacks,cards]",
+  "commands.forge.missing_value": "Missing value for {option}.",
+  "commands.forge.failed": "Module generation failed: {error}",
   "commands.jrrp.result": "Daily luck: {luck}",
   "commands.language.done": "Room language set to English.",
   "commands.language.usage": "Usage: .language en|zh",
@@ -259,5 +265,6 @@
   "commands.undo.done": "Rewound {turns} turn(s); the room is back at the end of turn {turn}. Everyone's log has been cleared to match.",
   "commands.undo.too_deep": "Undo reaches back at most {depth} turns — that is the window the campaign summary has not folded yet, so a deeper rewind would leave the story and the summary describing different things.",
   "commands.undo.unavailable": "No saved turn boundary to rewind to. Available: {turns}",
-  "commands.undo.usage": "Usage: .undo [turns]"
+  "commands.undo.usage": "Usage: .undo [turns]",
+  "commands.forge.done": "Generated module: {name}"
 }

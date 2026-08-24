@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import shlex
+from pathlib import Path
 from typing import Any
 
 from agent import npc as npc_records
+from agent.history import DEFAULT_HISTORY_KEY, load_chain
+from core.documents import MODULE_POOL_ID, PLAYER_VIEWER, DocumentStore
 from core.prompt_sections import inject_game_state_prompt
 from gateway.audio import add_audio_item, build_audio_control, list_audio_items, resolve_audio_item, update_audio_item
 from gateway.avatar import AvatarError, set_target_avatar, set_user_avatar
@@ -19,7 +23,13 @@ from gateway.ops import (
 )
 from gateway.turn import publish_state
 from infra.imagegen import ImageGenError
-from infra.media_store import ALLOWED_AUDIO_MIMES, ALLOWED_IMAGE_MIMES, MediaError, MediaStore
+from infra.media_store import (
+    ALLOWED_AUDIO_MIMES,
+    ALLOWED_IMAGE_MIMES,
+    MediaError,
+    MediaStore,
+    is_image_mime,
+)
 from infra.model_call_trace import lane_scope
 
 # `.audio` / `.bgm` / `.ambience` / `.sfx` subcommand vocabularies.
@@ -80,10 +90,12 @@ def _is_live_state_intent(prompt: str) -> bool:
 
 # A bare `.image <kind>` word maps to the live-state intent the LLM expands against
 # the room's player-visible state. `combat` is a scene-type image (same kind).
+# `clue` depicts the room's unlocked clues/items — there is no separate "item"
+# concept in the knowledge pool, so the noun list is the clues pool.
 _KIND_INTENTS = {
     "scene": "当前场景",
     "portrait": "当前角色",
-    "item": "当前物品",
+    "clue": "当前线索",
     "combat": "当前战斗",
 }
 
@@ -301,12 +313,12 @@ class MediaCommands:
         return ctx.i18n.t("commands.avatar.usage")
 
     async def cmd_image(self, ctx: CommandCtx) -> str:
-        """`.image [scene|portrait|item|combat] [description]` — Keeper-only: generate a
+        """`.image [scene|portrait|clue|combat] [description]` — Keeper-only: generate a
         player-visible image handout and publish it to the room media stream, WITHOUT
         attaching it to any character's avatar slot. Unlike `.avatar`, the image is
-        pure room content (a scene, an item, a portrait) with no target sheet.
+        pure room content (a scene, a clue/item, a portrait) with no target sheet.
 
-        A bare kind word (`.image scene` / `.image portrait` / `.image item` /
+        A bare kind word (`.image scene` / `.image portrait` / `.image clue` /
         `.image combat`) or a live-state phrase (`当前场景`, `当前角色`, `战斗`, `self`)
         is expanded by the LLM against the room's player-visible game state (scene,
         roster, clues, combat, world changes — a keeper-secret-free projection) into a
@@ -316,9 +328,19 @@ class MediaCommands:
         tokens = _shell_words(ctx.args)
         if not tokens:
             return ctx.i18n.t("commands.image.usage")
+        # `.image last` — use the Keeper's most recent narration text as the subject.
+        if tokens[0].casefold() in {"last", "recent", "from", "上一条", "最近"}:
+            text = await self._last_keeper_text(ctx)
+            if not text:
+                return ctx.i18n.t("commands.image.no_recent_text")
+            # Keep the optional kind word after `.image last <kind>` for the category.
+            kind = "scene"
+            if len(tokens) >= 2 and tokens[1].casefold() in {"scene", "portrait", "clue", "combat"}:
+                kind = tokens[1].casefold()
+            return await self._generate_image(ctx, kind, text, intent=text, story_mode=True)
         kind = "scene"
         kind_word = False
-        if tokens[0].casefold() in {"scene", "portrait", "item", "combat"}:
+        if tokens[0].casefold() in {"scene", "portrait", "clue", "combat"}:
             kind = tokens[0].casefold()
             kind_word = True
             tokens = tokens[1:]
@@ -338,10 +360,13 @@ class MediaCommands:
             prompt = extra
         if not prompt:
             return ctx.i18n.t("commands.image.usage")
-        return await self._generate_image(ctx, kind, prompt, intent=intent)
+        # For `.image clue <name>` the extra detail is the clue FOCUS — the material
+        # gatherer keeps only scenes/clues mentioning it.
+        focus = extra if kind == "clue" and extra else ""
+        return await self._generate_image(ctx, kind, prompt, intent=intent, focus=focus)
 
     async def _generate_image(
-        self, ctx: CommandCtx, kind: str, prompt: str, *, intent: str
+        self, ctx: CommandCtx, kind: str, prompt: str, *, intent: str, focus: str = "", story_mode: bool = False
     ) -> str:
         """Shared image-handout generation: expand a live-state intent via the LLM
         (when the prompt signals one), generate, and publish to the room media stream."""
@@ -359,57 +384,327 @@ class MediaCommands:
                 Event(kind="system", text=ctx.i18n.t("commands.image.generating"), data={"level": "info", "spinner": True}),
             )
         try:
-            prompt = await self._expand_image_prompt(ctx, kind, prompt, force=bool(intent))
-            data, mime = await imagegen.generate(prompt, size=ctx.services.settings.imagegen.size)
-            record = await self._store_image_blob(ctx, data, mime, image_name(kind, prompt))
+            prompt = await self._expand_image_prompt(ctx, kind, prompt, force=bool(intent), focus=focus, story_mode=story_mode)
+            # Reuse the module's illustration of this subject as a reference so the new
+            # image stays consistent with what the players already saw. Best-effort:
+            # a missing reference is a prompt-only generation, never an error.
+            ref_bytes, ref_mime = await self._gather_reference(ctx, kind, imagegen, focus=focus, extra=prompt)
+            # A scene/clue reference must only guide style and atmosphere — the image
+            # provider may otherwise extract a person/face present in the reference as
+            # the subject. Portrait references WANT that (character consistency), so the
+            # hint is skipped there.
+            display_prompt = prompt
+            if ref_bytes and kind != "portrait":
+                hint = ctx.services.i18n.with_locale(ctx.locale).t("commands.image.reference_hint")
+                prompt = f"{prompt} {hint}".strip()
+            data, mime = await imagegen.generate(
+                prompt,
+                size=ctx.services.settings.imagegen.size,
+                reference=ref_bytes,
+                reference_mime=ref_mime,
+            )
+            record = await self._store_image_blob(ctx, data, mime, image_name(kind, display_prompt))
             await publish_media(
                 ctx.router.hub,
                 ctx.services.store,
                 ctx.chat_key,
-                media_frame(record, from_name="KP"),
+                media_frame(record, from_name="KP", prompt=display_prompt),
             )
+            # Retire the "Generating…" line: publish the SAME text WITHOUT the
+            # spinner flag, so the client replaces the pending entry in place.
+            if ctx.router.hub is not None:
+                await ctx.router.hub.publish(
+                    ctx.chat_key,
+                    Event(
+                        kind="system",
+                        text=ctx.i18n.t("commands.image.generating"),
+                        data={"level": "info", "spinner": False},
+                    ),
+                )
             return ctx.i18n.t("commands.image.generated", kind=kind, file=record.name, hash=record.hash[:12])
         except ImageGenError as exc:
             return ctx.i18n.t(f"commands.avatar.error.{exc.code}")
         except Exception as exc:
             return ctx.i18n.t("commands.image.failed", error=str(exc))
 
-    async def _expand_image_prompt(self, ctx: CommandCtx, kind: str, prompt: str, *, force: bool = False) -> str:
+    async def _expand_image_prompt(self, ctx: CommandCtx, kind: str, prompt: str, *, force: bool = False, focus: str = "", story_mode: bool = False) -> str:
         """Expand a "generate the current X" request into a concrete image prompt.
 
         With `force` (a bare kind word or a live-state phrase routed by `cmd_image`), an
-        AUTHORING-lane LLM call turns the room's PLAYER-VISIBLE game state (via
-        `core.prompt_sections.inject_game_state_prompt` — the keeper-secret-free
-        battle-status panel) plus the intent into a single detailed image prompt.
+        AUTHORING-lane LLM call turns the room's PLAYER-VISIBLE game state into a single
+        detailed image prompt. The state is assembled from every keeper-secret-free
+        source the room has (the battle-status panel, the module knowledge pool's
+        player views of scenes/NPCs/items, non-secret worldbook entries, and the tail
+        of the conversation) so the picture reflects what is actually happening.
         Otherwise the prompt is returned unchanged so the command stays a plain
         prompt-to-image pass-through."""
         if not force and not _is_live_state_intent(prompt):
             return prompt
-        state = await inject_game_state_prompt(ctx.raw_ctx, ctx.services.characters, ctx.services.store, ctx.i18n)
-        if not state.strip():
+        # The image prompt must match the room's material language (Chinese for a
+        # Chinese module), NOT the command session's locale — a Chinese table on an
+        # English UI still wants Chinese prompts, and the material is Chinese.
+        prompt_i18n = ctx.services.i18n.with_locale("zh")
+        state = await inject_game_state_prompt(ctx.raw_ctx, ctx.services.characters, ctx.services.store, prompt_i18n)
+        material = await self._gather_scene_material(ctx, kind, focus=focus, story_mode=story_mode)
+        if not state.strip() and not material.strip():
             return prompt
         messages = [
             {
                 "role": "system",
-                "content": ctx.i18n.t("commands.image.expand_system"),
+                "content": prompt_i18n.t("commands.image.expand_system"),
             },
             {
                 "role": "user",
-                "content": ctx.i18n.t(
+                "content": prompt_i18n.t(
                     "commands.image.expand_user",
                     kind=kind,
                     intent=prompt,
                     state=state,
+                    material=material,
                 ),
             },
         ]
         try:
             with lane_scope("authoring", chat_key=ctx.chat_key):
-                result = await ctx.services.llm.chat(messages)
+                llm = await ctx.services.main_llm(ctx.chat_key)
+                result = await llm.chat(messages)
             expanded = (getattr(result, "content", "") or "").strip()
+            if expanded:
+                _log_image_prompt(ctx, kind, prompt, expanded, ok=True)
             return expanded if expanded else prompt
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 — image generation must never break a turn
+            _log_image_prompt(ctx, kind, prompt, "", ok=False, error=str(exc))
             return prompt
+
+    async def _last_keeper_text(self, ctx: CommandCtx) -> str:
+        """The Keeper's most recent narration text from the room's history.
+
+        The AI Keeper's replies are persisted as `role="assistant"` records; the
+        last non-empty one is the "current narration" `.image last` should depict.
+        Best-effort: returns "" when there is none."""
+        try:
+            chain = await load_chain(ctx.services, ctx.chat_key, DEFAULT_HISTORY_KEY)
+            for message in reversed(chain):
+                if str(message.get("role", "")) == "assistant":
+                    text = str(message.get("content") or "").strip()
+                    if text:
+                        return text
+        except Exception:
+            pass
+        return ""
+
+    async def _gather_scene_material(self, ctx: CommandCtx, kind: str, focus: str = "", story_mode: bool = False) -> str:
+        """Assemble the room's player-visible visual material for the current moment.
+
+        Aggregates, keeper-secret-free (iron rule #3), everything a prompt authoring
+        model can draw on to depict the scene/character/combat: the module knowledge
+        pool's player views of scenes (matched to the current scene when possible),
+        NPCs and items, non-secret worldbook entries, and the tail of the table's
+        conversation so the picture tracks where the story actually is. Each source is
+        independently guarded and skipped on failure — generation must never depend on
+        one lookup."""
+        chat_key = ctx.chat_key
+        docs = DocumentStore(ctx.services.store)
+        lines: list[str] = []
+        seen = set()
+
+        # Current scene name (for matching pool scenes).
+        current_scene = ""
+        try:
+            scene_doc = await docs.get_view(chat_key, "scene", "scene", PLAYER_VIEWER)
+            if scene_doc:
+                current_scene = str(scene_doc.get("name") or "")
+        except Exception:
+            pass
+
+        # Module knowledge pool — player views only.
+        try:
+            pool = await docs.get_view(chat_key, "module_pool", MODULE_POOL_ID, PLAYER_VIEWER)
+            if pool:
+                if kind == "portrait":
+                    npcs = pool.get("npcs") or []
+                    if npcs:
+                        lines.append("## Characters present (player-visible)")
+                        for n in npcs[:5]:
+                            name = n.get("name", "")
+                            desc = str(n.get("description") or "").strip()
+                            if name and desc and name not in seen:
+                                seen.add(name)
+                                lines.append(f"- {name}：{desc}")
+                elif kind == "clue":
+                    # A clue picture depicts an actual unlocked clue from the clues
+                    # pool — NOT ordinary objects in scene descriptions. With a
+                    # `focus` (`.image clue 玉蟾`) only matching clues are kept.
+                    clues = pool.get("clues") or []
+                    if clues:
+                        focused = [
+                            c for c in clues
+                            if not focus or focus in str(c.get("name") or "") or focus in str(c.get("description") or "")
+                        ]
+                        if focused:
+                            lines.append("## Clues in play (player-visible)")
+                            for c in focused[:6]:
+                                cname = str(c.get("name") or "").strip()
+                                cdesc = str(c.get("description") or "").strip()
+                                if cname and cdesc and cname not in seen:
+                                    seen.add(cname)
+                                    lines.append(f"- {cname}：{cdesc}")
+                else:
+                    scenes = pool.get("scenes") or []
+
+                    def _scene_line(s: dict) -> str | None:
+                        name = str(s.get("name") or "").strip()
+                        desc = str(s.get("description") or "").strip()
+                        if not name or not desc or name in seen:
+                            return None
+                        seen.add(name)
+                        return f"- {name}：{desc}"
+
+                    selected = [s for s in scenes if current_scene and str(s.get("name") or "") == current_scene] or scenes
+                    scene_lines = [ln for ln in (_scene_line(s) for s in selected) if ln]
+                    if scene_lines:
+                        lines.append("## Scenes (player-visible)")
+                        lines.extend(scene_lines)
+                    npcs = pool.get("npcs") or []
+                    if npcs:
+                        lines.append("## Character appearances (player-visible)")
+                        for n in npcs[:5]:
+                            name = n.get("name", "")
+                            desc = str(n.get("description") or "").strip()
+                            if name and desc and name not in seen:
+                                seen.add(name)
+                                lines.append(f"- {name}：{desc}")
+                    bg = str(pool.get("background") or "").strip()
+                    if bg:
+                        lines.append(f"## Background\n{bg[:400]}")
+        except Exception:
+            pass
+
+        # Worldbook — non-secret entries only (player-visible).
+        try:
+            entries = await ctx.services.worldbook.list(chat_key)
+            visible = [
+                e for e in entries
+                if not getattr(e, "secret", False) and str(getattr(e, "content", "") or "").strip()
+            ]
+            if visible:
+                lines.append("## World setting (player-visible)")
+                for e in visible[:8]:
+                    content = str(getattr(e, "content", "") or "").strip()[:200]
+                    if content:
+                        lines.append(f"- {content}")
+        except Exception:
+            pass
+
+        # Tail of the conversation — where the story currently is. In story mode
+        # (`.image last`) this is the PRIMARY material: take more of it and put it
+        # first, so the picture reflects the latest narration over static scene data.
+        try:
+            chain = await load_chain(ctx.services, chat_key, DEFAULT_HISTORY_KEY)
+            tail = [str(m.get("content") or "").strip() for m in chain[-10:] if str(m.get("content") or "").strip()]
+            story = ""
+            if tail:
+                cap = 2000 if story_mode else 800
+                story = "\n".join(tail)[-cap:]
+            if story:
+                if story_mode:
+                    # Keep only the most relevant scene context in story mode.
+                    lines = [ln for ln in lines if ln.startswith("## Recent story") or ln.startswith("- ")]
+                lines.append("## Recent story")
+                lines.append(story)
+        except Exception:
+            pass
+
+        if story_mode:
+            # Story first: move the recent-narration block ahead of static material.
+            story_blocks = [ln for ln in lines if ln.startswith("## Recent story")]
+            if story_blocks:
+                rest = [ln for ln in lines if not ln.startswith("## Recent story")]
+                lines = story_blocks + rest
+
+        return "\n".join(lines)
+
+    async def _gather_reference(
+        self, ctx: CommandCtx, kind: str, imagegen: Any, *, focus: str = "", extra: str = ""
+    ) -> tuple[bytes | None, str]:
+        """Find a module illustration of this subject to reuse as the generation reference.
+
+        Only kinds the provider can anchor (``imagegen.reference_kinds``) get a reference:
+        MiniMax supports only `character` (portrait), while image-to-image providers also
+        anchor scene/clue illustrations. A `portrait`/`clue` request matches its subject
+        against the focused name (`.image portrait 老周` / `.image clue 玉蟾`); a `scene`
+        with no focus reuses the most recent scene illustration. `module_media_index`
+        (written by the forge media pass) maps each illustration to the scene/NPC/item it
+        depicts. Without an index entry we fall back to the room's media names by kind
+        prefix. Always best-effort: ``(None, "")`` means prompt-only, never an error."""
+        if kind not in getattr(imagegen, "reference_kinds", frozenset({"portrait"})):
+            return None, ""
+        focus = focus.strip() or extra.strip()
+        try:
+            raw = await ctx.services.store.state_get(ctx.chat_key, "module_media_index")
+            entries: list[dict] = []
+            if raw:
+                value = json.loads(raw)
+                if isinstance(value, list):
+                    entries = [e for e in value if isinstance(e, dict)]
+            pool = []
+            for e in entries:
+                kind_key = {"portrait": "npcs", "scene": "scenes", "clue": "items"}.get(kind)
+                if str(e.get("kind") or "") != kind_key:
+                    continue
+                name = str(e.get("subject") or "").strip()
+                if focus:
+                    if focus in name or name in focus:
+                        pool.append(e)
+                elif kind == "scene":
+                    pool.append(e)
+            if pool:
+                return await self._read_reference_bytes(ctx, pool[-1])
+        except Exception:
+            pass
+        # Fallback: match room media names by kind prefix (old forge illustrations that
+        # predate the index). Scene reuses the latest matching image; portrait/clue need
+        # a focused name to avoid guessing the wrong subject.
+        if not focus and kind != "scene":
+            return None, ""
+        kind_key = {"portrait": "npcs", "scene": "scenes", "clue": "items"}.get(kind)
+        try:
+            settings = ctx.services.settings.tui
+            store = MediaStore(
+                ctx.services.store,
+                ctx.services.settings.data_dir,
+                max_file_bytes=settings.media_max_file_bytes,
+                room_quota_bytes=settings.media_room_quota_bytes,
+                allowed_mimes=ALLOWED_IMAGE_MIMES,
+            )
+            records = await store.list_room_records(ctx.chat_key)
+            matches = [
+                r for r in records
+                if r.name.startswith("module-") and f"-{kind_key}-" in r.name and is_image_mime(r.mime)
+            ]
+            if not matches:
+                return None, ""
+            target = matches[-1]
+            rec, data = await store.read_bytes(ctx.chat_key, target.hash)
+            return data, rec.mime
+        except Exception:
+            return None, ""
+
+    async def _read_reference_bytes(self, ctx: CommandCtx, entry: dict) -> tuple[bytes | None, str]:
+        """Read a stored module illustration's bytes from the media store."""
+        try:
+            settings = ctx.services.settings.tui
+            store = MediaStore(
+                ctx.services.store,
+                ctx.services.settings.data_dir,
+                max_file_bytes=settings.media_max_file_bytes,
+                room_quota_bytes=settings.media_room_quota_bytes,
+                allowed_mimes=ALLOWED_IMAGE_MIMES,
+            )
+            rec, data = await store.read_bytes(ctx.chat_key, str(entry.get("hash") or ""))
+            return data, rec.mime
+        except Exception:
+            return None, ""
 
     async def _store_image_blob(
         self, ctx: CommandCtx, data: bytes, mime: str, name: str
@@ -598,3 +893,30 @@ class MediaCommands:
     async def _publish_audio(self, ctx: CommandCtx, frame: dict[str, Any]) -> None:
         if ctx.router.hub is not None:
             await ctx.router.hub.publish(ctx.chat_key, Event.audio(frame))
+
+
+def _log_image_prompt(
+    ctx: CommandCtx, kind: str, intent: str, expanded: str, *, ok: bool, error: str = ""
+) -> None:
+    """Append one image-prompt audit line to `<data_dir>/image_prompts.log`.
+
+    Records what was actually sent to the image provider (the LLM-expanded prompt,
+    or the raw fallback), so a keeper can inspect why a generated picture looks the
+    way it does. Best-effort: a write failure must never break generation."""
+    try:
+        from datetime import datetime
+
+        path = Path(ctx.services.settings.data_dir) / "image_prompts.log"
+        lines = [
+            f"[{datetime.now().isoformat(timespec='seconds')}] kind={kind} ok={ok}",
+            f"  intent: {intent}",
+        ]
+        if ok:
+            lines.append(f"  prompt: {expanded}")
+        else:
+            lines.append(f"  error: {error}")
+            lines.append(f"  fallback_prompt: {intent}")
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+    except Exception:  # noqa: BLE001 — audit logging never breaks generation
+        pass

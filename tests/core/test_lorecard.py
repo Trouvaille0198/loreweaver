@@ -161,6 +161,17 @@ def test_full_bundle_populates_every_card_field():
     assert card.tags == ["mystery", "克苏鲁"]
     # The original document rides along verbatim so core.card_split can classify the bundle.
     assert card.raw["format"] == LORECARD_FORMAT
+    # No `system:` declared by default.
+    assert parsed.system == ""
+
+
+def test_system_field_declares_built_in_rule_system():
+    assert _parse(system="dnd5e").system == "dnd5e"
+    assert _parse(system="").system == ""
+    # A whitespace-only declaration degrades to empty.
+    assert _parse(system="   ").system == ""
+    # The raw document carries it so the importer can pin it on import.
+    assert _parse(system="coc7").card.raw["system"] == "coc7"
 
 
 def test_alternate_openings_are_blank_filtered():

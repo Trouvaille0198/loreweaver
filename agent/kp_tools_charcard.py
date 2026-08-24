@@ -21,7 +21,7 @@ fields (name/description/tags) are game DATA supplied at runtime, not string lit
 
 from __future__ import annotations
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from agent import npc as npc_records
 from agent.char_from_persona import build_sheet_from_persona, infer_pronoun_note
@@ -394,6 +394,14 @@ class CharcardTools:
                     system = pack.system
 
             card, lorecard = _parse_any_card_file(host_path)
+            # A native bundle may declare its own rule system (`system: coc7` in the card
+            # JSON, e.g. a generated module that "directly uses" a built-in system without
+            # shipping a rulepack). It wins over the room's fallback but NOT over an
+            # explicit `system=` argument (handled above) or a shipped pack rulepack.
+            if not pin_system and lorecard is not None and lorecard.system:
+                system = lorecard.system
+                pin_system = lorecard.system
+                pinned_line = i18n.t("charcard.tools.world.system_pinned", system=pin_system)
             character, world = split_card(card)
             # Keeper trust: secrecy flags are honored and InitVar declarations are consumed
             # into the shared MVU tree (`core.worldbook.import_entries` gates that on
@@ -477,6 +485,10 @@ class CharcardTools:
                 cast_names: list[str] = []
                 for spec in lorecard.pregens:
                     sheet = self._services.characters.generate_character(system, spec["name"])
+                    # A pack may declare a `name` sheet field whose default overwrites the
+                    # pregen's own name during generation/refresh — the roster keys on the
+                    # character's name, so pin it back after any pack defaults applied.
+                    sheet.name = spec["name"]
                     for skill_name, value in dict(spec.get("skills", {})).items():
                         try:
                             set_sheet_value(sheet, pack, skill_name, int(value))
@@ -505,6 +517,37 @@ class CharcardTools:
             if pin_system:
                 await self._services.store.state_set(ctx.chat_key, "room_system", pin_system)
 
+            # Auto-enable the KP skills the pack ships (mirroring `.pack install`'s
+            # `_switch_everything_on`): a module imported into a room should be playable out of
+            # the box — its pacing/rules skill enabled — not require the keeper to remember
+            # `.skill enable <id>`. Only when the card comes from an installed pack.
+            skill_line = ""
+            try:
+                from core.pack import pack_home_of
+                from gateway.ops import toggle_enabled_skill
+
+                home = pack_home_of(Path(self._services.settings.data_dir), host_path)
+                if home is not None:
+                    manifest_path = home / "pack.yaml"
+                    if manifest_path.is_file():
+                        import core.pack as core_pack
+
+                        manifest = core_pack.parse_manifest_text(manifest_path.read_text(encoding="utf-8"), expect_trust=True)
+                        enabled_ids: list[str] = []
+                        for skill_path in manifest.contents.get("skills", ()):
+                            skill_id = PurePosixPath(str(skill_path)).name
+                            if not skill_id:
+                                continue
+                            await toggle_enabled_skill(self._services.store, ctx.chat_key, skill_id, on=True)
+                            enabled_ids.append(skill_id)
+                        if enabled_ids:
+                            skill_line = i18n.t(
+                                "charcard.tools.world.skills_enabled_line",
+                                ids=", ".join(enabled_ids),
+                            )
+            except Exception:  # noqa: BLE001 — skill enabling must never fail a world import
+                pass
+
             result = i18n.t(
                 "charcard.tools.world.done",
                 name=card.name or i18n.t("common.unknown"),
@@ -520,7 +563,7 @@ class CharcardTools:
                     titles=i18n.t("common.list_separator").join(skipped_titles[:5]),
                 )
             extra_lines = [
-                line for line in (pinned_line, specs_line, brief_line, pregen_line, cast_line, skipped_line) if line
+                line for line in (pinned_line, specs_line, brief_line, pregen_line, cast_line, skill_line, skipped_line) if line
             ]
             return "\n".join([result, *extra_lines])
         except CardImportRefused:

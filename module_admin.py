@@ -11,13 +11,16 @@ import base64
 import io
 import json
 import zipfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
+import core.pack as core_pack
 from agent.context import AgentCtx, LocalFs
 from agent.kp_tools_knowledge import DocumentTools
 from core.documents import KEEPER_VIEWER, MODULE_POOL_ID
 from core.worldbook import LORE_DOC_TYPE
+from core.yaml_safety import safe_load_no_aliases
+from infra.media_store import ALLOWED_MEDIA_MIMES, MediaStore
 from net.admin import AdminService, _error
 from net.room_backup import chat_key_for_room
 
@@ -70,6 +73,7 @@ class ModuleAdminService:
         i18n: Any,
         *,
         reauthorize: Any = None,
+        emit_frame: Any = None,
     ) -> dict[str, Any]:
         kind = frame.get("kind") if frame.get("type") == "admin_generate" else None
         if kind not in _CUSTOM_KINDS:
@@ -79,6 +83,7 @@ class ModuleAdminService:
                 frame,
                 i18n,
                 reauthorize=reauthorize,
+                emit_frame=emit_frame,
             )
         if role != "keeper":
             return _error("forbidden", i18n)
@@ -129,6 +134,18 @@ class ModuleAdminService:
 
     def _worldbook_root(self) -> Path:
         return Path(self.services.settings.data_dir).resolve() / "worldbooks"
+
+    @staticmethod
+    def _pack_dir_size(home: Path) -> int:
+        """Total bytes of an installed pack home (cards + assets + manifest), for the library row."""
+        total = 0
+        try:
+            for entry in home.rglob("*"):
+                if entry.is_file():
+                    total += entry.stat().st_size
+        except OSError:
+            pass
+        return total
     @staticmethod
     def _payload(frame: dict[str, Any]) -> dict[str, Any]:
         raw = frame.get("description")
@@ -182,6 +199,165 @@ class ModuleAdminService:
                     return title
         return Path(name).stem
 
+    async def _pack_detail(self, caller_room: str, raw_name: str) -> dict[str, Any]:
+        """Detail for an installed .lwpack content pack, read directly from its bundled world
+        card (no room import needed): the card's name/description/scenario/opening, its worldbook
+        entries, typed variables, and pregen cast."""
+        from gateway.panels import installed_pack_homes
+
+        homes = installed_pack_homes(Path(self.services.settings.data_dir))
+        home = homes.get(raw_name.strip())
+        if home is None:
+            return _module_reply("module_detail", False, raw_name, {"error": "source_not_found"})
+        manifest_path = home / "pack.yaml"
+        cards_dir = home / "cards"
+        if not manifest_path.is_file() or not cards_dir.is_dir():
+            return _module_reply("module_detail", False, raw_name, {"error": "source_not_found"})
+        try:
+            manifest = core_pack.parse_manifest_text(manifest_path.read_text(encoding="utf-8"), expect_trust=True)
+        except Exception:  # noqa: BLE001 — a broken pack degrades to a clean miss
+            return _module_reply("module_detail", False, raw_name, {"error": "source_not_found"})
+        title = dict(manifest.name).get("en") or raw_name
+        description = dict(manifest.description).get("en") or ""
+
+        # Read the pack's own world card(s): its lore, variables, pregens, and prose. The world
+        # card is the pack's module content — showing it needs no room import.
+        entries: list[dict[str, Any]] = []
+        variables: list[dict[str, Any]] = []
+        pregens: list[dict[str, str]] = []
+        scenario = ""
+        opening = ""
+        for card_path in sorted(cards_dir.glob("*.lorecard.json"))[:4]:
+            try:
+                card = json.loads(card_path.read_text(encoding="utf-8"))
+            except Exception:  # noqa: BLE001 — skip an unreadable card
+                continue
+            if not isinstance(card, dict):
+                continue
+            for entry in card.get("worldbook") or []:
+                if not isinstance(entry, dict):
+                    continue
+                keys = entry.get("keys") or []
+                if isinstance(keys, str):
+                    keys = [keys]
+                keys = [str(k) for k in keys if str(k).strip()]
+                category = str(entry.get("category") or "lore")
+                entry_title = str(entry.get("title") or entry.get("comment") or entry.get("name") or "").strip()
+                if not entry_title:
+                    entry_title = keys[0] if keys else category
+                entries.append(
+                    {
+                        "title": entry_title,
+                        "content": str(entry.get("content") or ""),
+                        "keys": keys,
+                        "secret": bool(entry.get("secret", False)),
+                    }
+                )
+            variables.extend([dict(v) for v in (card.get("variables") or []) if isinstance(v, dict)])
+            pregens.extend(
+                {"name": str(p.get("name", "")), "concept": str(p.get("concept") or p.get("blurb") or "")}
+                for p in (card.get("pregens") or [])
+                if isinstance(p, dict) and p.get("name")
+            )
+            scenario = str(card.get("scenario") or "") or scenario
+            opening = str(card.get("opening") or "") or opening
+
+        # The pack's bundled rulepack(s) and KP skill(s) install into the shared discovery dirs
+        # (`data/rulepacks/`, `data/skills/`) — not the pack home — so resolve them by the
+        # manifest's declared `contents` and read from those dirs.
+        data_dir = Path(self.services.settings.data_dir)
+        rulepacks_dir = data_dir / "rulepacks"
+        skills_dir = data_dir / "skills"
+        rulepacks: list[dict[str, Any]] = []
+        for declared in manifest.contents["rulepacks"]:
+            name = PurePosixPath(declared).name
+            rp_file = rulepacks_dir / name
+            if not rp_file.is_file():
+                continue
+            try:
+                rp_text = rp_file.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            names: list[str] = []
+            try:
+                rp = safe_load_no_aliases(rp_text)
+                if isinstance(rp, dict):
+                    names = [str(n) for n in (rp.get("names") or []) if str(n).strip()]
+            except Exception:  # noqa: BLE001
+                pass
+            rulepacks.append(
+                {
+                    "name": rp_file.stem,
+                    "title": names[0] if names else rp_file.stem,
+                    "content": rp_text[:8000],
+                }
+            )
+        skills: list[dict[str, str]] = []
+        for declared in manifest.contents["skills"]:
+            skill_id = PurePosixPath(declared).name
+            skill_file = skills_dir / skill_id / "SKILL.md"
+            if not skill_file.is_file():
+                continue
+            try:
+                skills.append({"name": skill_id, "content": skill_file.read_text(encoding="utf-8")[:8000]})
+            except OSError:
+                continue
+
+        content_parts = [part for part in (description, scenario, opening) if part]
+        content = "\n\n".join(content_parts)
+        # The pack's bundled asset illustrations (installed under the pack home, content-addressed
+        # by path) — the images a module ships with, shown in the detail view.
+        media: list[dict[str, Any]] = []
+        for asset_path in manifest.assets:
+            p = home / asset_path.path
+            if not p.is_file():
+                continue
+            # Figure kind from the provenance name (`module-<id>-<kind>-<n>.jpg`): cover/scenes/npcs/items.
+            kind = "asset"
+            stem = p.stem
+            for token in ("cover", "scenes", "npcs", "items", "item"):
+                if token in stem:
+                    kind = token
+                    break
+            try:
+                data = p.read_bytes()
+            except OSError:
+                continue
+            media.append(
+                {
+                    "name": p.name,
+                    "hash": asset_path.sha256,
+                    "mime": asset_path.mime,
+                    "size": asset_path.size,
+                    "kind": kind,
+                    "data": base64.b64encode(data[:512 * 1024]).decode("ascii"),
+                }
+            )
+        return _module_reply(
+            "module_detail",
+            True,
+            raw_name,
+            {
+                "name": raw_name,
+                "title": title,
+                "size": self._pack_dir_size(home),
+                "modified": int(home.stat().st_mtime * 1000),
+                "content": content,
+                "source_kind": "pack",
+                "current": False,
+                "status": "ready",
+                "import_status": "",
+                "importing": False,
+                "pool": None,
+                "media": media,
+                "worldbook_entries": entries,
+                "variables": variables,
+                "pregens": pregens,
+                "rulepacks": rulepacks,
+                "skills": skills,
+            },
+        )
+
     async def _current_name(self, caller_room: str, root: Path, files: list[tuple[str, Path]]) -> str:
         chat_key = chat_key_for_room(caller_room)
         recorded = str(await self.services.store.state_get(chat_key, "module_source") or "")
@@ -207,6 +383,7 @@ class ModuleAdminService:
         files = self._files(root)
         current = await self._current_name(caller_room, root, files)
         chat_key = chat_key_for_room(caller_room)
+        imported_module = str(await self.services.store.state_get(chat_key, "world_import") or "")
         import_status = str(await self.services.store.state_get(chat_key, "module_import_status") or "")
         importing_name = str(await self.services.store.state_get(chat_key, "module_import_name") or "")
         modules = []
@@ -215,10 +392,54 @@ class ModuleAdminService:
             modules.append(
                 {
                     "name": name,
+                    "title": self._title(path.read_text(encoding="utf-8"), name),
                     "size": stat.st_size,
                     "modified": int(stat.st_mtime * 1000),
+                    "source_kind": "text",
                     "current": name == current,
                     "importing": name == importing_name and import_status == "processing",
+                }
+            )
+        # Installed .lwpack content packs are module sources too — list them alongside the
+        # Markdown text sources so the library shows every importable module in one place,
+        # distinguished by `source_kind`.
+        from gateway.panels import installed_pack_homes
+
+        for pack_id, home in sorted(installed_pack_homes(Path(self.services.settings.data_dir)).items()):
+            manifest_path = home / "pack.yaml"
+            if not manifest_path.is_file():
+                continue
+            try:
+                manifest = core_pack.parse_manifest_text(manifest_path.read_text(encoding="utf-8"), expect_trust=True)
+            except Exception:  # noqa: BLE001 — a broken pack must not break the whole listing
+                continue
+            display = dict(manifest.name).get("en") or pack_id
+            stat = home.stat()
+            # Summarize the pack's content for the library row: lore entry count + pregen cast size.
+            entry_count = 0
+            pregen_count = 0
+            cards_dir = home / "cards"
+            if cards_dir.is_dir():
+                for card_path in sorted(cards_dir.glob("*.lorecard.json"))[:4]:
+                    try:
+                        card = json.loads(card_path.read_text(encoding="utf-8"))
+                    except Exception:  # noqa: BLE001 — skip an unreadable card
+                        continue
+                    if not isinstance(card, dict):
+                        continue
+                    entry_count += len([e for e in (card.get("worldbook") or []) if isinstance(e, dict)])
+                    pregen_count += len([p for p in (card.get("pregens") or []) if isinstance(p, dict)])
+            modules.append(
+                {
+                    "name": pack_id,
+                    "title": display,
+                    "size": self._pack_dir_size(home),
+                    "modified": int(stat.st_mtime * 1000),
+                    "source_kind": "pack",
+                    "entry_count": entry_count,
+                    "pregen_count": pregen_count,
+                    "current": bool(display and display == imported_module),
+                    "importing": False,
                 }
             )
         status = str(await self.services.store.state_get(chat_key, "module_init_status") or "")
@@ -230,9 +451,15 @@ class ModuleAdminService:
         )
 
     async def _detail(self, caller_room: str, root: Path, raw_name: str) -> dict[str, Any]:
-        name, path = self._path(root, raw_name)
-        if not path.is_file():
-            return _module_reply("module_detail", False, name, {"error": "source_not_found"})
+        try:
+            name, path = self._path(root, raw_name)
+        except ValueError:
+            name, path = "", None
+        if path is None or not path.is_file():
+            # Not a Markdown source — it may be an installed .lwpack content pack, which has a
+            # detail too (its name, description, size; plus its worldbook entries if the room
+            # has imported it). A pack detail is still a valid module detail.
+            return await self._pack_detail(caller_room, raw_name)
         content = path.read_text(encoding="utf-8")
         files = self._files(root)
         current = await self._current_name(caller_room, root, files)
@@ -241,8 +468,26 @@ class ModuleAdminService:
         import_status = str(await self.services.store.state_get(chat_key, "module_import_status") or "")
         import_name = str(await self.services.store.state_get(chat_key, "module_import_name") or "")
         pool = None
+        media_records: list[dict[str, Any]] = []
         if current == name:
             pool = await self.services.documents.get_view(chat_key, "module_pool", MODULE_POOL_ID, KEEPER_VIEWER)
+            # Forge-generated illustrations carry the `module-<id>-` provenance prefix; they are
+            # room-scoped like the pool, so they surface exactly where the pool does.
+            module_id = name[:-3] if name.endswith(".md") else name
+            prefix = f"module-{module_id}-"
+            tui = self.services.settings.tui
+            store = MediaStore(
+                self.services.store,
+                self.services.settings.data_dir,
+                max_file_bytes=max(tui.media_max_file_bytes, tui.audio_max_file_bytes),
+                room_quota_bytes=max(tui.media_room_quota_bytes, tui.audio_room_quota_bytes),
+                allowed_mimes=ALLOWED_MEDIA_MIMES,
+            )
+            media_records = [
+                {"name": record.name, "hash": record.hash, "mime": record.mime, "size": record.size}
+                for record in await store.list_room_records(chat_key)
+                if record.name.startswith(prefix)
+            ]
         stat = path.stat()
         return _module_reply(
             "module_detail",
@@ -254,6 +499,7 @@ class ModuleAdminService:
                 "modified": int(stat.st_mtime * 1000),
                 "content": content,
                 "title": self._title(content, name),
+                "source_kind": "text",
                 "current": current == name,
                 "status": status if current == name else "",
                 "import_status": import_status if import_name == name else "",
@@ -262,6 +508,7 @@ class ModuleAdminService:
                 # stale pool during the transition.
                 "importing": import_status == "processing",
                 "pool": pool,
+                "media": media_records,
             },
         )
 
@@ -464,6 +711,10 @@ class ModuleAdminService:
     async def _worldbook_list(self, caller_room: str, root: Path) -> dict[str, Any]:
         chat_key = chat_key_for_room(caller_room)
         current = await self.services.worldbook.active_source(chat_key)
+        # The current MODULE is the `world_import` marker (the card name the keeper imported as
+        # the room's running module) — use it as the authoritative "current worldbook" so the
+        # keeper UI shows which scenario is live.
+        imported_module = str(await self.services.store.state_get(chat_key, "world_import") or "")
         attached = await self._attached_worldbooks(chat_key)
         books_by_name: dict[str, dict[str, Any]] = {}
         for name, path in self._worldbook_files(root):
@@ -472,7 +723,7 @@ class ModuleAdminService:
                 "name": name,
                 "size": stat.st_size,
                 "modified": int(stat.st_mtime * 1000),
-                "current": current == name,
+                "current": bool(current == name or (imported_module and name == imported_module)),
                 "attached": name in attached,
                 "origin": "room" if name in attached else "library",
                 "entry_count": len(attached.get(name, [])),
@@ -485,7 +736,7 @@ class ModuleAdminService:
                 "name": name,
                 "size": 0,
                 "modified": 0,
-                "current": current == name,
+                "current": bool(current == name or (imported_module and name == imported_module)),
                 "attached": True,
                 "origin": "room",
                 "entry_count": len(entries),

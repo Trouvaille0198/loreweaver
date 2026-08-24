@@ -87,7 +87,37 @@ async def build_room_state(
     if systems:
         state["systems"] = systems
 
+    image_names = await _image_names(services, ctx.chat_key)
+    if image_names:
+        state["image_names"] = image_names
+
     return state
+
+
+async def _image_names(services: Services, chat_key: str) -> dict[str, list[str]]:
+    """Player-visible noun lists for `.image` completions.
+
+    NPC names and clue names from the module knowledge pool's PLAYER view —
+    keeper-secret-free (iron rule #3). The client offers these as argument
+    completions for `.image portrait` / `.image clue`. Empty dict when the room has
+    no pool."""
+    from core.documents import MODULE_POOL_ID, PLAYER_VIEWER, DocumentStore
+
+    docs = DocumentStore(services.store)
+    try:
+        pool = await docs.get_view(chat_key, "module_pool", MODULE_POOL_ID, PLAYER_VIEWER)
+    except Exception:
+        return {}
+    if not pool:
+        return {}
+    names: dict[str, list[str]] = {}
+    npcs = [str(n.get("name") or "").strip() for n in (pool.get("npcs") or []) if str(n.get("name") or "").strip()]
+    if npcs:
+        names["npcs"] = npcs
+    clues = [str(c.get("name") or "").strip() for c in (pool.get("clues") or []) if str(c.get("name") or "").strip()]
+    if clues:
+        names["clues"] = clues
+    return names
 
 
 def _rule_systems() -> list[dict[str, str]]:

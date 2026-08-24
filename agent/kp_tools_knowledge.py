@@ -97,11 +97,22 @@ from core.battle_report import _default_session_name
 from core.documents import KEEPER_VIEWER, MODULE_POOL_ID
 from core.game_clock import advance_game_time, face_is_engine_readable, parse_time_delta
 from infra.i18n import I18n
+from infra.media_store import ALLOWED_IMAGE_MIMES, MediaStore
 from infra.room_facets import STORAGE_DOCUMENTS, RoomStateFacet
 
 # Document-type -> emoji, purely a decorative icon lookup keyed by an
 # internal (English) data tag -- same sanctioned exemption as
 # `core.prompt_sections._DOCUMENT_TYPE_EMOJI` (not natural-language text).
+# Asset-file suffix -> MIME, matching `infra.media_store.ALLOWED_IMAGE_MIMES`
+# (PNG/JPEG/WebP/GIF), used when a module's own asset illustrations are read
+# back off disk at import.
+_IMAGE_MIME_BY_SUFFIX = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
 _DOC_TYPE_EMOJI = {
     "module": "\U0001f4d8",  # 📘
     "rule": "\U0001f4dc",  # 📜
@@ -909,6 +920,58 @@ class DocumentTools(_KnowledgeToolsBase):
     ad-hoc `search_documents` retrieval and (for module/story uploads) module-analysis initialization.
     """
 
+    async def _import_module_assets(self, ctx: AgentCtx, host_path: Path, filename: str) -> int:
+        """Register a module's own asset illustrations into the room's media deck.
+
+        A forge-generated module stores its rendered images next to the source as
+        ``modules/<id>.assets/<name>`` (see `agent.forge._module_media_pass`). When such a
+        module is imported into a room, this reads those files and registers them as room
+        media — so the module's pictures travel with the module, not with the room that
+        happened to generate them. Best-effort: a missing directory (any hand-uploaded /
+        attached module) is silently skipped; a bad file just skips that file. Returns how
+        many were registered."""
+        stem = Path(host_path.name).stem
+        assets_dir = host_path.parent / f"{stem}.assets"
+        if not assets_dir.is_dir():
+            return 0
+        tui = self._services.settings.tui
+        store = MediaStore(
+            self._services.store,
+            self._services.settings.data_dir,
+            max_file_bytes=tui.media_max_file_bytes,
+            room_quota_bytes=tui.media_room_quota_bytes,
+            allowed_mimes=ALLOWED_IMAGE_MIMES,
+        )
+        existing = {record.name for record in await store.list_room_records(ctx.chat_key)}
+        registered = 0
+        try:
+            for path in sorted(assets_dir.iterdir()):
+                if not path.is_file():
+                    continue
+                if path.name in existing:
+                    continue
+                mime = _IMAGE_MIME_BY_SUFFIX.get(path.suffix)
+                if mime is None:
+                    continue
+                try:
+                    data = path.read_bytes()
+                except OSError:
+                    continue
+                try:
+                    await store.register_blob(
+                        room=ctx.chat_key,
+                        data=data,
+                        mime=mime,
+                        name=path.name,
+                        uploader=ctx.uid(),
+                    )
+                    registered += 1
+                except Exception:  # noqa: BLE001 — one bad asset must not sink the module import
+                    continue
+        except OSError:
+            return registered
+        return registered
+
     @tool(prep_only=True)
     async def upload_document(self, ctx: AgentCtx, file_path: str, doc_type: str = "module", custom_filename: str | None = None, progress: ProgressCb = None) -> str:
         """Process an uploaded document file: extract its text, chunk + embed it into the vector store, and
@@ -985,6 +1048,14 @@ class DocumentTools(_KnowledgeToolsBase):
                     init_note = "\n" + i18n.t(
                         "kp_tools.know.upload.init_done",
                         status=status or i18n.t("kp_tools.know.status.unknown"),
+                    )
+                # A module's own asset illustrations (written by the forge's media pass next to
+                # the source) travel with the module: register them into this room's media deck
+                # so a re-import into a fresh room brings the pictures along. Best-effort.
+                imported_assets = await self._import_module_assets(ctx, host_path, filename)
+                if imported_assets:
+                    init_note += "\n" + i18n.t(
+                        "kp_tools.know.upload.assets_imported", count=imported_assets
                     )
 
             emoji = _DOC_TYPE_EMOJI.get(doc_type, _DEFAULT_DOC_EMOJI)

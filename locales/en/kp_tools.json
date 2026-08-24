@@ -250,6 +250,7 @@
   "kp_tools.know.upload.file_missing": "❌ The specified file does not exist.",
   "kp_tools.know.upload.init_done": "🔄 Module knowledge-pool initialization finished (status: {status}).",
   "kp_tools.know.upload.init_done_fallback": "⚠️ Module knowledge-pool initialization used degraded fallback analysis. Retry initialization or re-import the module for a full analysis. Last error: {error}",
+  "kp_tools.know.upload.assets_imported": "🖼️ Imported {count} module illustration(s) into this room.",
   "kp_tools.know.upload.parse_failed": "❌ Failed to process the file: {error}",
   "kp_tools.map.draw.done": "✅ SVG map sent: {name} ({hash})",
   "kp_tools.map.draw.failed": "❌ Failed to draw SVG map: {error}",

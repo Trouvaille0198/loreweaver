@@ -5,8 +5,10 @@
 // card listing (`list_pack_cards` → `pack_cards`), the structured lane behind every
 // "import from installed pack" picker. 2.3 adds each listed card's `kind`, so a picker
 // can send the right import verb. 2.4 adds `character.skills` — the sheet's trained
-// skills, folded into a collapsible card section. A 2.0–2.3 client ignores it.
-export const PROTOCOL_VERSION = "2.4" as const
+// skills, folded into a collapsible card section. 2.5 adds `options` on
+// `admin_generate` — keeper-selectable media/companion content for a module forge.
+// A 2.0–2.4 client ignores it.
+export const PROTOCOL_VERSION = "2.5" as const
 
 export const FrameType = {
   Join: "join",
@@ -165,6 +167,8 @@ export interface MediaFrame extends MediaRef {
   name: string
   from: string
   ts: number
+  /** The image-generation prompt that produced this picture (generated handouts only). */
+  prompt?: string
 }
 
 export interface MediaAcceptFrame {
@@ -830,6 +834,9 @@ export interface StateFrame {
   // offer character creation without knowing any rule system — so a pack that ships
   // its own system reaches every client's picker with no client release.
   systems?: RuleSystemEntry[]
+  // Player-visible noun lists for `.image` completions: NPC names (`npcs`) and
+  // clue names (`clues`) from the module knowledge pool's player view.
+  image_names?: { npcs?: string[]; clues?: string[] }
   // Set once, on the state frame the server pushes right after a campaign reset
   // (`.reset` / `admin_reset_room`): besides the already-fresh (empty) panel data,
   // the client should also clear its locally-accumulated chat scrollback.
@@ -1254,12 +1261,28 @@ export interface AdminRulesFrame {
 // Ask the server to author + install a brand-new skill/rule system/module from a natural-language
 // description via the matching `agent.forge` generator. A slow LLM call answered as a normal
 // request/reply — the client shows a spinner while it awaits `AdminGeneratedFrame`.
+
+/** v2.5: keeper-selectable extra illustrations for a `kind:"module"` generation (closed
+ * vocabulary; unknown ids are ignored server-side). */
+export type AdminGenerateMediaKind = "cover" | "scenes" | "npcs" | "items"
+/** v2.5: keeper-selectable companion content for a `kind:"module"` generation (closed
+ * vocabulary; unknown ids are ignored server-side). */
+export type AdminGenerateCompanionKind = "skills" | "rulepacks" | "cards"
+
+export interface AdminGenerateOptions {
+  media?: AdminGenerateMediaKind[]
+  companion?: AdminGenerateCompanionKind[]
+}
+
 export interface AdminGenerateFrame {
   type: typeof FrameType.AdminGenerate
   kind: AdminForgeKind
   description: string
   /** UI locale for localized authoring prompts; falls back to the server locale when omitted. */
   locale?: "en" | "zh"
+  /** v2.5 (additive): per-generation opt-ins, honored for `kind:"module"` only. Absent means the
+   * module is authored exactly as before (no extra content, no extra model/image calls). */
+  options?: AdminGenerateOptions
 }
 
 export interface AdminGeneratedFrame {

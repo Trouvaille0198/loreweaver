@@ -11,7 +11,12 @@ install new skills/rule systems/modules on its own initiative -- the keeper must
 from __future__ import annotations
 
 from agent.context import AgentCtx
-from agent.forge import generate_and_install_module, generate_and_install_rulepack, generate_and_install_skill
+from agent.forge import (
+    generate_and_install_module,
+    generate_and_install_pack_module,
+    generate_and_install_rulepack,
+    generate_and_install_skill,
+)
 from agent.services import Services
 from agent.tools import tool
 from infra.i18n import I18n
@@ -78,7 +83,13 @@ class ForgeTools:
         return i18n.t("agent.forge.rulepack_invalid", error=result.error)
 
     @tool(gated=True, prep_only=True)
-    async def generate_module(self, ctx: AgentCtx, description: str) -> str:
+    async def generate_module(
+        self,
+        ctx: AgentCtx,
+        description: str,
+        media: list[str] | None = None,
+        companion: list[str] | None = None,
+    ) -> str:
         """Author and install a brand-new module/scenario document from a natural-language
         description (or a keeper-provided premise), landing it directly in THIS room's module
         knowledge pool through the same analysis the `.module` command uses. Only available once
@@ -87,13 +98,21 @@ class ForgeTools:
         Args:
             description: A clear, self-contained description of the scenario to author: setting,
                 premise, the key NPCs/threats involved, and the shape of the mystery/adventure.
+            media: Optional extra illustrations to generate alongside the module, chosen from:
+                "cover" (one opening image), "scenes" (one per key scene), "npcs" (one portrait
+                per key NPC), "items" (one per key item/clue). Generated images are stored in the
+                room's media deck for the keeper to show later, never auto-broadcast.
+            companion: Optional companion content to generate alongside the module, chosen from:
+                "skills" (a KP skill for this scenario), "rulepacks" (a rule system for it),
+                "cards" (claimable pre-generated character cards).
 
         Returns:
             Confirmation naming the new module and summarizing this room's resulting knowledge-pool
-            state, or an explanation of why generation failed (nothing is installed on failure).
+            state (plus any generated media/companion content), or an explanation of why generation
+            failed (nothing is installed on failure).
         """
         i18n = self._i18n(ctx)
-        result = await generate_and_install_module(self._services, ctx, description)
+        result = await generate_and_install_module(self._services, ctx, description, media=media, companion=companion)
         if result.ok:
             if result.reused:
                 return i18n.t(
@@ -106,4 +125,58 @@ class ForgeTools:
             return i18n.t("agent.forge.module_no_data_dir")
         if result.error.startswith("bad_id"):
             return i18n.t("agent.forge.module_bad_id", error=result.error.removeprefix("bad_id: "))
+        return i18n.t("agent.forge.module_invalid", error=result.error)
+
+
+    @tool(gated=True, prep_only=True)
+    async def generate_pack_module(
+        self,
+        ctx: AgentCtx,
+        description: str,
+        media: list[str] | None = None,
+        companion: list[str] | None = None,
+        extends_base: str = "",
+        system: str = "",
+    ) -> str:
+        """Author and install a COMPLETE module as a native world card wrapped in a `.lwpack`
+        content pack — the engine's canonical full-module shape (lorebook + typed trackers +
+        claimable cast + optional assets + bundled companion skill/rulepack), unlike
+        `generate_module`'s flat Markdown scenario. Only available once the `module-forge` skill
+        is enabled for this room.
+
+        Args:
+            description: A clear, self-contained description of the scenario to author: setting,
+                premise, the key NPCs/threats involved, and the shape of the mystery/adventure.
+            media: Optional illustrations to generate and bundle INTO the pack's assets (travel
+                with the module), chosen from: "cover", "scenes", "npcs", "items".
+            companion: Optional companion content to bundle INTO the pack, chosen from: "skills"
+                (a KP skill for this scenario), "rulepacks" (a rule system for it). Pregen cards
+                are already carried by the world card's own `pregens:` cast.
+            extends_base: When set (e.g. "coc7"), the generated rulepack is a PATCH on that base
+                system (``extends: <base>``) instead of a standalone replacement — so the module
+                reuses a known system's attributes/skills and just adds its own mechanics.
+            system: When set (e.g. "dnd5e"), the module DIRECTLY uses that built-in rule system —
+                the world card declares it and the room pins it on import, with NO rulepack
+                generated or shipped (mutually exclusive with ``extends_base``).
+
+        Returns:
+            Confirmation naming the built `.lwpack` and what it installed into this room, or an
+            explanation of why generation failed (nothing is installed on failure).
+        """
+        i18n = self._i18n(ctx)
+        result = await generate_and_install_pack_module(
+            self._services,
+            ctx,
+            description,
+            media=media,
+            companion=companion,
+            extends_base=extends_base,
+            system=system,
+        )
+        if result.ok:
+            return result.detail or i18n.t("agent.forge.pack_module_installed", name=result.name, path=result.path)
+        if result.error == "no_data_dir":
+            return i18n.t("agent.forge.module_no_data_dir")
+        if result.error.startswith("invalid_pack_module"):
+            return i18n.t("agent.forge.module_invalid", error=result.error)
         return i18n.t("agent.forge.module_invalid", error=result.error)

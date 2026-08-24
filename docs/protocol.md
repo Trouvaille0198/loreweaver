@@ -1,13 +1,13 @@
 *English · [中文](protocol.zh.md)*
 
-# loreweaver networked TUI — wire protocol 2.4
+# loreweaver networked TUI — wire protocol 2.5
 
 This is the open, versioned wire protocol between a loreweaver server (started via
 `python -m app --serve`) and the OpenTUI terminal client. The engine itself
 (deterministic core + AI Keeper) is unaffected by transport; the transport-neutral
 session logic is `net.session.SessionCore`, and this document is the language-agnostic seam.
 
-Frames are JSON objects, each shaped `{"type": ...}`. Protocol version: `"2.4"`. The same
+Frames are JSON objects, each shaped `{"type": ...}`. Protocol version: `"2.5"`. The same
 frames + `join` handshake ride the transport; only the carrier + its framing differ:
 
 - **Iroh** (the transport `--serve` starts) — peer-to-peer QUIC. The server
@@ -37,6 +37,13 @@ a panel template block carrying `visible_when` and cannot evaluate that conditio
 it does not implement the field, or does not implement that corner of the grammar, or the
 evaluation errors — MUST NOT render the block. Ignoring the gate draws content the author
 hid, so the undecidable case fails CLOSED, exactly as an unresolved `$var` does.
+
+**2.5 (additive)** adds `options` on `admin_generate`: for `kind:"module"`, the keeper's
+per-generation opt-ins for extra content — `media` (module illustrations from a closed
+vocabulary: `cover`, `scenes`, `npcs`, `items`) and `companion` (structured extras:
+`skills`, `rulepacks`, `cards`). Unknown ids are ignored server-side, an absent field
+means the module is authored exactly as before, and a pre-2.5 client simply never sends
+it (its modules generate unchanged).
 
 **2.1 (additive, M19)** adds the presentation surface: the `image` block kind and the
 four performance templates (`letter`, `clipping`, `map_pin`, `title_card`) in the `ui`
@@ -113,7 +120,7 @@ connections receive `error too_many_connections` before `join` is read.
 ## Server → Client
 
 - `welcome` — sent once, on a successful `join`:
-  `{type:"welcome", protocol:"2.4", features:["media","audio", "imagegen"?, "demo"?, "update"?], room:string, you:{id:string,name:string,role:"player"|"keeper"}, locale:string, server:string, version?:string}`
+  `{type:"welcome", protocol:"2.5", features:["media","audio", "imagegen"?, "demo"?, "update"?], room:string, you:{id:string,name:string,role:"player"|"keeper"}, locale:string, server:string, version?:string}`
   `version` is the server's own release version (compare it to the client's to detect a mismatch). The `"update"` feature appears only for a keeper on a server whose operator configured a self-update command, and gates the `admin_update_server` control.
   `demo` means the server is using its offline sample Keeper, vector support is
   enabled, and this specific Keeper room was empty when the server checked it.
@@ -600,10 +607,29 @@ Client → server:
 - `admin_generate` — author + install a brand-new skill/rule system/module from a
   natural-language description via the matching `agent.forge` self-extension
   engine (Layer B.3); a `kind:"module"` generation installs into the CALLER's own
-  room. This is a slow LLM call answered as a normal request/reply — the client
-  shows a spinner while it awaits `admin_generated`:
-  `{type:"admin_generate", kind:"skill"|"rule"|"module", description:string, locale?:"en"|"zh"}`
+  room. `kind:"skill"`/`"rule"` are short and answer synchronously with
+  `admin_generated`; `kind:"module"`/`"pack"` are LONG (a world card + optional media +
+  companion skill/rulepack can take minutes) and run in the BACKGROUND — the server
+  immediately replies `admin_generate_started`, then streams stage progress via
+  `admin_generate_progress` and finally pushes `admin_generated` when done, all on the
+  requesting connection:
+  `{type:"admin_generate", kind:"skill"|"rule"|"module"|"pack", description:string, locale?:"en"|"zh", options?:{media?:string[], companion?:string[]}}`
   `locale` selects the author's language and defaults to the connection/server locale.
+  `kind:"pack"` (2.6) authors a COMPLETE module as a native world card wrapped in a
+  `.lwpack` content pack — the canonical full-module shape (lorebook + typed trackers +
+  claimable cast + optional assets + bundled companion skill/rulepack) — installed into the
+  caller's room via the keeper world-import path. Its `options.media` illustrations ride inside
+  the pack's `assets/`; its `options.companion` skills/rulepacks are bundled under the pack's
+  `contents.skills`/`contents.rulepacks` (the pregen cast is already carried by the world card's
+  own `pregens:`).
+  `options` (additive, 2.5) is honored for `kind:"module"` only: the keeper's
+  per-generation opt-ins for extra content — `media` from `["cover","scenes","npcs","items"]`
+  (module illustrations via the room's imagegen lane, stored un-broadcast in the
+  room's media deck) and `companion` from `["skills","rulepacks","cards"]` (a KP
+  skill, a rule system, claimable pregen cards, each through its existing
+  generator). Unknown ids are ignored; absent/empty means the module is authored
+  exactly as before. The extras never fail the module — `admin_generated.detail`
+  names what was generated or why less was.
 
 Server → client:
 
@@ -646,7 +672,12 @@ Server → client:
   `detail` carries the per-room install outcome — for `kind:"module"` it is the only signal of
   whether the module actually landed in the room (`ok` merely means a valid document was authored
   and written); it is empty for `skill`/`rule` (no per-room install step):
-  `{type:"admin_generated", kind:"skill"|"rule"|"module", ok:boolean, id:string, name:string, error:string, detail:string}`
+  `{type:"admin_generated", kind:"skill"|"rule"|"module"|"pack", ok:boolean, id:string, name:string, error:string, detail:string}`
+- `admin_generate_started` — sent immediately in reply to an async `admin_generate` (`kind:"module"`/`"pack"`), confirming the generation is queued and runs in the background; the final result arrives later as `admin_generated`:
+  `{type:"admin_generate_started", kind:"module"|"pack"}`
+- `admin_generate_progress` — streamed during an async module/pack generation, one per pipeline stage, so a client can show live progress instead of a bare spinner:
+  `{type:"admin_generate_progress", kind:"module"|"pack", stage:string, detail:string}`
+  `stage` is a closed vocabulary — `authoring`, `world_card`, `media`, `skill`, `rulepack`, `analyzing`, `building`, `installing`, `importing` — and `detail` carries an optional stage-specific note.
 - `admin_update_server` — a keeper asks the server to update itself in place. No parameters: the
   server runs its OWN operator-configured command (`TRPG_TUI__UPDATE_COMMAND`, e.g.
   `git pull && uv sync`), never anything the client supplies, and requires the `"update"` feature

@@ -65,7 +65,7 @@ logger = logging.getLogger(__name__)
 # `panel_intent` client frame, and pack-asset resolution on the media byte channel.
 # v1.7 added declarative hook-emitted `ui` frames (core.hooks emitUI); v1.6 added
 # player-visible module variables on the state frame.
-_PROTOCOL_VERSION = "2.4"
+_PROTOCOL_VERSION = "2.5"
 # Public alias for out-of-band consumers (the `.lwpack` engine-minimum check in app.py).
 PROTOCOL_VERSION = _PROTOCOL_VERSION
 _SERVER_BANNER = "loreweaver/1"
@@ -258,8 +258,10 @@ def render_frame(event: Event) -> dict[str, Any] | None:
         return {"type": "presence", **event.data}
     if event.kind == "system":
         frame = {"type": "system", "level": event.data.get("level", ""), "text": event.text}
-        if event.data.get("spinner"):
-            frame["spinner"] = True
+        # `spinner: false` is an explicit stop signal (retire the pending line);
+        # absent = no spinner semantics at all.
+        if "spinner" in event.data:
+            frame["spinner"] = bool(event.data.get("spinner"))
         return frame
     if event.kind == "turn_status":
         return {"type": "turn_status", **event.data}
@@ -592,9 +594,11 @@ class SessionCore:
                 # after the reply. The legacy room_state blob has no ids: nothing anchors.
                 if anchor:
                     await _deliver_anchored(anchor)
-                # …and any picture generated within this turn, so it lands beside the
-                # story moment it belongs to rather than at the tail of the transcript.
-                await _flush_media_upto(int(entry.get("_lw_turn") or entry.get("turn") or 0))
+                # …and any picture generated within an EARLIER turn, so it lands
+                # AFTER that turn's last message (its `turn` stamp matches the
+                # narrative it belongs to, and flushing strictly-earlier turns here
+                # keeps a multi-message turn's pictures after ALL of its lines).
+                await _flush_media_upto(int(entry.get("_lw_turn") or entry.get("turn") or 0) - 1)
             if legacy_blob:
                 await _deliver_anchored("")
             # Frames stamped for a turn outside the replayed window (or unstamped)
@@ -715,6 +719,7 @@ class SessionCore:
                             frame,
                             i18n,
                             reauthorize=lambda: self._refresh_member_authorization(member),
+                            emit_frame=member.send_frame,
                         )
                 else:
                     if not self._refresh_member_authorization(member):
@@ -726,6 +731,7 @@ class SessionCore:
                         frame,
                         i18n,
                         reauthorize=lambda: self._refresh_member_authorization(member),
+                        emit_frame=member.send_frame,
                     )
                 await member.send_frame(reply)
                 if kind in {"admin_delete_room", "admin_delete_room_data"} and reply.get("type") not in {

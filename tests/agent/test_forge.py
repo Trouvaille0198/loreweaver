@@ -117,6 +117,33 @@ async def test_happy_path_generates_validates_writes_and_is_discoverable(tmp_pat
         skills_module._discover_registry.cache_clear()
 
 
+async def test_cjk_named_skill_installs_with_stable_content_hash_id(tmp_path: Path) -> None:
+    """An all-CJK generated name has no ASCII slug: the skill installs under a stable
+    `skill-<hash>` fallback id (the module generator's `module-<digest>` pattern) instead of
+    being rejected -- this is what makes zh-locale generation installable at all."""
+    cjk_skill_md = VALID_SKILL_MD.replace("Grim Survival Horror", "消失的图书管理员").replace(
+        "Grim survival horror", "消失的图书管理员"
+    )
+    services = _services(cjk_skill_md)
+
+    original_user_dir = skills_module._USER_SKILL_DIR
+    skills_module._USER_SKILL_DIR = tmp_path
+    skills_module._discover_registry.cache_clear()
+    try:
+        result = await generate_and_install_skill(services, "一个上海图书馆密室谜案的技能")
+
+        assert result.ok, result.error
+        assert result.skill_id.startswith("skill-") and len(result.skill_id) == len("skill-") + 8
+        assert result.name == "消失的图书管理员"
+        assert Path(result.path).is_file()
+        loaded = skills_module.load_skill(result.skill_id)
+        assert loaded is not None
+        assert loaded.name == "消失的图书管理员"
+    finally:
+        skills_module._USER_SKILL_DIR = original_user_dir
+        skills_module._discover_registry.cache_clear()
+
+
 # ---------------------------------------------------------------------------
 # (b) Invalid output -- rejected, nothing written.
 # ---------------------------------------------------------------------------
@@ -416,6 +443,25 @@ async def test_content_at_exactly_the_cap_is_not_rejected_for_size(tmp_path: Pat
 
         assert result.ok, result.error
         assert result.skill_id == "grim-survival-horror"
+    finally:
+        skills_module._USER_SKILL_DIR = original_user_dir
+        skills_module._discover_registry.cache_clear()
+
+
+async def test_code_fenced_skill_md_is_unwrapped_and_installed(tmp_path: Path) -> None:
+    """Same whole-reply fence unwrap as the rulepack generator: a fenced SKILL.md installs."""
+    fenced = f"```markdown\n{VALID_SKILL_MD}\n```"
+    services = _services(fenced)
+
+    original_user_dir = skills_module._USER_SKILL_DIR
+    skills_module._USER_SKILL_DIR = tmp_path
+    skills_module._discover_registry.cache_clear()
+    try:
+        result = await generate_and_install_skill(services, "a grim survival horror campaign")
+
+        assert result.ok, result.error
+        assert result.skill_id == "grim-survival-horror"
+        assert Path(result.path).is_file()
     finally:
         skills_module._USER_SKILL_DIR = original_user_dir
         skills_module._discover_registry.cache_clear()

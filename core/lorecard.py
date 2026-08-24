@@ -97,6 +97,7 @@ class Lorecard:
     hooks: tuple[str, ...] = ()
     variable_specs: tuple[dict[str, Any], ...] = ()
     pregens: tuple[dict[str, Any], ...] = ()
+    system: str = ""
     warnings: tuple[str, ...] = ()
 
 
@@ -178,6 +179,7 @@ def parse_lorecard_bytes(data: bytes, filename: str = "") -> Lorecard:
         hooks=hooks,
         variable_specs=specs,
         pregens=pregens,
+        system=_text(raw.get("system")).strip(),
         warnings=tuple(warnings),
     )
 

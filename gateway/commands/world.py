@@ -311,6 +311,95 @@ class WorldCommands:
             progress=self._module_progress(ctx, agent_ctx.chat_key),
         )
 
+    async def cmd_forge(self, ctx: CommandCtx) -> str:
+        """`.forge <description> [--pack] [--system <id>] [--extends <id>] [--media <ids>]
+        [--companion <ids>]` — author and install a new module from a description.
+
+        By default this authors a flat Markdown scenario (`generate_module`). `--pack`
+        authors a COMPLETE module as a native world card wrapped in a `.lwpack` content pack
+        (`generate_pack_module`) with illustrations, a bundled skill/rulepack and a claimable
+        cast. `--system <id>` (e.g. ``coc7``/``dnd5e``) directly uses that built-in rule system
+        with no rulepack generated; `--extends <id>` instead generates a rulepack that patches
+        that base system. `--media`/`--companion` are comma-separated opt-in ids (``cover``,
+        ``scenes``, ``npcs``, ``items`` / ``skills``, ``rulepacks``, ``cards``).
+
+        Keeper-only, and a module is never auto-imported into the room — the keeper imports it
+        explicitly (`.import … world` for the pack path)."""
+        from agent.forge import generate_and_install_module, generate_and_install_pack_module
+
+        if not _is_keeper(ctx.raw_ctx):
+            return ctx.fail(ctx.i18n.t("rooms.denied"))
+        args = ctx.args
+        if not args.strip():
+            return ctx.i18n.t("commands.forge.usage")
+        pack = False
+        system = ""
+        extends_base = ""
+        media: list[str] = []
+        companion: list[str] = []
+        pieces: list[str] = []
+        tokens = args.split()
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            if token in {"--pack", "--md"}:
+                pack = token == "--pack"
+                index += 1
+            elif token in {"--system", "--extends"}:
+                key = token[2:]
+                index += 1
+                if index >= len(tokens):
+                    return ctx.fail(ctx.i18n.t("commands.forge.missing_value", option=token))
+                value = tokens[index].strip()
+                index += 1
+                if key == "system":
+                    system = value
+                else:
+                    extends_base = value
+            elif token in {"--media", "--companion"}:
+                key = token[2:]
+                index += 1
+                if index >= len(tokens):
+                    return ctx.fail(ctx.i18n.t("commands.forge.missing_value", option=token))
+                ids = [part.strip() for part in tokens[index].split(",") if part.strip()]
+                index += 1
+                if key == "media":
+                    media = ids
+                else:
+                    companion = ids
+            else:
+                pieces.append(token)
+                index += 1
+        description = " ".join(pieces).strip()
+        if not description:
+            return ctx.i18n.t("commands.forge.usage")
+        agent_ctx = self._agent_ctx(ctx)
+        if pack:
+            result = await generate_and_install_pack_module(
+                ctx.services,
+                agent_ctx,
+                description,
+                media=media or None,
+                companion=companion or None,
+                auto_import=False,
+                extends_base=extends_base,
+                system=system,
+            )
+        else:
+            result = await generate_and_install_module(
+                ctx.services,
+                agent_ctx,
+                description,
+                media=media or None,
+                companion=companion or None,
+                auto_import=False,
+            )
+        if result.ok:
+            return result.detail or ctx.i18n.t("commands.forge.done", name=result.name)
+        if result.error == "no_data_dir":
+            return ctx.i18n.t("agent.forge.module_no_data_dir")
+        return ctx.i18n.t("commands.forge.failed", error=result.error or "unknown")
+
     def _module_progress(self, ctx: CommandCtx, chat_key: str) -> Any:
         """Build a progress reporter that STREAMS import-stage frames to the issuer while a
         (deliberately slow) full-module analysis runs, so the keeper watches a live progress
