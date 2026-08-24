@@ -901,7 +901,16 @@ _VALID_PACK_LORECARD = json.dumps(
                 "category": "lore",
             },
         ],
-        "variables": [{"name": "fear", "kind": "number", "default": 0, "min": 0, "max": 10}],
+        "variables": [
+            {
+                "name": "fear",
+                "kind": "number",
+                "labels": {"en": "Fear", "zh": "恐惧"},
+                "default": 0,
+                "min": 0,
+                "max": 10,
+            }
+        ],
         "pregens": [{"name": "Ada Marsh", "concept": "A sharp-eyed reporter hooked by the disappearances."}],
     },
     ensure_ascii=False,
@@ -962,6 +971,23 @@ async def test_pack_module_malformed_card_degrades(tmp_path: Path) -> None:
 
         assert not result.ok
         assert result.error.startswith("invalid_pack_module")
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
+async def test_pack_module_rejects_variables_without_requested_locale_labels(tmp_path: Path) -> None:
+    card = json.loads(_VALID_PACK_LORECARD)
+    card["variables"][0]["labels"].pop("en")
+    services = _option_services(tmp_path, [json.dumps(card, ensure_ascii=False)], imagegen=False)
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        result = await generate_and_install_pack_module(services, ctx, "a marsh mystery")
+
+        assert not result.ok
+        assert "missing en labels" in result.error
     finally:
         forge_module._USER_MODULE_DIR = original_user_dir
 
