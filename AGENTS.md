@@ -48,4 +48,8 @@ Tests are deterministic and offline. To run a real Keeper, set `TRPG_LLM__*` in 
 - **NEVER foreground a blocking server** (`python -m app --serve`, a dev server) — it hangs. Verify via tests (they spin up ephemeral in-process servers); background + `timeout` + `kill` if you truly must.
 - **Decision records:** check `docs/notes/rejected/` BEFORE proposing a mechanism in its territory — rejections are binding; a non-trivial change adds or updates a note in `docs/notes/` in the same PR.
 - **Before lifecycle/locking/provider/replay work,** read `docs/defensive-patterns.md` — the paid-for rules live there.
-- **After any change:** `uv run ruff check` + `uv run python scripts/i18n_lint.py` + `uv run pytest -q` (and the relevant `bun test`) must all pass.
+- **After a change:** validate according to the changed surface. Documentation-only changes do not
+  require a test run. For code changes, prefer the smallest relevant lint, typecheck, or focused
+  test command; do not run both repositories' full suites by default. Run full or cross-repository
+  validation only when the user explicitly requests it or when a high-risk change makes it
+  necessary, and state that reason first. CI remains the authoritative full-suite gate.
