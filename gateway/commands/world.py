@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from gateway.commands.rooms import _is_keeper
@@ -302,10 +303,35 @@ class WorldCommands:
         return "\n".join(lines)
 
     async def cmd_module(self, ctx: CommandCtx) -> str:
-        """`.module <module file>` — import a module document and run module analysis."""
+        """`.module <module file>` — import a module document and run module analysis.
+
+        `.module delete <name>` — delete an installed module source. A name with no suffix
+        is treated as an installed .lwpack content pack id and removed from the server
+        (its installed home, forge build artifacts, and every room's reference); a
+        `.md`/`.txt` name deletes that source file. Keeper-only, and a module that is the
+        room's current one is refused."""
+        if not _is_keeper(ctx.raw_ctx):
+            return ctx.fail(ctx.i18n.t("rooms.denied"))
+        tokens = ctx.args.split()
+        if tokens and tokens[0].casefold() in {"delete", "del", "删除"}:
+            if len(tokens) < 2:
+                return ctx.i18n.t("commands.module.delete_usage")
+            name = tokens[1].strip()
+            if not name:
+                return ctx.i18n.t("commands.module.delete_usage")
+            if "/" not in name and Path(name).suffix.casefold() not in {".md", ".markdown", ".txt"}:
+                from module_admin import delete_installed_pack
+
+                caller_room = ctx.chat_key.rsplit(":", 1)[-1]
+                ok, resolved, error = await delete_installed_pack(
+                    ctx.services, name.partition("/")[0], caller_room=caller_room
+                )
+                if ok:
+                    return ctx.i18n.t("commands.module.deleted", name=resolved)
+                return ctx.fail(ctx.i18n.t(f"commands.module.delete_failed_{error}", name=resolved))
+            return ctx.i18n.t("commands.module.delete_usage")
         from agent.kp_tools_knowledge import DocumentTools
 
-        tokens = ctx.args.split()
         file_path = tokens[0] if tokens else _first_attachment_name(ctx.raw_ctx)
         if not file_path:
             return ctx.i18n.t("commands.module.usage")

@@ -84,7 +84,7 @@ harbour-bell/
 在服务器终端安装：
 
 ```bash
-uv run python -m app --install <本地路径|https://链接|gh:owner/repo[@tag]>
+uv run python -m app --install <本地路径|https://链接|GitHub仓库/目录/文件链接|gh:owner/repo[@tag]>
 ```
 
 这会验证清单、哈希和信任信息，然后把内容写入服务器数据目录。它不会替任何房间作选择。
@@ -92,7 +92,7 @@ uv run python -m app --install <本地路径|https://链接|gh:owner/repo[@tag]>
 守秘人在远程房间中也可以执行：
 
 ```text
-.pack install <本地路径|https://链接|gh:owner/repo[@tag]>
+.pack install <本地路径|https://链接|GitHub仓库/目录/文件链接|gh:owner/repo[@tag]>
 ```
 
 这条房间命令会先安装包。若包里恰好有一张世界卡，它会把那张卡及其同源世界书、面板、演出资料和 KP 技能作为房间模组一起启用；若有多张世界卡，回执只列出选择命令，不在选择前启用任何模组专属开关。没有世界卡的扩展包不占用房间的模组名额，并会启用它实际声明的 KP 技能与界面。

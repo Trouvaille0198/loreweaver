@@ -101,7 +101,7 @@ prose unless an author declares that tracker as structured data.
 At the server terminal:
 
 ```bash
-uv run python -m app --install <local-path|https-url|gh:owner/repo[@tag]>
+uv run python -m app --install <local-path|https-url|github-url|gh:owner/repo[@tag]>
 ```
 
 This validates the manifest, hashes, and trust disclosure, then places content in the server data
@@ -110,7 +110,7 @@ directory. It does not choose anything for a room.
 A Keeper can instead install from inside a remote room:
 
 ```text
-.pack install <local-path|https-url|gh:owner/repo[@tag]>
+.pack install <local-path|https-url|github-url|gh:owner/repo[@tag]>
 ```
 
 That room command first installs the pack. If the pack contains exactly one world card, the card,

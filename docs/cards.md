@@ -157,12 +157,12 @@ An imported file doesn't get to pick its own privileges:
   cannot mint keeper-only lore.
 - **Entry ids are regenerated**, so a card can't address (and overwrite) another
   card's entries.
-- **Re-importing replaces** that card's hooks and entries rather than stacking
-  duplicates — and, as above, never resets variable progress. (Replacement matches
-  entries by import provenance, recorded since 2026-08-15: a room whose lore was
-  imported before then stacks once more on its first re-import, then replaces
-  forever after. Keeper imports only — a player's card import is always additive,
-  so a crafted card cannot displace the module's lore.)
+- **Re-importing replaces** that Keeper-imported source's hooks and entries rather
+  than stacking duplicates. The importer rebuilds the source's variable schema
+  and preserves overlapping valid values, so progress is not reset merely because
+  the source was refreshed. Importing a different world/prose module is a room
+  module switch and replaces the previous module-owned content atomically. A
+  player's character import remains additive and cannot displace module lore.
 
 With full EJS enabled, world content runs code in the sandbox described above — that
 is the point, and it is the operator's informed call: "your box, your cards" is the

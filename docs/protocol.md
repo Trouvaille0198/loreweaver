@@ -613,7 +613,7 @@ Client → server:
   immediately replies `admin_generate_started`, then streams stage progress via
   `admin_generate_progress` and finally pushes `admin_generated` when done, all on the
   requesting connection:
-  `{type:"admin_generate", kind:"skill"|"rule"|"module"|"pack", description:string, locale?:"en"|"zh", options?:{media?:string[], companion?:string[]}}`
+  `{type:"admin_generate", kind:"skill"|"rule"|"module"|"pack", description:string, locale?:"en"|"zh", options?:{media?:string[], companion?:string[], extends?:string, system?:string}}`
   `locale` selects the author's language and defaults to the connection/server locale.
   `kind:"pack"` (2.6) authors a COMPLETE module as a native world card wrapped in a
   `.lwpack` content pack — the canonical full-module shape (lorebook + typed trackers +
@@ -622,14 +622,18 @@ Client → server:
   the pack's `assets/`; its `options.companion` skills/rulepacks are bundled under the pack's
   `contents.skills`/`contents.rulepacks` (the pregen cast is already carried by the world card's
   own `pregens:`).
-  `options` (additive, 2.5) is honored for `kind:"module"` only: the keeper's
+  `options.media` and `options.companion` are honored for both `kind:"module"` and
+  `kind:"pack"`: the keeper's
   per-generation opt-ins for extra content — `media` from `["cover","scenes","npcs","items"]`
   (module illustrations via the room's imagegen lane, stored un-broadcast in the
   room's media deck) and `companion` from `["skills","rulepacks","cards"]` (a KP
   skill, a rule system, claimable pregen cards, each through its existing
-  generator). Unknown ids are ignored; absent/empty means the module is authored
-  exactly as before. The extras never fail the module — `admin_generated.detail`
-  names what was generated or why less was.
+  generator). For `kind:"pack"`, `options.extends` asks for a companion rulepack
+  patching that base system, while `options.system` declares a built-in system
+  directly on the world card; these two options are mutually exclusive and are
+  ignored for `kind:"module"`. Unknown ids are ignored; extra generation never
+  fails the module — `admin_generated.detail` names what was generated or why less
+  was.
 
 Server → client:
 
@@ -667,11 +671,11 @@ Server → client:
   system (`coc7`/`dnd5e`) vs a generated/user-installed one:
   `{type:"admin_rules", systems:[{id:string, built_in:boolean}]}`
 - `admin_generated` — the forge engine's outcome; `id`/`name` are empty and
-  `error` carries an (untranslated) diagnostic when `ok` is `false`, and nothing
-  was installed:
-  `detail` carries the per-room install outcome — for `kind:"module"` it is the only signal of
-  whether the module actually landed in the room (`ok` merely means a valid document was authored
-  and written); it is empty for `skill`/`rule` (no per-room install step):
+  `error` carries an (untranslated) authoring or file-install diagnostic when
+  `ok` is `false`. For `kind:"module"`/`"pack"`, `detail` carries the per-room
+  install/import outcome; inspect it to determine whether the room actually
+  received the module (`ok` means the authored artifact was written, not that a
+  later room import necessarily succeeded). It is empty for `skill`/`rule`:
   `{type:"admin_generated", kind:"skill"|"rule"|"module"|"pack", ok:boolean, id:string, name:string, error:string, detail:string}`
 - `admin_generate_started` — sent immediately in reply to an async `admin_generate` (`kind:"module"`/`"pack"`), confirming the generation is queued and runs in the background; the final result arrives later as `admin_generated`:
   `{type:"admin_generate_started", kind:"module"|"pack"}`

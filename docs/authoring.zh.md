@@ -454,10 +454,10 @@ audio:
 出图这件事由三条规矩管着，前两条是结构性的，不是模型可以选择忽略的请求：
 
 - **定妆强制。** 没有 `ref` 的对象永远不会被生成。AI 美术在模组里难的从来不是接口，是**一致性**：你的参考图和风格关键词会跟着*每一次*请求走，而一个你没授权的对象，根本没法被请求。
-- **宁缺毋滥。** `generation: pack_only` 是你的否决权——导演只用你自己的美术做舞台。运营方的任何设置都覆盖不了它；一个房间跑两个模组时，只要有一个是 `pack_only`，整个房间的生成就停了。
+- **宁缺毋滥。** `generation: pack_only` 是你的否决权——导演只用你自己的美术做舞台。运营方的任何设置都覆盖不了它；只要房间启用的演出资料包中有一个声明了 `pack_only`，整个房间的生成就停了。
 - **慢菜先备。** 导演会提前把它预计要用的对象热起来，所以一个节拍端上来的画，是在它之前那几个安静回合里做好的。这个你不用配，你把对象命名出来，它就成为可能。
 
-资料包和其它东西走同一条素材流水线，而信任卡会同时披露对象数量，以及你的模组到底会不会花运营方的出图预算。房间用**同一个** `.panels enable <packId>` 开启它——演出是模组在布置牌桌，不是第二个开关。一个房间里的模组都不带资料包，就永远不会唤醒导演，所以在有作者提出要求之前，这一层不花任何钱。
+资料包和其它东西走同一条素材流水线，而信任卡会同时披露对象数量，以及你的模组到底会不会花运营方的出图预算。房间用**同一个** `.panels enable <packId>` 开启它——演出是模组在布置牌桌，不是第二个开关。房间没有启用的演出资料包，就永远不会唤醒导演，所以在有作者提出要求之前，这一层不花任何钱。
 
 ---
 
@@ -552,9 +552,11 @@ Git Release 就是仓库。没有中心商店，没有提交审核，没有把�
 uv run python -m app --install gh:owner/repo          # 最新 release
 uv run python -m app --install gh:owner/repo@v1.2.0   # 钉住某一个
 uv run python -m app --install https://example.com/my-module.lwpack
+uv run python -m app --install https://github.com/owner/repo/tree/main/packs
+uv run python -m app --install https://github.com/owner/repo/blob/main/packs/my-module.lwpack
 ```
 
-引用会通过匿名 GitHub API 解析到那个 release 的 `*.lwpack` asset——没有的话它也会直说：
+`gh:` 形式会通过匿名 GitHub API 解析到那个 release 的 `*.lwpack` asset；GitHub 仓库/目录引用会搜索仓库文件，blob 引用会直接取指定文件。没有 release asset 或仓库包时，它也会直说：
 
 ```console
 $ uv run python -m app --install "gh:1A7432/loreweaver@v1.0.0" --yes
