@@ -163,7 +163,7 @@
   "commands.jrrp.result": "今日人品：{luck}",
   "commands.language.done": "房间语言已切换为中文。",
   "commands.language.usage": "用法：.language en|zh",
-  "commands.module.help": "从服务器文件系统导入模组文件并开始模组分析。",
+  "commands.module.help": "从服务器文件系统导入模组文件并开始模组分析，或删除已安装的模组（.module delete <名称>）。",
   "commands.module.progress.analyze": "③ 分析模组中(长模组可能需要 10 分钟以上,请耐心等待)",
   "commands.module.progress.build": "④ 构建守秘人知识",
   "commands.module.progress.done": "⑤ 完成",
@@ -271,5 +271,10 @@
   "commands.undo.too_deep": "最多只能往回退 {depth} 个回合——这是战役摘要还没折叠掉的那一段；再往前退，故事和摘要说的就不是一回事了。",
   "commands.undo.unavailable": "没有可回退到的回合存档点。可用：{turns}",
   "commands.undo.usage": "用法：.undo [回合数]",
-  "commands.forge.done": "已生成模组：{name}"
+  "commands.forge.done": "已生成模组：{name}",
+  "commands.module.delete_usage": "用法：.module delete <名称> — 删除已安装的模组（.md/.txt 源文件或已安装的 .lwpack 内容包 id）。",
+  "commands.module.deleted": "已删除模组：{name}",
+  "commands.module.delete_failed_source_not_found": "未安装该模组：{name}",
+  "commands.module.delete_failed_dev_mount": "无法删除 {name}：它是实时挂载的开发源目录。",
+  "commands.module.delete_failed_module_in_use": "无法删除 {name}：它是本房间当前模组。"
 }

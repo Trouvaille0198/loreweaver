@@ -637,8 +637,8 @@ the model can ignore:
   asked for. Declare a subject without a `ref` when you want it nameable in a caption
   but never drawn.
 - **宁缺毋滥.** `generation: pack_only` is your veto — the Director stages with your own
-  art and nothing else. No operator setting overrides it. In a room running two
-  modules, one `pack_only` silences generation for the room.
+  art and nothing else. No operator setting overrides it. If any presentation kit
+  enabled in the room declares `pack_only`, generation is silenced for the room.
 - **慢菜先备.** The Director warms subjects it expects to want soon, so a beat serves
   art cooked during the quiet turns before it. You do not configure this; naming
   subjects is what makes it possible.
@@ -651,7 +651,7 @@ cues `mp3` / `ogg` / `wav` / `flac` / `m4a` / `aac`. The type comes from the fil
 EXTENSION via a table the engine owns, so a pack builds the same way on every machine. Rooms opt in with the SAME
 `.panels enable <packId>` that admits your panels — presentation is the module dressing
 the table, not a second switch. Operator-side knobs (which model, per-room image caps)
-are `TRPG_DIRECTOR__*`; a room whose enabled modules ship no kit never wakes a Director,
+are `TRPG_DIRECTOR__*`; a room with no enabled presentation kit never wakes a Director,
 so this costs nothing until an author asks for it.
 
 ---
@@ -668,23 +668,19 @@ so this costs nothing until an author asks for it.
   instructions, no image-host/OSS links for assets.
 - **From the table, too:** a keeper with no shell on the box runs `.pack install
   <ref>` in the room. Same refs, same install function (`gateway/pack_install.py`
-  serves both doors). On a remote table install IS enable, and enable means
-  PLAYABLE: the command throws every switch the pack ships — its panels and
-  presentation kit, its KP skills, and its world card when the pack ships exactly
-  one (which also pins the pack's character system). The terminal's per-item
-  confirmation has no honest wire equivalent and a keeper who typed the ref has
-  already made the trust decision, so the reply carries the trust card and one
-  plain risk line instead of a checklist. The single thing it will not decide is
-  WHICH module, when a pack ships several world cards — that is a fork, not a
-  confirmation, and the reply names each as the `.import <ref> world` that loads
-  it. A skill whose id a BUILT-IN already claims is enabled like any other (owner
-  verdict 2026-08-20: the keeper typed the ref), and the reply names it, because a
-  built-in always wins discovery — so the copy the room runs is the built-in, never
-  the pack's. Keeper-only, naturally: it writes to the server's data dir.
+  serves both doors). An extension-only pack enables its declared skills, panels,
+  and presentation kit without occupying the room's module slot. A pack with one
+  world card also imports that card and its module-owned contents, pins the card's
+  character system, and enables its applicable switches. A pack with several world
+  cards is installed but not activated as a module until the keeper chooses one;
+  the reply names each choice as an `.import <ref> world` command. Keeper-only,
+  naturally: it writes to the server's data dir.
 - **Git IS the registry:** an install ref is a local path, an `https://` direct
-  link, or `gh:owner/repo[@tag]` — resolved through the GitHub API to that
-  release's `*.lwpack` asset (`@tag` pins a release; without it, latest) by
-  `infra/pack_source.py`. The API call is anonymous unless `GITHUB_TOKEN` /
+  link, or `gh:owner/repo[@tag]` — resolved through `infra/pack_source.py`. A
+  `gh:` ref uses the GitHub API to find that release's `*.lwpack` asset. A
+  `https://github.com/owner/repo` or `/tree/<ref>/<path>` URL searches repository
+  files for a `.lwpack`; a `/blob/<ref>/<path>.lwpack` URL downloads that single
+  file. The API call is anonymous unless `GITHUB_TOKEN` /
   `GH_TOKEN` is set, which lifts the per-IP anonymous rate limit a shared host
   hits as a 403. The credential is scoped by TWO rules, not one hostname check:
   it rides only on the release-metadata request the engine composes itself (a
@@ -919,8 +915,9 @@ actually shipped as, for anyone reading the code.)*
     `.recap` is the player-grade view of the same documents, with the keeper's annotations gone.
 11. **M19 — the Stage Director** — **landed**: `ui/presentation.yaml` + `contents.presentation`,
     the performance blocks, image generation that refuses to run without a reference image, the
-    author's `pack_only` veto, audio cues, and a room-lifetime image budget. It only wakes for a
-    module that asks for it: a room whose modules ship no kit never starts a Director. `tests/architecture/test_director_isolation.py` is what pins its
+    author's `pack_only` veto, audio cues, and a room-lifetime image budget. It only wakes when
+    the room has an enabled presentation kit; a room with no enabled kit never starts a Director.
+    `tests/architecture/test_director_isolation.py` is what pins its
     knowledge scoping.
 12. **Layer C.2 — Python entry-point plugins** — **deferred**; entry points + trust
     model. The only layer that would run with server privileges, so it stays last and opt-in.

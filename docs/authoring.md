@@ -545,8 +545,8 @@ ignore:
   the hard part of AI art in a module: your reference image and style keywords ride *every* request,
   and a subject you did not license simply cannot be asked for.
 - **宁缺毋滥.** `generation: pack_only` is your veto — the Director stages with your own art and
-  nothing else. No operator setting overrides it, and in a room running two modules, one `pack_only`
-  silences generation for the room.
+  nothing else. No operator setting overrides it. If any presentation kit enabled in the room
+  declares `pack_only`, generation is silenced for the room.
 - **慢菜先备.** The Director warms subjects it expects to want soon, so a beat serves art that was
   cooked during the quiet turns before it. You do not configure this; naming subjects is what makes
   it possible.
@@ -554,8 +554,8 @@ ignore:
 The kit rides the same asset pipeline as everything else, and the trust card discloses both the
 subject count and whether your module may spend the operator's image budget at all. Rooms opt in with
 the *same* `.panels enable <packId>` that admits your panels — presentation is the module dressing
-the table, not a second switch. A room whose modules ship no kit never wakes a Director, so this
-costs nothing until an author asks for it.
+the table, not a second switch. A room with no enabled presentation kit never wakes a Director,
+so this costs nothing until an author asks for it.
 
 ---
 
@@ -670,10 +670,13 @@ nothing about your distribution that anyone else can revoke.
 uv run python -m app --install gh:owner/repo          # newest release
 uv run python -m app --install gh:owner/repo@v1.2.0   # a pinned one
 uv run python -m app --install https://example.com/my-module.lwpack
+uv run python -m app --install https://github.com/owner/repo/tree/main/packs
+uv run python -m app --install https://github.com/owner/repo/blob/main/packs/my-module.lwpack
 ```
 
-The reference is resolved through the anonymous GitHub API to that release's `*.lwpack` asset — and
-says so plainly when there isn't one:
+The `gh:` form is resolved through the anonymous GitHub API to that release's `*.lwpack` asset;
+GitHub repository/tree references search repository files, and blob references fetch the named
+file. A missing release asset or repository pack is reported plainly:
 
 ```console
 $ uv run python -m app --install "gh:1A7432/loreweaver@v1.0.0" --yes

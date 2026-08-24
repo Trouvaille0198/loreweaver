@@ -250,8 +250,8 @@ role = "player"  # 或 "keeper"；默认为 "player"
 - `admin_list_rules` — 列出所有可发现的规则系统（Layer A）：
   `{type:"admin_list_rules"}`
 - `admin_generate` — 通过对应的 `agent.forge` 自扩展引擎，从自然语言描述创作并安装全新的技能/规则系统/模组（Layer B.3）；`kind:"module"` 的生成会安装进调用者自己的房间。`kind:"skill"`/`"rule"` 较快，同步以 `admin_generated` 应答；`kind:"module"`/`"pack"` 较慢（世界卡 + 可选配图 + 配套技能/规则包可能需要数分钟），改为**后台异步**——服务器先回 `admin_generate_started`，随后通过 `admin_generate_progress` 逐阶段推送进度，最后以 `admin_generated` 推送最终结果，全部发往发起请求的那条连接：
-  `{type:"admin_generate", kind:"skill"|"rule"|"module"|"pack", description:string, locale?:"en"|"zh", options?:{media?:string[], companion?:string[]}}`
-  `locale` 选择创作语言，缺省用连接/服务端语言。`kind:"pack"`（2.6）会把模组写成一个完整的原生世界卡并包进 `.lwpack` 内容包——引擎的标准完整模组形态（lorebook + 类型化状态量 + 可认领演员表 + 可选素材 + 随包技能/规则包）——经守秘人世界导入路径装进调用者房间。其 `options.media` 插图随包打进 `assets/`；`options.companion` 的技能/规则包会打进包的 `contents.skills`/`contents.rulepacks`（预建卡已由世界卡自身的 `pregens:` 承载）。`options`（增量，2.5）仅对 `kind:"module"` 生效：守秘人按次勾选的额外内容——`media` 取自 `["cover","scenes","npcs","items"]`（经房间图像通道生成的模组插图，存入房间媒体库、不自动广播），`companion` 取自 `["skills","rulepacks","cards"]`（分别走各自既有生成器的 KP 技能、规则体系、可认领预建角色卡）。未知 id 一律忽略；缺省/为空即与此前行为一致。额外内容绝不会让模组失败——`admin_generated.detail` 会列出生成了什么、或为何更少。
+  `{type:"admin_generate", kind:"skill"|"rule"|"module"|"pack", description:string, locale?:"en"|"zh", options?:{media?:string[], companion?:string[], extends?:string, system?:string}}`
+  `locale` 选择创作语言，缺省用连接/服务端语言。`kind:"pack"`（2.6）会把模组写成一个完整的原生世界卡并包进 `.lwpack` 内容包——引擎的标准完整模组形态（lorebook + 类型化状态量 + 可认领演员表 + 可选素材 + 随包技能/规则包）——经守秘人世界导入路径装进调用者房间。其 `options.media` 插图随包打进 `assets/`；`options.companion` 的技能/规则包会打进包的 `contents.skills`/`contents.rulepacks`（预建卡已由世界卡自身的 `pregens:` 承载）。`options.media` 和 `options.companion` 对 `kind:"module"` 与 `kind:"pack"` 都生效：守秘人按次勾选的额外内容——`media` 取自 `["cover","scenes","npcs","items"]`（经房间图像通道生成的模组插图，存入房间媒体库、不自动广播），`companion` 取自 `["skills","rulepacks","cards"]`（分别走各自既有生成器的 KP 技能、规则体系、可认领预建角色卡）。对 `kind:"pack"`，`options.extends` 要求生成一个继承指定基础系统的配套规则包，`options.system` 则让世界卡直接声明某个内置系统；二者互斥，对 `kind:"module"` 忽略。未知选项 id 会被忽略。额外内容绝不会让模组失败——`admin_generated.detail` 会列出生成了什么、或为何更少。
 
 服务器 → 客户端：
 
@@ -273,7 +273,7 @@ role = "player"  # 或 "keeper"；默认为 "player"
   `{type:"admin_skills", skills:[{id:string, name:string, description:string, content_rating:string, enabled:boolean}]}`
 - `admin_rules` — 所有可发现的规则系统，`built_in` 区分内置系统（`coc7`/`dnd5e`）与生成/用户安装的系统：
   `{type:"admin_rules", systems:[{id:string, built_in:boolean}]}`
-- `admin_generated` — 锻造引擎的结果；`ok` 为 `false` 时 `id`/`name` 为空、`error` 携带（未翻译的）诊断信息，且没有任何东西被安装。`detail` 携带按房间的安装结果——对 `kind:"module"` 它是模组是否真正落进房间的唯一信号（`ok` 只表示成功创作并写出了合法文档）；对 `skill`/`rule` 为空（无按房间安装步骤）：
+- `admin_generated` — 锻造引擎的结果；`ok` 为 `false` 时 `id`/`name` 为空、`error` 携带（未翻译的）创作或文件安装诊断。对 `kind:"module"`/`"pack"`，`detail` 携带按房间的安装/导入结果；要据此判断模组是否真的进入房间（`ok` 只表示创作出的产物已写入，不保证后续房间导入成功）。对 `skill`/`rule` 为空：
   `{type:"admin_generated", kind:"skill"|"rule"|"module"|"pack", ok:boolean, id:string, name:string, error:string, detail:string}`
 - `admin_generate_started` — 在异步 `admin_generate`（`kind:"module"`/`"pack"`）时立即回给请求方，确认生成已排队并在后台运行；最终结果稍后以 `admin_generated` 到达：
   `{type:"admin_generate_started", kind:"module"|"pack"}`

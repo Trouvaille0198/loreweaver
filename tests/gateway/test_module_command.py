@@ -256,3 +256,42 @@ async def test_forge_command_requires_description(monkeypatch):
     reply = await router.dispatch(ctx, ".forge --pack")
     assert "Usage" in reply or "用法" in reply
     assert _FakeForge.calls == []
+
+
+class _FakeDeletePack:
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    async def __call__(self, services, pack_id, *, caller_room):
+        self.calls.append((services, pack_id, caller_room))
+        return True, pack_id, ""
+
+
+async def test_module_delete_command_routes_to_delete_installed_pack(monkeypatch):
+    """`.module delete <id>` routes a pack id to `delete_installed_pack` and reports success."""
+    fake = _FakeDeletePack()
+    monkeypatch.setattr("module_admin.delete_installed_pack", fake)
+    services = _services()
+    router = CommandRouter(services)
+    ctx = AgentCtx(chat_key="cli:dm:module", user_id="keeper", platform="cli", locale="en")
+
+    reply = await router.dispatch(ctx, ".module delete fog")
+
+    assert reply == "Deleted module: fog"
+    assert len(fake.calls) == 1
+    assert fake.calls[0][1] == "fog"
+    assert fake.calls[0][2] == "module"
+
+
+async def test_module_delete_command_requires_a_name(monkeypatch):
+    """`.module delete` with no name returns the usage line instead of dispatching."""
+    fake = _FakeDeletePack()
+    monkeypatch.setattr("module_admin.delete_installed_pack", fake)
+    services = _services()
+    router = CommandRouter(services)
+    ctx = AgentCtx(chat_key="cli:dm:module", user_id="keeper", platform="cli", locale="en")
+
+    reply = await router.dispatch(ctx, ".module delete")
+
+    assert "Usage" in reply or "用法" in reply
+    assert fake.calls == []

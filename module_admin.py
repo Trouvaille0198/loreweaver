@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import logging
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -17,12 +18,15 @@ from typing import Any
 import core.pack as core_pack
 from agent.context import AgentCtx, LocalFs
 from agent.kp_tools_knowledge import DocumentTools
+from agent.module_lifecycle import active_module
 from core.documents import KEEPER_VIEWER, MODULE_POOL_ID
 from core.worldbook import LORE_DOC_TYPE
 from core.yaml_safety import safe_load_no_aliases
 from infra.media_store import ALLOWED_MEDIA_MIMES, MediaStore
 from net.admin import AdminService, _error
 from net.room_backup import chat_key_for_room
+
+logger = logging.getLogger(__name__)
 
 _ALLOWED_SUFFIXES = frozenset({".md", ".markdown", ".txt"})
 _WORLDBOOK_SUFFIXES = frozenset({".json"})
@@ -766,7 +770,15 @@ class ModuleAdminService:
 
 
     async def _delete(self, caller_room: str, root: Path, payload: dict[str, Any]) -> dict[str, Any]:
-        name, path = self._path(root, str(payload.get("name") or ""))
+        name = str(payload.get("name") or "").strip()
+        source_kind = str(payload.get("source_kind") or "").strip().casefold()
+        # An installed .lwpack content pack is deleted by its pack id (not a module file).
+        if source_kind == "pack" or "/" not in name:
+            ok, resolved, error = await delete_installed_pack(
+                self.services, name.partition("/")[0], caller_room=caller_room
+            )
+            return _module_reply("module_delete", ok, resolved, {} if ok else {"error": error})
+        name, path = self._path(root, name)
         if not path.is_file():
             return _module_reply("module_delete", False, name, {"error": "source_not_found"})
         current = await self._current_name(caller_room, root, self._files(root))
@@ -774,6 +786,7 @@ class ModuleAdminService:
             return _module_reply("module_delete", False, name, {"error": "module_in_use"})
         path.unlink()
         return _module_reply("module_delete", True, name, {"name": name})
+
     @staticmethod
     def _safe_worldbook_name(raw: str) -> str:
         name = raw.strip()
@@ -962,6 +975,119 @@ class ModuleAdminService:
         return _module_reply("worldbook_disable", True, "", {"enabled": False})
 
 
+
+async def delete_installed_pack(
+    services: Any,
+    pack_id: str,
+    *,
+    caller_room: str,
+) -> tuple[bool, str, str]:
+    """Delete an installed .lwpack content pack from the server.
+
+    Returns ``(ok, name, error_code)`` — ``error_code`` is ``""`` on success and one of
+    ``source_not_found`` / ``dev_mount`` / ``module_in_use`` otherwise. Removes the
+    installed home under ``packs/<id>@<version>/``, the forge build artifacts under
+    ``modules/``, strips the pack's admitted skills/panels from every room, and refreshes
+    skill/rulepack discovery. Shared discovery entries are deliberately KEPT (another pack
+    or a manual install may still reference them). ``pack_id`` is matched against the
+    newest installed home; a dev-mount source tree is never deleted.
+    """
+    from core.pack import DEV_PACK_HOMES
+    from gateway.panels import installed_pack_homes
+
+    data_dir = Path(services.settings.data_dir)
+    home = installed_pack_homes(data_dir).get(pack_id)
+    if home is None:
+        return False, pack_id, "source_not_found"
+    if home.resolve() in {Path(p).resolve() for p in DEV_PACK_HOMES.values()}:
+        return False, pack_id, "dev_mount"
+    active = await active_module(services, chat_key_for_room(caller_room))
+    if active and active.get("kind") == "world_card" and str(active.get("pack_id") or "") == pack_id:
+        return False, pack_id, "module_in_use"
+    # The pack's own skills (by id) are removed from every room's enabled list alongside
+    # the pack-id entries in `panels_enabled`. Skills live in the shared discovery dir, so
+    # only the ROOM references are stripped here — the skill files themselves are shared and
+    # are deliberately left for any other pack or manual install that still uses them.
+    skill_ids = _pack_skill_ids(home)
+    _remove_pack_artifacts(services, pack_id, home)
+    await _strip_pack_from_rooms(services, pack_id, skill_ids=skill_ids)
+    return True, pack_id, ""
+
+
+def _pack_skill_ids(home: Path) -> list[str]:
+    """The skill ids a pack ships (its ``contents.skills`` directory names), or ``[]``."""
+    manifest_path = home / core_pack.MANIFEST_NAME
+    if not manifest_path.is_file():
+        return []
+    text = manifest_path.read_text(encoding="utf-8")
+    manifest = None
+    for expect_trust in (True, False):
+        try:
+            manifest = core_pack.parse_manifest_text(text, expect_trust=expect_trust)
+            break
+        except Exception:
+            continue
+    if manifest is None:
+        return []
+    from pathlib import PurePosixPath
+
+    ids: list[str] = []
+    for path in (manifest.contents or {}).get("skills", []):
+        parent = PurePosixPath(path).parent
+        if str(parent) not in ("", "."):
+            ids.append(parent.name)
+    return ids
+
+
+def _remove_pack_artifacts(services: Any, pack_id: str, home: Path) -> None:
+    """Physically delete an installed pack's home and the forge build artifacts, then
+    refresh skill/rulepack discovery. Shared discovery entries (skills/rulepacks/presets)
+    are deliberately KEPT: another pack or a manual install may still reference them."""
+    import shutil
+
+    data_dir = Path(services.settings.data_dir)
+    shutil.rmtree(home, ignore_errors=True)
+    # Forge-generated modules leave a `.lwpack` and a `.pack-src` source tree under
+    # `modules/`; a hand-installed pack never has them, and both are non-load-bearing
+    # once the pack is installed, so removing them is safe either way.
+    for entry in (data_dir / "modules").glob(f"{pack_id}-*.lwpack"):
+        entry.unlink(missing_ok=True)
+    for entry in (data_dir / "modules").glob(f"{pack_id}.pack-src"):
+        shutil.rmtree(entry, ignore_errors=True)
+    # A just-removed skill/rulepack must stop being discoverable without a restart.
+    try:
+        from core import rulepacks as core_rulepacks
+        from core import skills as core_skills
+
+        core_skills.reload_skills()
+        core_rulepacks.reload_rulepacks()
+    except Exception:  # noqa: BLE001 — discovery refresh is best-effort
+        logger.exception("pack delete: discovery refresh failed")
+
+
+async def _strip_pack_from_rooms(services: Any, pack_id: str, *, skill_ids: list[str] | None = None) -> None:
+    """Remove a deleted pack's references from every room: the pack id from each room's
+    `panels_enabled`, and the pack's own skill ids from each room's `skills_enabled`."""
+    skill_ids = skill_ids or []
+    for chat_key in await services.store.state_rooms():
+        for state_key, drop in (
+            ("panels_enabled", {pack_id}),
+            ("skills_enabled", set(skill_ids)),
+        ):
+            raw = await services.store.state_get(chat_key, state_key)
+            if not raw:
+                continue
+            try:
+                items = json.loads(raw)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(items, list):
+                continue
+            filtered = [item for item in items if item not in drop]
+            if filtered != items:
+                await services.store.state_set(
+                    chat_key, state_key, json.dumps(filtered, ensure_ascii=False)
+                )
 
 def _module_reply(kind: str, ok: bool, name: str, detail: dict[str, Any]) -> dict[str, Any]:
     return {

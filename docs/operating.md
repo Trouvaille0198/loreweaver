@@ -117,8 +117,8 @@ The Stage Director stages story beats: act cards, letters, newspaper clippings, 
 and generated art. It defaults to the **main** model, which is the opposite of the Scribe's advice —
 beats are rare and the job is taste.
 
-**It only wakes up if a module asks for it**: it runs only in a room whose enabled module ships a
-`ui/presentation.yaml`. A table with no such module never wakes one and is never charged for it.
+**It only wakes up if a presentation kit is enabled**: it runs only in a room with an enabled
+`ui/presentation.yaml` kit. A table with no enabled kit never wakes one and is never charged for it.
 Image generation additionally needs all three of these to agree:
 
 1. `TRPG_DIRECTOR__IMAGES=1`,

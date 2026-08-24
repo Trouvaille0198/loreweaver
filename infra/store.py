@@ -417,6 +417,13 @@ class Store:
                 ).fetchall()
             return [{"key": row[0], "value": row[1]} for row in rows]
 
+    async def state_rooms(self) -> list[str]:
+        """Every distinct room currently holding room-scoped runtime state rows."""
+        async with self._lock:
+            conn = self._ensure_conn()
+            rows = conn.execute("SELECT DISTINCT room FROM room_state").fetchall()
+            return [row[0] for row in rows]
+
     async def state_delete_keys(self, room: str, keys: Iterable[str] = (), prefixes: Iterable[str] = ()) -> int:
         """Delete `room` rows matching any exact key or key prefix; return the count."""
         exact = list(keys)

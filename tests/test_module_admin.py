@@ -190,3 +190,120 @@ files:
     reply = await admin._import(room, tmp_path / "modules", {"name": "empty"}, i18n)
     assert reply["ok"] is False
     assert json.loads(reply["detail"])["error"] == "no_world_card"
+
+
+def _pack_services(tmp_path):
+    """A `services`-shaped namespace backed by a real store + tmp data dir, plus a fake
+    installed pack home, matching `test_import_pack_routes_to_world_card_import`."""
+    store = Store(":memory:")
+    services = SimpleNamespace(
+        settings=SimpleNamespace(data_dir=tmp_path),
+        store=store,
+        documents=DocumentStore(store),
+        worldbook=Worldbook(store),
+    )
+    admin = ModuleAdminService(SimpleNamespace(services=services, keystore=None, fs=None, hub=None))
+    # A fake installed pack home carrying one world card.
+    home = tmp_path / "packs" / "fog@1.0.0"
+    (home / "cards").mkdir(parents=True)
+    (home / "skills" / "fog-skill").mkdir(parents=True)
+    (home / "skills" / "fog-skill" / "SKILL.md").write_text("---\nname: Fog Skill\n---\nBody\n", encoding="utf-8")
+    (home / "cards" / "fog.lorecard.json").write_text(
+        json.dumps(
+            {
+                "format": "loreweaver.card",
+                "format_version": 1,
+                "name": "Fog Manor",
+                "opening": "It begins.",
+            }
+        ),
+        encoding="utf-8",
+    )
+    card_size = (home / "cards" / "fog.lorecard.json").stat().st_size
+    skill_size = (home / "skills" / "fog-skill" / "SKILL.md").stat().st_size
+    (home / "pack.yaml").write_text(
+        """manifest_version: 2
+id: fog
+version: 1.0.0
+name: Fog
+description: Fog fixture
+authors: [tester]
+license: MIT
+contents:
+  cards:
+    - path: cards/fog.lorecard.json
+      kind: world
+  skills:
+    - skills/fog-skill/SKILL.md
+trust:
+  cards: 1
+  world_cards: 1
+  skills: 1
+files:
+  - path: cards/fog.lorecard.json
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    size: """
+        + str(card_size)
+        + """
+  - path: skills/fog-skill/SKILL.md
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    size: """
+        + str(skill_size)
+        + "\n",
+        encoding="utf-8",
+    )
+    return services, admin, home
+
+
+@pytest.mark.asyncio
+async def test_delete_pack_module_removes_home_artifacts_and_room_refs(tmp_path, monkeypatch):
+    """`module_delete` of an installed pack id removes its home, the forge build artifacts
+    under `modules/`, and strips its admitted skills/panels from every room."""
+    services, admin, home = _pack_services(tmp_path)
+    monkeypatch.setattr("gateway.panels.installed_pack_homes", lambda data_dir: {home.name.split("@")[0]: home})
+    # Forge build artifacts + a room that admitted this pack.
+    (tmp_path / "modules").mkdir()
+    (tmp_path / "modules" / "fog-0.1.0.lwpack").write_bytes(b"lwpack")
+    (tmp_path / "modules" / "fog.pack-src").mkdir()
+    room_key = chat_key_for_room("fog-room")
+    await services.store.state_set(room_key, "skills_enabled", '["fog-skill","keep-me"]')
+    await services.store.state_set(room_key, "panels_enabled", '["fog","other-pack"]')
+
+    reply = await admin._delete("fog-room", tmp_path / "modules", {"name": "fog", "source_kind": "pack"})
+
+    assert reply["ok"] is True
+    assert not home.exists(), "installed pack home removed"
+    assert not (tmp_path / "modules" / "fog-0.1.0.lwpack").exists(), "forge lwpack removed"
+    assert not (tmp_path / "modules" / "fog.pack-src").exists(), "forge source tree removed"
+    assert json.loads(await services.store.state_get(room_key, "skills_enabled")) == ["keep-me"]
+    assert json.loads(await services.store.state_get(room_key, "panels_enabled")) == ["other-pack"]
+
+
+@pytest.mark.asyncio
+async def test_delete_pack_module_refuses_current_module(tmp_path, monkeypatch):
+    """A pack that is the room's current module is refused (`module_in_use`), like a text
+    source in use — deleting the running module would strand the table."""
+    from agent.module_lifecycle import publish_active_module
+
+    services, admin, home = _pack_services(tmp_path)
+    monkeypatch.setattr("gateway.panels.installed_pack_homes", lambda data_dir: {home.name.split("@")[0]: home})
+    room_key = chat_key_for_room("fog-room")
+    await publish_active_module(
+        services,
+        room_key,
+        {
+            "kind": "world_card",
+            "source_id": "pack:fog@1.0.0:cards/fog.lorecard.json",
+            "name": "Fog Manor",
+            "source": "cards/fog.lorecard.json",
+            "pack_id": "fog",
+            "pack_version": "1.0.0",
+            "card_path": "cards/fog.lorecard.json",
+        },
+    )
+
+    reply = await admin._delete("fog-room", tmp_path / "modules", {"name": "fog", "source_kind": "pack"})
+
+    assert reply["ok"] is False
+    assert json.loads(reply["detail"])["error"] == "module_in_use"
+    assert home.exists(), "in-use pack home untouched"

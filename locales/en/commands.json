@@ -163,7 +163,7 @@
   "commands.jrrp.result": "Daily luck: {luck}",
   "commands.language.done": "Room language set to English.",
   "commands.language.usage": "Usage: .language en|zh",
-  "commands.module.help": "Import a module file from the server filesystem and start module analysis.",
+  "commands.module.help": "Import a module file from the server filesystem and start module analysis, or delete an installed module (`.module delete <name>`).",
   "commands.module.progress.analyze": "③ Analyzing the module (a long module can take 10+ minutes — please wait)",
   "commands.module.progress.build": "④ Building keeper knowledge",
   "commands.module.progress.done": "⑤ Done",
@@ -271,5 +271,10 @@
   "commands.undo.too_deep": "Undo reaches back at most {depth} turns — that is the window the campaign summary has not folded yet, so a deeper rewind would leave the story and the summary describing different things.",
   "commands.undo.unavailable": "No saved turn boundary to rewind to. Available: {turns}",
   "commands.undo.usage": "Usage: .undo [turns]",
-  "commands.forge.done": "Generated module: {name}"
+  "commands.forge.done": "Generated module: {name}",
+  "commands.module.delete_usage": "Usage: .module delete <name> — delete an installed module (a .md/.txt source or an installed .lwpack content pack id).",
+  "commands.module.deleted": "Deleted module: {name}",
+  "commands.module.delete_failed_source_not_found": "No such module installed: {name}",
+  "commands.module.delete_failed_dev_mount": "Cannot delete {name}: it is a live dev-mount source tree.",
+  "commands.module.delete_failed_module_in_use": "Cannot delete {name}: it is the current module in this room."
 }
