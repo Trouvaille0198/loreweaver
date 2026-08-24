@@ -531,8 +531,14 @@ async def _set_room_model(
     i18n: I18n,
 ) -> dict[str, Any]:
     profiles = {str(profile["id"]): str(profile["kind"]) for profile in await _llm_profiles(services)}
+    # Admin frames are addressed by the human room name, but the room's runtime state is
+    # keyed by its canonical session key. Writing under the bare room name would orphan the
+    # selection from the turn / reset machinery that reads and clears it (see the dual-
+    # prefix read in `room_model_selection`). Persist under the session key so a single
+    # spelling owns the row.
+    chat_key = session_key_for_room(room)
     if frame.get("clear") is True:
-        await services.store.state_delete(room, ROOM_LLM_SELECTION_KEY)
+        await services.store.state_delete(chat_key, ROOM_LLM_SELECTION_KEY)
         return await _room_config_frame(services, room)
     selection = await _room_llm_selection(services, room)
     expected_kind = {"main": "chat", "scribe": "chat", "director": "chat", "imagegen": "image"}
@@ -547,7 +553,7 @@ async def _set_room_model(
     for key in ("scribe_enabled", "director_enabled"):
         if key in frame:
             selection[key] = bool(frame[key])
-    await services.store.state_set(room, ROOM_LLM_SELECTION_KEY, json.dumps(selection))
+    await services.store.state_set(chat_key, ROOM_LLM_SELECTION_KEY, json.dumps(selection))
     return await _room_config_frame(services, room)
 
 
