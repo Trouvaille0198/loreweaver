@@ -358,6 +358,7 @@ ship on npm as [`loreweaver-protocol`](https://www.npmjs.com/package/loreweaver-
 | For | Read |
 |---|---|
 | Players | [docs/play.md](docs/play.md) — five-minute start, keys, dice, panels, recaps |
+| Understanding modules | [docs/modules.md](docs/modules.md) — definition, import, room state, turn-time behavior, player techniques, and implementation audit |
 | Module authors | [docs/authoring.md](docs/authoring.md) — build a `.lwpack` from zero, with a real module as the worked example |
 | Keepers & operators | [docs/operating.md](docs/operating.md) — models, quota, caching, backups, reset, self-update |
 | Server operators | [docs/deploy.md](docs/deploy.md) — always-on deployment, keys, trust boundaries |

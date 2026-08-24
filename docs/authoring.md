@@ -772,6 +772,7 @@ Both were more useful for being written down while they still stung.
 
 | Topic | Document |
 |---|---|
+| The complete module import and play lifecycle | [modules.md](modules.md) |
 | The full extension spec — every field, limit and trust rule | [plugins.md](plugins.md) |
 | Importing from SillyTavern: what runs, what differs | [cards.md](cards.md) |
 | The hooks API, events, effect buffer, failure semantics | [hooks.md](hooks.md) |

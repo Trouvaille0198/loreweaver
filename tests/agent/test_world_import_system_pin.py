@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -275,3 +276,90 @@ async def test_native_card_without_system_pins_nothing(tmp_path, user_rulepack_d
     ctx = _keeper_ctx(tmp_path, "no-system-room")
     await CharcardTools(services).import_world_card(ctx, file_path=card_path)
     assert await services.store.state_get("no-system-room", "room_system") is None
+
+
+def _install_card(data_dir: Path, *, pack_id: str, name: str, worldbook: list[dict] | None = None,
+                  pregens: list[dict] | None = None, system: str = "coc7") -> str:
+    """A native lorecard bundle with a distinct module name, optional worldbook entries, pregen
+    cast and declared system."""
+    home = data_dir / "packs" / f"{pack_id}@1.0.0"
+    (home / "cards").mkdir(parents=True)
+    bundle: dict[str, Any] = {
+        "format": "loreweaver.card",
+        "format_version": 1,
+        "name": name,
+        "personality": "",
+        "description": "",
+        "opening": "It begins.",
+        "worldbook": worldbook or [],
+        "variables": [],
+        "pregens": pregens or [],
+        "system": system,
+    }
+    (home / "cards" / "world.json").write_text(json.dumps(bundle, ensure_ascii=False), encoding="utf-8")
+    (home / "pack.yaml").write_text(
+        f"manifest: 2\nid: {pack_id}\nname: {name}\nversion: \"1.0.0\"\ncontents:\n  cards: [cards/world.json]\n",
+        encoding="utf-8",
+    )
+    return str(home / "cards" / "world.json")
+
+
+async def test_importing_a_different_module_purges_the_old_one(tmp_path, user_rulepack_dir):
+    """A room runs ONE module at a time: importing a DIFFERENT module replaces the previous one
+    outright — its lore, pregen cast and enabled skills are purged, the Keeper's active lore
+    source locks to the new module, and nothing of the old module bleeds into the campaign."""
+    services = _services(tmp_path)
+    card_a = _install_card(
+        tmp_path / "data",
+        pack_id="module-a",
+        name="Module A",
+        worldbook=[{"title": "A secret", "content": "Old truth", "keys": ["a"]}],
+        pregens=[{"name": "Alice", "skills": {"psychology": 60}}],
+    )
+    ctx_a = _keeper_ctx(tmp_path, "purge-room")
+    await CharcardTools(services).import_world_card(ctx_a, file_path=card_a)
+    assert await services.store.state_get("purge-room", "world_import") == "Module A"
+
+    card_b = _install_card(
+        tmp_path / "data",
+        pack_id="module-b",
+        name="Module B",
+        worldbook=[{"title": "B secret", "content": "New truth", "keys": ["b"]}],
+        pregens=[{"name": "Bob", "skills": {"spot": 50}}],
+    )
+    ctx_b = _keeper_ctx(tmp_path, "purge-room")
+    await CharcardTools(services).import_world_card(ctx_b, file_path=card_b)
+
+    assert await services.store.state_get("purge-room", "world_import") == "Module B"
+    # Keeper lore injection locks to the new module's source.
+    assert await services.worldbook.active_source("purge-room") == "Module B"
+    # Old module A's lore is gone; only module B's remains.
+    entries = await services.worldbook.list("purge-room")
+    assert [e.title for e in entries if e.enabled] == ["B secret"]
+    # Old module A's pregen is gone; only module B's cast remains.
+    from core.pregen_roster import pregen_entries
+
+    roster = await pregen_entries(services.documents, "purge-room")
+    assert [entry["name"] for entry in roster] == ["Bob"]
+
+
+async def test_reimporting_same_module_is_a_refresh_not_a_purge(tmp_path, user_rulepack_dir):
+    services = _services(tmp_path)
+    card = _install_card(
+        tmp_path / "data",
+        pack_id="same",
+        name="Same Module",
+        worldbook=[{"title": "truth", "content": "truth", "keys": ["t"]}],
+        pregens=[{"name": "Cara", "skills": {}}],
+    )
+    ctx = _keeper_ctx(tmp_path, "refresh-room")
+    await CharcardTools(services).import_world_card(ctx, file_path=card)
+    await CharcardTools(services).import_world_card(ctx, file_path=card)
+    # Same module re-import keeps its own content (refresh), doesn't purge itself.
+    assert await services.store.state_get("refresh-room", "world_import") == "Same Module"
+    entries = await services.worldbook.list("refresh-room")
+    assert [e.title for e in entries if e.enabled] == ["truth"]
+    from core.pregen_roster import pregen_entries
+
+    roster = await pregen_entries(services.documents, "refresh-room")
+    assert [entry["name"] for entry in roster] == ["Cara"]

@@ -241,6 +241,7 @@ net/    Iroh p2p + 会话核心     adapters/ CLI          clients/ protocol（n
 | 给谁 | 看哪份 |
 |---|---|
 | 玩家 | [docs/play.zh.md](docs/play.zh.md) — 五分钟上手、按键、骰子、面板、前情提要 |
+| 想弄懂模组的人 | [docs/modules.zh.md](docs/modules.zh.md) — 定义、导入、房间落地、逐回合作用、玩家技巧与实现审计 |
 | 模组作者 | [docs/authoring.zh.md](docs/authoring.zh.md) — 从零做一个 `.lwpack`，全程拿一个真模组当例子 |
 | 守秘人 / 运维 | [docs/operating.zh.md](docs/operating.zh.md) — 模型、配额、缓存、备份、重置、自更新 |
 | 服务器运维 | [docs/deploy.zh.md](docs/deploy.zh.md) — 常驻部署、密钥、信任边界 |

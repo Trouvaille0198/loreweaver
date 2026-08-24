@@ -602,7 +602,18 @@ class ModuleAdminService:
         )
 
     async def _import(self, caller_room: str, root: Path, payload: dict[str, Any], i18n: Any) -> dict[str, Any]:
-        name, path = self._path(root, str(payload.get("name") or ""))
+        raw_name = str(payload.get("name") or "").strip()
+        # An installed .lwpack content pack imports through its WORLD CARD (the keeper world
+        # import path) — it is a binary bundle, not a Markdown scenario, so it is handled before
+        # the `.md`-only `_path`/`_safe_name` checks reject its suffix-less pack id. The world
+        # card loads the pack's lorebook, variables, pregen cast and its declared rule system
+        # into the room.
+        from gateway.panels import installed_pack_homes
+
+        pack_home = installed_pack_homes(Path(self.services.settings.data_dir)).get(raw_name)
+        if pack_home is not None:
+            return await self._import_pack(caller_room, raw_name, pack_home, i18n)
+        name, path = self._path(root, raw_name)
         if not path.is_file():
             return _module_reply("module_import", False, name, {"error": "source_not_found"})
         source_text = path.read_text(encoding="utf-8")
@@ -639,6 +650,33 @@ class ModuleAdminService:
             name,
             {"receipt": receipt, "status": status, "current": ok},
         )
+
+    async def _import_pack(self, caller_room: str, pack_id: str, home: Path, i18n: Any) -> dict[str, Any]:
+        """Import an installed .lwpack content pack into the room through its bundled world
+        card (`core.pack` + `CharcardTools.import_world_card`): the keeper world-import path
+        loads the pack's lorebook, typed variables, pregen cast, bundled skill auto-enable and
+        its declared rule system. Nothing is imported for a pack with no world card."""
+        from agent.kp_tools_charcard import CharcardTools
+
+        cards = sorted(home.glob("cards/*.lorecard.json"))
+        if not cards:
+            return _module_reply("module_import", False, pack_id, {"error": "no_world_card"})
+        card_path = str(cards[0])
+        chat_key = chat_key_for_room(caller_room)
+        ctx = AgentCtx(
+            chat_key=chat_key,
+            user_id="keeper",
+            platform="tui",
+            locale=i18n.locale,
+            fs=LocalFs(home.parent),
+            extra={"role": "keeper"},
+        )
+        try:
+            receipt = await CharcardTools(self.services).import_world_card(ctx, file_path=card_path)
+        except Exception as exc:  # noqa: BLE001 — a failed import degrades to a clean reply
+            return _module_reply("module_import", False, pack_id, {"error": f"import_failed: {exc}"})
+        return _module_reply("module_import", True, pack_id, {"receipt": receipt, "current": True})
+
 
     async def _delete(self, caller_room: str, root: Path, payload: dict[str, Any]) -> dict[str, Any]:
         name, path = self._path(root, str(payload.get("name") or ""))

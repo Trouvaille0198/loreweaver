@@ -370,5 +370,6 @@ After:
 | Always-on deployment, systemd, keys, trust boundaries | [deploy.md](deploy.md) |
 | Every setting, with defaults | [`.env.example`](../.env.example) · [deploy.md](deploy.md#configuration) |
 | What players see and type | [play.md](play.md) |
+| How modules enter a room and act on turns | [modules.md](modules.md) |
 | Building a module for your table | [authoring.md](authoring.md) |
 | Content moderation (off by default, and why) | [deploy.md](deploy.md#content-moderation) |

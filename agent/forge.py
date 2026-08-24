@@ -122,6 +122,24 @@ def _strip_code_fence(content: str) -> str:
     return match.group("body") if match else content
 
 
+def _repair_skill_frontmatter(content: str) -> str:
+    """Best-effort repair of an LLM that opens a SKILL.md frontmatter with ``---`` but forgets
+    the closing fence (``core.skills._split_frontmatter`` demands one). Only the trivially
+    recoverable case is handled: content that BEGINS with the opening fence yet contains no
+    second ``---`` line gets the closing fence appended. Anything else is left untouched and must
+    still pass the strict `core.skills.parse_skill_text` validation — this never weakens the
+    check, it only fixes the single most common authoring slip."""
+    from core.skills import _FRONTMATTER_FENCE
+
+    if not content.lstrip().startswith(_FRONTMATTER_FENCE):
+        return content
+    body_lines = content.splitlines()
+    for line in body_lines[1:]:
+        if line.strip() == _FRONTMATTER_FENCE:
+            return content  # already closed
+    return content.rstrip() + "\n" + _FRONTMATTER_FENCE + "\n"
+
+
 # Layer B.3b (`generate_and_install_module`) discovery target: a user data-dir `modules/`
 # directory, set once at startup (`app.py`: `agent.forge._USER_MODULE_DIR =
 # Path(settings.data_dir) / "modules"`). Unlike `_USER_SKILL_DIR`/`_USER_RULEPACK_DIR` this is NOT
@@ -358,6 +376,7 @@ async def generate_and_install_skill(
         return failure
     assert content is not None  # _llm_authored returns content XOR failure
     content = _strip_code_fence(content)
+    content = _repair_skill_frontmatter(content)
 
     # Hard size cap BEFORE any parse call (see `_MAX_FORGE_CONTENT_BYTES`'s docstring): refuse
     # oversized LLM output outright rather than ever handing it to the YAML parser.
@@ -1650,6 +1669,10 @@ async def _pack_skill(
         return None, i18n.t("agent.forge.module_companion_failed", kind="skill", error=failure.error)
     assert content is not None
     content = _strip_code_fence(content)
+    # Tolerate an LLM that opens frontmatter with `---` but forgets the closing fence — a common
+    # authoring slip — by appending it, then validating through the SAME strict parser below.
+    # Nothing weaker passes: a repaired body still has to parse as a real Skill.
+    content = _repair_skill_frontmatter(content)
     try:
         probe = skills.parse_skill_text(_PROBE_ID, content)
     except Exception as exc:

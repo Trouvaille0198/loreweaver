@@ -275,5 +275,6 @@ TRPG_TUI__UPDATE_COMMAND=git pull --ff-only && uv sync    # 默认（git 检出�
 | 常驻部署、systemd、密钥、信任边界 | [deploy.zh.md](deploy.zh.md) |
 | 每一项设置和它的默认值 | [`.env.example`](../.env.example) · [deploy.zh.md](deploy.zh.md) |
 | 玩家看到什么、打什么 | [play.zh.md](play.zh.md) |
+| 模组如何导入房间并在回合中生效 | [modules.zh.md](modules.zh.md) |
 | 给你这桌做一个模组 | [authoring.zh.md](authoring.zh.md) |
 | 内容过滤（默认关，以及为什么） | [deploy.zh.md](deploy.zh.md) |
