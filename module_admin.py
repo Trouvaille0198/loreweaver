@@ -92,9 +92,13 @@ class ModuleAdminService:
         if role != "keeper":
             return _error("forbidden", i18n)
         try:
-            if kind == "module_import" and self.hub is not None:
-                async with self.hub.turn_lock(chat_key_for_room(caller_room)):
-                    return await self._dispatch_module(caller_room, frame, i18n)
+            # NO room lock here: the transport choke point (`net.session._on_frame`) already
+            # holds the room's `turn_lock` around the ENTIRE `admin_generate` dispatch. That
+            # lock is a plain (non-reentrant) `asyncio.Lock`; re-acquiring the same one in
+            # this task self-deadlocks the import and strands the room lock forever, which
+            # also wedges every later module request for the room (the import never answers
+            # and never releases). Taking the lock exactly once, at the choke point, is what
+            # keeps module_import serialized against concurrent turns.
             return await self._dispatch_module(caller_room, frame, i18n)
         except ValueError:
             return _error("bad_request", i18n)
