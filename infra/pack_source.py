@@ -209,6 +209,113 @@ def _resolve_github(ref: str, *, cache_dir: Path, fetch: Fetcher, api_fetch: Fet
     return _cache_bytes(data, cache_dir)
 
 
+# `https://github.com/{owner}/{repo}` and `…/tree/{ref}/{path…}` — a repo or directory
+# on github.com. The tree form names a branch (or tag/sha) and an optional path; the
+# bare repo form means the default branch's repo root.
+_GH_TREE_RE = re.compile(
+    r"^https://github\.com/([A-Za-z0-9_.-]{1,100})/([A-Za-z0-9_.-]{1,100})(?:/tree/([^/\s]{1,120})(?:/(.*))?)?$"
+)
+# `https://github.com/{owner}/{repo}/blob/{ref}/{path…}/{file}.lwpack` — a SINGLE file on
+# github.com. It translates deterministically to a raw.githubusercontent.com download URL,
+# with no GitHub API call (so no anonymous rate limit).
+_GH_BLOB_RE = re.compile(
+    r"^https://github\.com/([A-Za-z0-9_.-]{1,100})/([A-Za-z0-9_.-]{1,100})/blob/([^/\s]{1,120})/(.+)$"
+)
+_MAX_DIR_ENTRIES = 200
+
+
+def _resolve_github_blob_url(ref: str, *, cache_dir: Path, fetch: Fetcher) -> Path:
+    """Resolve a ``https://github.com/…/blob/<ref>/<path>/<file>.lwpack`` file URL by
+    translating it directly to its raw.githubusercontent.com download — no GitHub API call,
+    so it works anonymously (no rate limit). The file must be a ``.lwpack``."""
+    match = _GH_BLOB_RE.match(ref)
+    if match is None:
+        raise PackRefError(f"unsupported github.com blob URL: {ref!r}")
+    owner, repo, blob_ref, path = match.groups()
+    if not path.endswith(_PACK_SUFFIX):
+        raise PackRefError(f"github.com blob URL does not name a {_PACK_SUFFIX} file: {ref!r}")
+    raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{blob_ref}/{path}"
+    try:
+        data = _checked_pack_bytes(fetch(raw_url), raw_url)
+    except PackRefError:
+        raise
+    except Exception as exc:
+        raise PackRefError(f"download failed for {ref!r}: {exc}") from exc
+    return _cache_bytes(data, cache_dir)
+
+
+def _resolve_github_tree_url(
+    ref: str, *, cache_dir: Path, fetch: Fetcher, api_fetch: Fetcher
+) -> Path:
+    """Resolve a ``https://github.com/…`` repo-or-directory URL to a ``.lwpack``.
+
+    A bare repo URL (``/owner/repo``) or a ``/tree/<ref>/<path>`` directory URL is listed
+    through the GitHub contents API and its FIRST ``*.lwpack`` file (searching the named
+    directory, then one level deeper) is downloaded via raw.githubusercontent.com. This is
+    the "GitHub registry" ergonomics for an author who keeps packs as files in a repo
+    (like ``my-lorepacks/packs/<id>/dist/*.lwpack``) rather than as release assets —
+    ``gh:owner/repo`` stays the release-asset door, this URL is the files-in-repo door.
+    """
+    match = _GH_TREE_RE.match(ref)
+    if match is None:
+        raise PackRefError(f"unsupported github.com URL: {ref!r}")
+    owner, repo, tree_ref, path = match.groups()
+    if not tree_ref:
+        # Bare repo URL: default branch. Resolve it via the repo metadata (one API call),
+        # then treat the root directory as the search target.
+        try:
+            repo_meta = json.loads(api_fetch(f"https://api.github.com/repos/{owner}/{repo}").decode("utf-8"))
+        except Exception as exc:
+            raise PackRefError(f"could not resolve repo {owner}/{repo}: {exc}") from exc
+        default_branch = str(repo_meta.get("default_branch") or "main")
+        tree_ref, path = default_branch, ""
+
+    def _list_dir(ref_path: str) -> list[dict]:
+        quoted = urllib.parse.quote(ref_path.lstrip("/"), safe="/")
+        url = f"https://api.github.com/repos/{owner}/{repo}/contents/{quoted}?ref={urllib.parse.quote(tree_ref, safe='')}"
+        try:
+            data = json.loads(api_fetch(url).decode("utf-8"))
+        except PackRefError:
+            raise
+        except Exception as exc:
+            raise PackRefError(f"could not list {owner}/{repo} {ref_path!r}: {exc}") from exc
+        return data if isinstance(data, list) else []
+
+    def _find_pack(entries: list[dict]) -> str | None:
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("type") == "file" and str(entry.get("name", "")).endswith(_PACK_SUFFIX):
+                return str(entry.get("download_url") or "")
+        return None
+
+    # Search the named directory, then one level deeper (packs/<id>/dist/<id>.lwpack is a
+    # common two-level layout); bounded so a huge repo cannot cost unbounded API calls.
+    scanned = 0
+    queue: list[str] = [path]
+    while queue and scanned < _MAX_DIR_ENTRIES:
+        current = queue.pop(0)
+        entries = _list_dir(current)
+        scanned += 1
+        found = _find_pack(entries)
+        if found:
+            try:
+                data = _checked_pack_bytes(fetch(found), found)
+            except PackRefError:
+                raise
+            except Exception as exc:
+                raise PackRefError(f"download failed for {ref!r}: {exc}") from exc
+            return _cache_bytes(data, cache_dir)
+        # No flat hit: descend one level into every subdirectory (bounded by the scan cap),
+        # so a multi-level layout like packs/<id>/dist/<id>.lwpack resolves too.
+        for entry in entries:
+            if isinstance(entry, dict) and entry.get("type") == "dir":
+                sub = str(entry.get("path") or "")
+                if sub and len(queue) < _MAX_DIR_ENTRIES:
+                    queue.append(sub)
+    raise PackRefError(f"no {_PACK_SUFFIX} file found in {owner}/{repo} (searched {path or '<repo root>'})")
+
+
 def resolve_pack_ref(ref: str, *, cache_dir: Path, fetch: Fetcher | None = None) -> Path:
     """Resolve ``ref`` to a local ``.lwpack`` file path.
 
@@ -226,6 +333,10 @@ def resolve_pack_ref(ref: str, *, cache_dir: Path, fetch: Fetcher | None = None)
     fetch = fetch or _default_fetch
     if ref.startswith("gh:"):
         return _resolve_github(ref, cache_dir=cache_dir, fetch=fetch, api_fetch=api_fetch)
+    if ref.startswith("https://github.com/"):
+        if "/blob/" in ref:
+            return _resolve_github_blob_url(ref, cache_dir=cache_dir, fetch=fetch)
+        return _resolve_github_tree_url(ref, cache_dir=cache_dir, fetch=fetch, api_fetch=api_fetch)
     if ref.startswith("https://"):
         try:
             data = _checked_pack_bytes(fetch(ref), ref)
