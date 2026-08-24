@@ -25,12 +25,19 @@ import json
 from pathlib import Path
 
 import agent.forge as forge_module
+import core.rulepacks as rulepacks_module
+import core.skills as skills_module
 from agent.context import AgentCtx, LocalFs
-from agent.forge import generate_and_install_module
+from agent.forge import generate_and_install_module, generate_and_install_pack_module
 from agent.services import build_services
-from infra.config import Settings
+from core.dice_engine import seed_dice
+from core.pregen_roster import pregen_entries
+from gateway.imagegen import reset_imagegen_limiters
+from infra.config import ImageGenSettings, Settings
 from infra.embeddings import FakeEmbeddings
+from infra.imagegen import FakeImageGen, ImageGenError
 from infra.llm import ChatResult, FakeLLM, Usage, assistant_text
+from infra.media_store import MediaStore
 
 CHAT_KEY = "module-forge-chat"
 SENTINEL = "THE FERRYMAN IS THE FEY BOUND TO THE OLD PACT"
@@ -371,3 +378,730 @@ async def test_no_data_dir_configured_fails_cleanly(tmp_path: Path) -> None:
     assert result.error == "no_data_dir"
     assert result.skill_id == ""
     assert result.path == ""
+
+
+# ---------------------------------------------------------------------------
+# (e) Keeper-selectable extra content: the `media` / `companion` options. Both passes run AFTER
+# the module is installed and NEVER fail it -- every error degrades to fewer/zero artifacts plus
+# a localized note in `detail`.
+# ---------------------------------------------------------------------------
+
+
+def _shot(kind: str, subject: str) -> dict:
+    return {
+        "kind": kind,
+        "subject": subject,
+        "prompt": f"{kind} of {subject}, moody digital painting",
+        "caption": f"Behold: {subject}",
+    }
+
+
+def _option_services(
+    tmp_path: Path,
+    replies: list[str],
+    *,
+    per_hour: int = 100,
+    imagegen: bool = True,
+):
+    """Module-forge services with a confined data_dir (media blobs must not leak into the repo's
+    default ./data). `imagegen=True` installs a recording fake as the room's generator;
+    `imagegen=False` leaves the imagegen settings at their unconfigured default, so
+    `imagegen_for_room` returns None exactly like a server with no image provider."""
+    settings = Settings(locale="en", data_dir=str(tmp_path))
+    if imagegen:
+        settings = Settings(
+            locale="en",
+            data_dir=str(tmp_path),
+            imagegen=ImageGenSettings(provider="fake", api_key="fake", model="fake", per_room_per_hour=per_hour),
+        )
+    services = build_services(
+        settings,
+        llm=FakeLLM(script=[assistant_text(reply) for reply in replies]),
+        embeddings=FakeEmbeddings(8),
+    )
+    if imagegen:
+        services.imagegen = _UniqueImageGen()
+    return services
+
+
+class _UniqueImageGen(FakeImageGen):
+    """A FakeImageGen whose every call returns DISTINCT bytes -- the media store dedupes by
+    content hash, so constant fake bytes would collapse every render into the first record."""
+
+    async def generate(self, prompt: str, **kwargs):
+        data, mime = await super().generate(prompt, **kwargs)
+        return data + len(self.calls).to_bytes(4, "big"), mime
+
+
+async def test_media_pass_generates_stores_and_reports_images(tmp_path: Path) -> None:
+    reset_imagegen_limiters()
+    shots = json.dumps(
+        [
+            _shot("cover", "Greyreed at dusk"),
+            _shot("scenes", "The ferry crossing"),
+            _shot("scenes", "The drowned chapel"),
+        ]
+    )
+    services = _option_services(tmp_path, [GENERATED_MODULE_MD, _scripted_analysis_json(), shots])
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        result = await generate_and_install_module(
+            services, ctx, "a marsh mystery", media=["cover", "scenes"]
+        )
+
+        assert result.ok, result.error
+        assert len(services.imagegen.calls) == 3
+        expected = {
+            "module-the-salt-marsh-vanishing-cover-1.png",
+            "module-the-salt-marsh-vanishing-scenes-2.png",
+            "module-the-salt-marsh-vanishing-scenes-3.png",
+        }
+        for name in expected:
+            assert name in result.detail
+        records = await MediaStore(services.store, str(tmp_path)).list_room_records(CHAT_KEY)
+        assert {record.name for record in records} == expected
+
+        # The module_media_index maps each illustration to its subject (scene/NPC/item)
+        # so the runtime can reuse it as a `.image` reference.
+        index = json.loads(await services.store.state_get(CHAT_KEY, "module_media_index"))
+        by_name = {e["name"]: e for e in index}
+        assert by_name["module-the-salt-marsh-vanishing-cover-1.png"]["subject"] == "Greyreed at dusk"
+        assert by_name["module-the-salt-marsh-vanishing-scenes-2.png"]["subject"] == "The ferry crossing"
+        assert by_name["module-the-salt-marsh-vanishing-scenes-3.png"]["subject"] == "The drowned chapel"
+        # Every index entry points at a stored record.
+        record_hashes = {record.hash for record in records}
+        assert {e["hash"] for e in index} == record_hashes
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
+async def test_media_pass_without_imagegen_degrades_to_a_note(tmp_path: Path) -> None:
+    services = _option_services(
+        tmp_path, [GENERATED_MODULE_MD, _scripted_analysis_json()], imagegen=False
+    )
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        result = await generate_and_install_module(services, ctx, "a marsh mystery", media=["cover"])
+
+        assert result.ok, result.error
+        assert "no image-generation provider is configured" in result.detail
+        # No provider -> no wasted shot-list call: only the authoring + analysis calls happened.
+        assert len(services.llm.calls) == 2
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
+async def test_media_pass_malformed_shot_list_degrades(tmp_path: Path) -> None:
+    reset_imagegen_limiters()
+    services = _option_services(
+        tmp_path, [GENERATED_MODULE_MD, _scripted_analysis_json(), "no json here, sorry"]
+    )
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        result = await generate_and_install_module(services, ctx, "a marsh mystery", media=["scenes"])
+
+        assert result.ok, result.error
+        assert "no usable shot list" in result.detail
+        assert services.imagegen.calls == []
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
+async def test_media_pass_enforces_kind_caps_one_portrait_per_npc_and_total_cap(tmp_path: Path) -> None:
+    reset_imagegen_limiters()
+    entries = (
+        [_shot("cover", "Cover A"), _shot("cover", "Cover B")]
+        + [_shot("scenes", f"Scene {i}") for i in range(7)]
+        + [_shot("npcs", "The Ferryman"), _shot("npcs", "The Ferryman")]
+        + [_shot("npcs", f"NPC {i}") for i in range(6)]
+        + [_shot("items", f"Item {i}") for i in range(7)]
+    )
+    services = _option_services(tmp_path, [GENERATED_MODULE_MD, _scripted_analysis_json(), json.dumps(entries)])
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        result = await generate_and_install_module(
+            services, ctx, "a marsh mystery", media=["cover", "scenes", "npcs", "items"]
+        )
+
+        assert result.ok, result.error
+        # 1 cover + 6 scenes + 6 unique NPC portraits = 13 valid shots; the 12-image total cap
+        # bites last. The second Ferryman portrait never renders (one portrait per NPC).
+        assert len(services.imagegen.calls) == 12
+        ferryman_prompts = [call["prompt"] for call in services.imagegen.calls if "The Ferryman" in call["prompt"]]
+        assert len(ferryman_prompts) == 1
+        assert not any("Item" in call["prompt"] for call in services.imagegen.calls)
+        assert "cover-1" in result.detail
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
+async def test_media_pass_room_rate_cap_stops_renders_keeping_earlier_images(tmp_path: Path) -> None:
+    reset_imagegen_limiters()
+    shots = json.dumps([_shot("scenes", f"Scene {i}") for i in range(3)])
+    services = _option_services(tmp_path, [GENERATED_MODULE_MD, _scripted_analysis_json(), shots], per_hour=1)
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        result = await generate_and_install_module(services, ctx, "a marsh mystery", media=["scenes"])
+
+        assert result.ok, result.error
+        assert len(services.imagegen.calls) == 1
+        assert "hourly image budget" in result.detail
+        assert "scenes-1" in result.detail
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
+class _FailingImageGen(FakeImageGen):
+    async def generate(self, prompt: str, **kwargs):
+        raise ImageGenError("image_http_error", "boom")
+
+
+async def test_media_pass_provider_error_degrades_without_failing_module(tmp_path: Path) -> None:
+    reset_imagegen_limiters()
+    shots = json.dumps([_shot("cover", "Greyreed at dusk")])
+    services = _option_services(
+        tmp_path, [GENERATED_MODULE_MD, _scripted_analysis_json(), shots], imagegen=False
+    )
+    services.imagegen = _FailingImageGen()
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        result = await generate_and_install_module(services, ctx, "a marsh mystery", media=["cover"])
+
+        assert result.ok, result.error
+        assert "the image provider failed" in result.detail
+        records = await MediaStore(services.store, str(tmp_path)).list_room_records(CHAT_KEY)
+        assert records == []
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
+VALID_COMPANION_SKILL_MD = """---
+name: Marsh Horror Pacing
+description: >
+  Enable for running a marshland mystery of slow-burn dread: isolation, fog, and weather as
+  pressure on every choice.
+allowed-tools: []
+metadata:
+  scope: room
+---
+
+# Marsh horror pacing
+
+Keep the marsh oppressive: name the fog, the cold, and the distance from help at every scene turn.
+"""
+
+VALID_COMPANION_RULEPACK_YAML = """
+names: [marsh-mystery-rules]
+set_keys: [marsh]
+defaults:
+  力量: 10
+  敏捷: 10
+  意志: 10
+  生命值: 20
+alias:
+  力量: [STR, strength]
+st_show:
+  top: [力量, 敏捷, 意志, 生命值]
+  itemsPerLine: 4
+creation_constraints:
+  method: point-buy
+  points: 12
+derived:
+  生命值上限:
+    half_of: 意志
+"""
+
+
+async def test_companion_pass_installs_skill_rulepack_and_pregen_cards(tmp_path: Path) -> None:
+    seed_dice(2029)
+    concepts = json.dumps(
+        [
+            {"name": "Ada Marsh", "description": "A sharp-eyed reporter hooked by the disappearances."},
+            {"name": "Bob Grey", "description": "A retired ferryman who knows every marsh path."},
+        ]
+    )
+    # Script order: module authoring, module analysis, skill, rulepack, card concepts, then one
+    # `_ask_concept` call per card (empty reply -> sheet from system defaults, name kept).
+    services = _option_services(
+        tmp_path,
+        [
+            GENERATED_MODULE_MD,
+            _scripted_analysis_json(),
+            VALID_COMPANION_SKILL_MD,
+            VALID_COMPANION_RULEPACK_YAML,
+            concepts,
+            "",
+            "",
+        ],
+        imagegen=False,
+    )
+    ctx = _ctx(tmp_path)
+
+    skill_dir = tmp_path / "skills"
+    rulepack_dir = tmp_path / "rulepacks"
+    original_module_dir = forge_module._USER_MODULE_DIR
+    original_skill_dir = skills_module._USER_SKILL_DIR
+    original_rulepack_dir = rulepacks_module._USER_RULEPACK_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    skills_module._USER_SKILL_DIR = skill_dir
+    rulepacks_module._USER_RULEPACK_DIR = rulepack_dir
+    try:
+        result = await generate_and_install_module(
+            services, ctx, "a marsh mystery", companion=["skills", "rulepacks", "cards"]
+        )
+
+        assert result.ok, result.error
+        assert "Companion KP skill installed" in result.detail
+        assert "Companion rule system installed" in result.detail
+        assert "Pre-generated 2 character card(s)" in result.detail
+        assert (skill_dir / "marsh-horror-pacing" / "SKILL.md").is_file()
+        assert (rulepack_dir / "marsh-mystery-rules.yaml").is_file()
+        entries = await pregen_entries(services.documents, CHAT_KEY)
+        assert {entry["name"] for entry in entries} == {"Ada Marsh", "Bob Grey"}
+        assert all(entry["source"].startswith("forge-module:") for entry in entries)
+    finally:
+        forge_module._USER_MODULE_DIR = original_module_dir
+        skills_module._USER_SKILL_DIR = original_skill_dir
+        rulepacks_module._USER_RULEPACK_DIR = original_rulepack_dir
+        skills_module._discover_registry.cache_clear()
+        rulepacks_module._discover_registry.cache_clear()
+        rulepacks_module._alias_resolver.cache_clear()
+
+
+async def test_companion_pass_installs_cjk_named_skill_and_rulepack(tmp_path: Path) -> None:
+    """The zh-locale companion path: the generated skill/rulepack come back with CJK names, which
+    have no ASCII slug -- they must install under the stable content-hash fallback ids, not fail
+    with bad_id (the exact defect that made zh companion content silently missing)."""
+    seed_dice(2030)
+    cjk_skill_md = VALID_COMPANION_SKILL_MD.replace("Marsh Horror Pacing", "消失的图书管理员").replace(
+        "Marsh horror pacing", "消失的图书管理员"
+    )
+    cjk_rulepack_yaml = VALID_COMPANION_RULEPACK_YAML.replace("names: [marsh-mystery-rules]", "names: [消失的图书管理员]")
+    concepts = json.dumps([{"name": "沈仲卿", "description": "一位在旧上海查案的报馆记者。"}])
+    services = _option_services(
+        tmp_path,
+        [
+            GENERATED_MODULE_MD,
+            _scripted_analysis_json(),
+            cjk_skill_md,
+            cjk_rulepack_yaml,
+            concepts,
+            "",
+        ],
+        imagegen=False,
+    )
+    ctx = _ctx(tmp_path)
+
+    skill_dir = tmp_path / "skills"
+    rulepack_dir = tmp_path / "rulepacks"
+    original_module_dir = forge_module._USER_MODULE_DIR
+    original_skill_dir = skills_module._USER_SKILL_DIR
+    original_rulepack_dir = rulepacks_module._USER_RULEPACK_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    skills_module._USER_SKILL_DIR = skill_dir
+    rulepacks_module._USER_RULEPACK_DIR = rulepack_dir
+    try:
+        result = await generate_and_install_module(
+            services, ctx, "一个上海图书馆密室谜案", companion=["skills", "rulepacks", "cards"]
+        )
+
+        assert result.ok, result.error
+        assert "Companion KP skill installed" in result.detail
+        assert "Companion rule system installed" in result.detail
+        assert "Pre-generated 1 character card(s)" in result.detail
+        skill_dirs = [p.name for p in skill_dir.iterdir() if p.is_dir()]
+        rulepack_files = [p.stem for p in rulepack_dir.glob("*.yaml")]
+        assert len(skill_dirs) == 1 and skill_dirs[0].startswith("skill-")
+        assert len(rulepack_files) == 1 and rulepack_files[0].startswith("pack-")
+        entries = await pregen_entries(services.documents, CHAT_KEY)
+        assert [entry["name"] for entry in entries] == ["沈仲卿"]
+    finally:
+        forge_module._USER_MODULE_DIR = original_module_dir
+        skills_module._USER_SKILL_DIR = original_skill_dir
+        rulepacks_module._USER_RULEPACK_DIR = original_rulepack_dir
+        skills_module._discover_registry.cache_clear()
+        rulepacks_module._discover_registry.cache_clear()
+        rulepacks_module._alias_resolver.cache_clear()
+
+
+async def test_companion_pass_failure_degrades_without_failing_module(tmp_path: Path) -> None:
+    services = _option_services(
+        tmp_path, [GENERATED_MODULE_MD, _scripted_analysis_json(), "not a skill at all"], imagegen=False
+    )
+    ctx = _ctx(tmp_path)
+
+    original_module_dir = forge_module._USER_MODULE_DIR
+    original_skill_dir = skills_module._USER_SKILL_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    skills_module._USER_SKILL_DIR = tmp_path / "skills"
+    try:
+        result = await generate_and_install_module(services, ctx, "a marsh mystery", companion=["skills"])
+
+        assert result.ok, result.error
+        assert 'Companion content "skill" could not be generated' in result.detail
+    finally:
+        forge_module._USER_MODULE_DIR = original_module_dir
+        skills_module._USER_SKILL_DIR = original_skill_dir
+        skills_module._discover_registry.cache_clear()
+
+
+async def test_different_options_bypass_the_repeat_request_suppression(tmp_path: Path) -> None:
+    reset_imagegen_limiters()
+    shots = json.dumps([_shot("cover", "Greyreed at dusk")])
+    services = _option_services(
+        tmp_path,
+        [GENERATED_MODULE_MD, _scripted_analysis_json(), GENERATED_MODULE_MD, _scripted_analysis_json(), shots],
+    )
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        first = await generate_and_install_module(services, ctx, "a marsh mystery")
+        assert first.ok, first.error
+
+        # Same description seconds later would normally hit the repeat-request suppression; a
+        # different option selection is a NEW request, so the module regenerates and the media
+        # pass runs.
+        second = await generate_and_install_module(services, ctx, "a marsh mystery", media=["cover"])
+
+        assert second.ok, second.error
+        assert not second.reused
+        assert len(services.imagegen.calls) == 1
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
+async def test_code_fenced_module_is_unwrapped_and_installed(tmp_path: Path) -> None:
+    """A module reply wrapped in a whole-reply code fence is unwrapped before title/id extraction
+    and installs through the normal pipeline (before this unwrap it died as invalid_module_output)."""
+    fenced = f"```markdown\n{GENERATED_MODULE_MD}\n```"
+    services = _option_services(tmp_path, [fenced, _scripted_analysis_json()], imagegen=False)
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        result = await generate_and_install_module(services, ctx, "a marsh mystery")
+
+        assert result.ok, result.error
+        assert result.skill_id == "the-salt-marsh-vanishing"
+        assert Path(result.path).is_file()
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
+async def test_media_pass_writes_module_asset_dir_and_reimport_picks_it_up(tmp_path: Path) -> None:
+    """Path one: forge-generated illustrations also land in the module's own `assets/` directory
+    (next to the source md), so they travel WITH the module. Re-importing that module into another
+    room registers those images into that room's media deck."""
+    reset_imagegen_limiters()
+    shots = json.dumps([_shot("cover", "Greyreed at dusk")])
+    services = _option_services(
+        tmp_path,
+        [
+            GENERATED_MODULE_MD,
+            _scripted_analysis_json(),
+            shots,
+            _scripted_analysis_json(),  # re-import's module analysis
+        ],
+    )
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        result = await generate_and_install_module(services, ctx, "a marsh mystery", media=["cover"])
+        assert result.ok, result.error
+
+        # The module's source + its asset illustrations live side by side on disk.
+        md_path = Path(result.path)
+        assert md_path.is_file()
+        assets_dir = md_path.parent / f"{md_path.stem}.assets"
+        assert assets_dir.is_dir()
+        asset_files = sorted(p.name for p in assets_dir.iterdir() if p.is_file())
+        assert asset_files == ["module-the-salt-marsh-vanishing-cover-1.png"]
+        # The asset copy is real rendered bytes, not a stub.
+        assert (assets_dir / asset_files[0]).read_bytes()
+
+        # A DIFFERENT room imports the same module source -> the asset illustrations are
+        # registered into that room's media deck (module assets are not room-trapped).
+        from agent.kp_tools_knowledge import DocumentTools
+
+        other_room = AgentCtx(chat_key="module-forge-other-room", user_id="kp", locale="en", fs=LocalFs(base_dir=tmp_path))
+        doc_tools = DocumentTools(services)
+        install_note = await doc_tools.upload_document(other_room, file_path=md_path.name, doc_type="module")
+        assert "Imported 1 module illustration" in install_note
+        other_records = await MediaStore(services.store, str(tmp_path)).list_room_records("module-forge-other-room")
+        assert {record.name for record in other_records} == {"module-the-salt-marsh-vanishing-cover-1.png"}
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
+async def test_module_asset_dir_missing_is_silently_skipped(tmp_path: Path) -> None:
+    """A module uploaded with no sibling assets directory (a plain hand-written md) must import
+    cleanly with no asset note -- the asset import is strictly additive."""
+    reset_imagegen_limiters()
+    services = _option_services(tmp_path, [GENERATED_MODULE_MD, _scripted_analysis_json()], imagegen=False)
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        result = await generate_and_install_module(services, ctx, "a marsh mystery")
+        assert result.ok, result.error
+        assert "Imported" not in result.detail
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
+# ---------------------------------------------------------------------------
+# (f) Path two: `generate_and_install_pack_module` — author a native world card, wrap it in a
+# complete `.lwpack`, install the pack, and populate the room through the keeper world-import path.
+# ---------------------------------------------------------------------------
+
+_VALID_PACK_LORECARD = json.dumps(
+    {
+        "format": "loreweaver.card",
+        "format_version": 1,
+        "name": "The Salt Marsh Vanishing",
+        "description": "A coastal-town disappearance mystery.",
+        "scenario": "Investigators arrive in Greyreed at dusk.",
+        "opening": "The ferryman is waiting.",
+        "tags": ["mystery", "coc"],
+        "worldbook": [
+            {
+                "content": SENTINEL + ": the ferryman is the culprit bound to the old pact.",
+                "keys": ["ferryman"],
+                "secret": True,
+                "category": "truth",
+            },
+            {
+                "content": "The marsh town of Greyreed sits at the mouth of the river.",
+                "keys": ["greyreed"],
+                "secret": False,
+                "category": "lore",
+            },
+        ],
+        "variables": [{"name": "fear", "kind": "number", "default": 0, "min": 0, "max": 10}],
+        "pregens": [{"name": "Ada Marsh", "concept": "A sharp-eyed reporter hooked by the disappearances."}],
+    },
+    ensure_ascii=False,
+)
+
+
+async def test_pack_module_generates_lwpack_and_populates_room(tmp_path: Path) -> None:
+    """Path two happy path: authoring a world card yields a real `.lwpack` file AND the room gets
+    populated through the keeper world-import path — secret lore lands in the worldbook, the
+    module brief carries the prose, and the pregen cast is claimable."""
+    services = _option_services(
+        tmp_path,
+        [_VALID_PACK_LORECARD],  # pack-module authoring only; no module-pool analysis
+        imagegen=False,
+    )
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        result = await generate_and_install_pack_module(services, ctx, "a marsh-town disappearance mystery")
+
+        assert result.ok, result.error
+        assert result.path.endswith(".lwpack")
+        pack_file = Path(result.path)
+        assert pack_file.is_file()
+        assert pack_file.read_bytes().startswith(b"PK")  # it is a real zip archive
+
+        # The pack source tree held a world card next to the manifest.
+        assert (tmp_path / f"{result.skill_id}.pack-src" / "pack.yaml").is_file()
+
+        # The room was populated through the keeper world-import path: secret lore in the
+        # worldbook, the module brief carrying the prose, the pregen cast claimable.
+        entries = await services.worldbook.list(ctx.chat_key)
+        texts = [e.content for e in entries]
+        assert any(SENTINEL in text for text in texts), "secret lore must reach the worldbook"
+        assert any("ferryman" in text for text in texts)
+        pregens = await pregen_entries(services.documents, ctx.chat_key)
+        assert {entry["name"] for entry in pregens} == {"Ada Marsh"}
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
+async def test_pack_module_malformed_card_degrades(tmp_path: Path) -> None:
+    """A pack-module authoring reply that is not a usable world card must fail cleanly with
+    nothing installed."""
+    services = _option_services(
+        tmp_path,
+        ["not a json object at all"],
+        imagegen=False,
+    )
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        result = await generate_and_install_pack_module(services, ctx, "a marsh mystery")
+
+        assert not result.ok
+        assert result.error.startswith("invalid_pack_module")
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
+async def test_pack_module_injects_format_when_model_omits_it(tmp_path: Path) -> None:
+    """A real LLM reliably forgets the `format`/`format_version` machine contract. The pack
+    engine must inject them before the native parser, so an authoring reply without them still
+    builds a valid .lwpack (this is the exact failure the first live run hit)."""
+    no_format = json.loads(_VALID_PACK_LORECARD)
+    no_format.pop("format")
+    no_format.pop("format_version")
+    services = _option_services(tmp_path, [json.dumps(no_format, ensure_ascii=False)], imagegen=False)
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        result = await generate_and_install_pack_module(services, ctx, "a marsh mystery")
+        assert result.ok, result.error
+        assert result.path.endswith(".lwpack")
+        assert Path(result.path).is_file()
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
+async def test_pack_module_bundles_companion_skill_and_rulepack(tmp_path: Path) -> None:
+    """A complete .lwpack module bundles companion skill + rulepack INTO the pack source (under
+    contents.skills/contents.rulepacks), so the distributable pack is truly complete — not just a
+    world card. The built manifest must declare them and the pack must build cleanly."""
+    services = _option_services(
+        tmp_path,
+        [
+            _VALID_PACK_LORECARD,  # world card authoring
+            VALID_COMPANION_SKILL_MD,  # companion skill
+            VALID_COMPANION_RULEPACK_YAML,  # companion rulepack
+        ],
+        imagegen=False,
+    )
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        result = await generate_and_install_pack_module(
+            services, ctx, "a marsh mystery", companion=["skills", "rulepacks"]
+        )
+
+        assert result.ok, result.error
+        assert result.path.endswith(".lwpack")
+        # The companion content landed inside the pack source tree.
+        pack_id = result.skill_id
+        assert (tmp_path / f"{pack_id}.pack-src" / "skills" / "marsh-horror-pacing" / "SKILL.md").is_file()
+        assert (tmp_path / f"{pack_id}.pack-src" / "rulepacks" / "marsh-mystery-rules.yaml").is_file()
+        # The manifest declares them under contents.
+        from core.yaml_safety import safe_load_no_aliases
+
+        manifest = safe_load_no_aliases((tmp_path / f"{pack_id}.pack-src" / "pack.yaml").read_text())
+        assert "skills/marsh-horror-pacing" in manifest["contents"]["skills"]
+        assert "rulepacks/marsh-mystery-rules.yaml" in manifest["contents"]["rulepacks"]
+        # And the pack builds cleanly with those contents (validation passes).
+        from core.pack import inspect_pack
+
+        m = inspect_pack(Path(result.path))
+        assert "skills/marsh-horror-pacing" in m.contents["skills"]
+        assert "rulepacks/marsh-mystery-rules.yaml" in m.contents["rulepacks"]
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
+async def test_pack_rulepack_retries_after_transient_llm_failure(tmp_path: Path) -> None:
+    """A transient LLM failure (empty response) on the companion rulepack must be retried once
+    before degrading — so a provider hiccup doesn't silently drop the rulepack from an otherwise
+    complete .lwpack."""
+    services = _option_services(
+        tmp_path,
+        [
+            _VALID_PACK_LORECARD,  # world card
+            "",  # companion rulepack attempt 1 -> empty_response (transient)
+            VALID_COMPANION_RULEPACK_YAML,  # companion rulepack attempt 2 -> success
+        ],
+        imagegen=False,
+    )
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        result = await generate_and_install_pack_module(
+            services, ctx, "a marsh mystery", companion=["rulepacks"]
+        )
+
+        assert result.ok, result.error
+        assert result.path.endswith(".lwpack")
+        pack_id = result.skill_id
+        assert (tmp_path / f"{pack_id}.pack-src" / "rulepacks" / "marsh-mystery-rules.yaml").is_file()
+        # The retry note was logged; the rulepack still landed.
+        assert "Bundled a rule system" in result.detail
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
+async def test_pack_module_rulepack_failure_is_surfaced_not_silent(tmp_path: Path) -> None:
+    """A failed companion rulepack must be REPORTED in the result detail — never silently dropped
+    so a user believes the .lwpack is complete when its rule system is missing."""
+    services = _option_services(
+        tmp_path,
+        [
+            _VALID_PACK_LORECARD,  # world card
+            "not a valid rulepack at all",  # companion rulepack -> parse failure
+        ],
+        imagegen=False,
+    )
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        result = await generate_and_install_pack_module(
+            services, ctx, "a marsh mystery", companion=["rulepacks"]
+        )
+        assert result.ok, result.error
+        # The failure is surfaced in detail, not silently swallowed.
+        assert "rulepack" in result.detail
+        assert "could not be generated" in result.detail
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
+async def test_rulepack_messages_inject_extends_instruction(tmp_path: Path) -> None:
+    """`_build_rulepack_messages` with an `extends_base` appends the extends PATCH instruction to
+    the system prompt (and keeps the base id out when none is requested), so a generated module
+    rulepack can `extends: coc7` instead of silently replacing the base system."""
+    services = _option_services(tmp_path, [], imagegen=False)
+
+    base = forge_module._build_rulepack_messages(services, "a mystery", extends_base="")
+    assert len(base) == 2
+    assert base[0]["role"] == "system"
+    assert "extends:" not in base[0]["content"]
+
+    patched = forge_module._build_rulepack_messages(services, "a mystery", extends_base="coc7")
+    assert "extends: coc7" in patched[0]["content"]
+    assert "coc7" in patched[0]["content"]
+    assert patched[1]["content"] == "a mystery"

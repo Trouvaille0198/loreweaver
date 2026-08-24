@@ -80,6 +80,13 @@ class ImageGenError(RuntimeError):
 
 
 class ImageGen(Protocol):
+    # Which `.image` kinds this provider can anchor with a reference image. MiniMax's
+    # subject_reference only supports `type: character`, so a scene/item illustration
+    # would be misinterpreted as a person's identity anchor; image-to-image providers
+    # (OpenAI-compatible edits, SiliconFlow) accept any reference. The caller must not
+    # hand a kind outside this set a reference.
+    reference_kinds: frozenset[str] = frozenset({"scene", "portrait", "clue"})
+
     async def generate(
         self,
         prompt: str,
@@ -101,6 +108,10 @@ class ImageGen(Protocol):
 
 class OpenAICompatImageGen:
     """HTTP client for OpenAI-compatible image generation endpoints."""
+
+    # image-edits is a real image-to-image surface: any `.image` kind can anchor a
+    # reference.
+    reference_kinds: frozenset[str] = frozenset({"scene", "portrait", "clue"})
 
     def __init__(
         self,
@@ -199,6 +210,13 @@ class OpenAICompatImageGen:
 class MiniMaxImageGen:
     """MiniMax's JSON Image Generation surface (``/v1/image_generation``)."""
 
+    # `subject_reference` is documented as `type: character`, but real-world testing
+    # shows MiniMax accepts ANY image as a reference: environment/atmosphere and
+    # composition from a scene reference are absorbed into the result, and only a
+    # person/face present IN the reference is extracted as the identity anchor. So
+    # scene/clue references work too — pass them through rather than refusing.
+    reference_kinds: frozenset[str] = frozenset({"scene", "portrait", "clue"})
+
     def __init__(
         self,
         settings: ImageGenSettings,
@@ -218,18 +236,24 @@ class MiniMaxImageGen:
         reference: bytes | None = None,
         reference_mime: str = "",
     ) -> tuple[bytes, str]:
-        del reference_mime
         prompt = str(prompt or "").strip()
         if not prompt:
             raise ImageGenError("imagegen_bad_prompt")
         if not self._settings.model or not self._settings.api_key:
             raise ImageGenError("imagegen_not_configured")
-        # MiniMax documents subject references as network URLs. Loreweaver's
-        # presentation kit supplies private local bytes, so refusing is safer
-        # than silently discarding the identity anchor or inventing a data-URI
-        # contract the provider does not document.
+        # MiniMax documents subject references as ``image_file`` values that may be a
+        # public URL OR a base64 Data URL (character-subject consistency for i2i). Our
+        # reference comes from local kit/room bytes, so inline it as a Data URL rather
+        # than refusing: discarding the identity anchor would silently break the
+        # consistency the caller asked for. Only `character` references are documented;
+        # anything else (scene/item) has no documented subject_reference type, so we
+        # skip it and fall back to prompt-only rather than invent a contract.
+        subject_reference = None
         if reference:
-            raise ImageGenError("imagegen_reference_unsupported")
+            mime = _detect_image_mime(reference, reference_mime)
+            if mime in ("image/jpeg", "image/png"):
+                encoded = base64.b64encode(reference).decode("ascii")
+                subject_reference = [{"type": "character", "image_file": f"data:{mime};base64,{encoded}"}]
 
         close_client = False
         client = self._client
@@ -243,6 +267,8 @@ class MiniMaxImageGen:
             "response_format": "base64",
             "n": 1,
         }
+        if subject_reference is not None:
+            request_body["subject_reference"] = subject_reference
         try:
             response = await client.post(
                 _minimax_image_url(self._settings.base_url),
@@ -272,6 +298,9 @@ class MiniMaxImageGen:
 
 class SiliconFlowImageGen:
     """SiliconFlow's native image request and ``images[].url`` response surface."""
+
+    # Native image-to-image: any `.image` kind can anchor a reference.
+    reference_kinds: frozenset[str] = frozenset({"scene", "portrait", "clue"})
 
     def __init__(
         self,
@@ -351,6 +380,7 @@ class FakeImageGen:
         self.data = data
         self.mime = mime
         self.calls: list[dict[str, str]] = []
+        self.reference_kinds: frozenset[str] = frozenset({"scene", "portrait", "clue"})
 
     async def generate(
         self,

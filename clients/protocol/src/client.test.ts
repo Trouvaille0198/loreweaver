@@ -413,6 +413,25 @@ describe("WsClient", () => {
     ])
   })
 
+  test("adminGenerate carries media/companion options only when provided (2.5)", async () => {
+    const { client, sockets } = createClient()
+    await client.connect("ws://example.test")
+
+    client.adminGenerate("module", "a marsh mystery", "zh", { media: ["cover", "npcs"], companion: ["skills", "cards"] })
+    client.adminGenerate("module", "a plain mystery")
+
+    expect(sockets[0].sent.map((raw) => JSON.parse(raw))).toEqual([
+      {
+        type: FrameType.AdminGenerate,
+        kind: "module",
+        description: "a marsh mystery",
+        locale: "zh",
+        options: { media: ["cover", "npcs"], companion: ["skills", "cards"] },
+      },
+      { type: FrameType.AdminGenerate, kind: "module", description: "a plain mystery" },
+    ])
+  })
+
   test("adminSetModel carries the key/base_url + adminListModels send the new admin frames", async () => {
     const { client, sockets } = createClient()
     await client.connect("ws://example.test")
@@ -485,6 +504,24 @@ describe("WsClient", () => {
       FrameType.AdminRoomOp,
       FrameType.AdminError,
     ])
+  })
+
+  test("incoming admin_room_config frames are dispatched (validator regression)", async () => {
+    const { client, sockets } = createClient()
+    const seen: string[] = []
+    client.on(FrameType.AdminRoomConfig, () => seen.push(FrameType.AdminRoomConfig))
+
+    await client.connect("ws://example.test")
+    sockets[0].serverSend({
+      type: FrameType.AdminRoomConfig,
+      room: "arkham",
+      active: true,
+      providers: ["minimax-cn::minimax-m2.5-highspeed"],
+      saved_providers: ["minimax-cn::minimax-m2.5-highspeed"],
+      stored: { main: "minimax-cn::minimax-m2.5-highspeed", scribe: "", director: "", imagegen: "", scribe_enabled: true, director_enabled: true },
+    })
+
+    expect(seen).toEqual([FrameType.AdminRoomConfig])
   })
 
   test("incoming admin_skills / admin_rules / admin_generated frames (B.4a) are dispatched", async () => {

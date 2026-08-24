@@ -5,6 +5,7 @@ import {
   type AdminExportRoomFrame,
   type AdminForgeKind,
   type AdminGenerateFrame,
+  type AdminGenerateOptions,
   type AdminImportRoomFrame,
   type AdminKeyPurpose,
   type AdminListModelsFrame,
@@ -140,6 +141,8 @@ const serverFrameValidators: Record<string, (f: Record<string, unknown>) => bool
     isStr(f.provider) && isStr(f.chat_model) && isArr(f.providers) && isProviderCatalog(f.provider_catalog),
   [FrameType.AdminModels]: (f) => isStr(f.provider) && isArr(f.models),
   [FrameType.AdminKeys]: (f) => isArr(f.keys),
+  [FrameType.AdminRoomConfig]: (f) =>
+    isStr(f.room) && typeof f.active === "boolean" && isArr(f.providers) && isArr(f.saved_providers),
   [FrameType.AdminRoomOp]: (f) =>
     isStr(f.action) && isStr(f.room) && isNum(f.keys) && isNum(f.store_rows) && isNum(f.vector_points),
   [FrameType.AdminError]: (f) => isStr(f.code),
@@ -464,9 +467,10 @@ export class WsClient {
 
   // Author + install a brand-new skill/rule system/module from a description via the matching
   // `agent.forge` generator. Slow (an LLM call) but still a plain request/reply — the caller
-  // shows a spinner while awaiting the `admin_generated` reply.
-  adminGenerate(kind: AdminForgeKind, description: string, locale?: "en" | "zh"): void {
-    const frame: AdminGenerateFrame = { type: FrameType.AdminGenerate, kind, description, ...(locale ? { locale } : {}) }
+  // shows a spinner while awaiting the `admin_generated` reply. `options` (2.5) carries the
+  // keeper's per-generation media/companion opt-ins for kind:"module".
+  adminGenerate(kind: AdminForgeKind, description: string, locale?: "en" | "zh", options?: AdminGenerateOptions): void {
+    const frame: AdminGenerateFrame = { type: FrameType.AdminGenerate, kind, description, ...(locale ? { locale } : {}), ...(options ? { options } : {}) }
     this.send(frame)
   }
 

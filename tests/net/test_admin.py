@@ -137,6 +137,17 @@ async def _send(ws, frame: dict) -> dict:
     return await _recv(ws)
 
 
+async def _send_generate(ws, frame: dict) -> dict:
+    """Send an `admin_generate` frame and read frames until the `admin_generated` result lands,
+    skipping the `admin_generate_started` / `admin_generate_progress` frames an async module/pack
+    generation streams first. Returns the `admin_generated` frame."""
+    await ws.send(json.dumps(frame))
+    while True:
+        reply = await _recv(ws)
+        if reply.get("type") in ("admin_generated", "admin_error"):
+            return reply
+
+
 def _update_services(command: str):
     settings = Settings(
         locale="en",
@@ -2588,7 +2599,7 @@ async def test_admin_generate_authors_and_installs_skill_rule_and_module(tmp_pat
             assert rule_reply["ok"] is True
             assert rule_reply["id"] == "pulp-adventure"
 
-            module_reply = await _send(
+            module_reply = await _send_generate(
                 ws, {"type": "admin_generate", "kind": "module", "description": "a marsh mystery", "locale": "zh"}
             )
             assert "你正在根据守秘人" in services.llm.calls[2][0][0]["content"]
@@ -2619,6 +2630,88 @@ async def test_admin_generate_authors_and_installs_skill_rule_and_module(tmp_pat
         forge_module._USER_MODULE_DIR = original_module_dir
         skills_module.reload_skills()
         rulepacks_module.reload_rulepacks()
+
+
+async def test_admin_generate_module_honors_media_and_companion_options(tmp_path):
+    """Protocol 2.5: `options` on `admin_generate` (kind="module") reaches the forge's media and
+    companion passes; unknown ids are ignored, and a malformed `options` shape is dropped rather
+    than erroring the request."""
+    skill_dir = tmp_path / "skills"
+    module_dir = tmp_path / "modules"
+    for directory in (skill_dir, module_dir):
+        directory.mkdir()
+
+    original_skill_dir = skills_module._USER_SKILL_DIR
+    original_module_dir = forge_module._USER_MODULE_DIR
+    skills_module._USER_SKILL_DIR = skill_dir
+    forge_module._USER_MODULE_DIR = module_dir
+    skills_module.reload_skills()
+    try:
+        shot_list = json.dumps(
+            [{"kind": "cover", "subject": "Greyreed at dusk", "prompt": "the marsh town at dusk, moody painting", "caption": "Greyreed."}]
+        )
+        script = [
+            # First generation: media + companion -> module, shot list, companion skill.
+            # (The page path no longer imports the module, so no module-analysis call runs.)
+            assistant_text(_GENERATED_MODULE_MD),
+            assistant_text(shot_list),
+            assistant_text(_VALID_SKILL_MD),
+            # Second generation (malformed options): module only, no option passes.
+            assistant_text(_GENERATED_MODULE_MD),
+        ]
+        settings = Settings(
+            locale="en",
+            data_dir=str(tmp_path),
+            llm=LLMSettings(provider="openai", chat_model="gpt-4o"),
+            imagegen=ImageGenSettings(provider="fake", api_key="fake", model="fake"),
+        )
+        services = build_services(settings, llm=FakeLLM(script=script), embeddings=FakeEmbeddings(64))
+        services.imagegen = FakeImageGen()
+        keystore = Keystore()
+        keeper_key = keystore.add(room="arkham", name="Keeper", role="keeper")
+        server = TuiServer(services, keystore, port=0)
+        url = await _start(server)
+        try:
+            ws, *_ = await _connect_and_join(url, keeper_key, "Keeper")
+
+            reply = await _send_generate(
+                ws,
+                {
+                    "type": "admin_generate",
+                    "kind": "module",
+                    "description": "a marsh mystery",
+                    "options": {"media": ["cover", "bogus-kind"], "companion": ["skills"]},
+                },
+            )
+            assert reply["type"] == "admin_generated"
+            assert reply["ok"] is True
+            # The unknown "bogus-kind" id is ignored: exactly one render, named by the shot list.
+            assert len(services.imagegen.calls) == 1
+            assert "module-the-salt-marsh-vanishing-cover-1.png" in reply["detail"]
+            assert "Companion KP skill installed" in reply["detail"]
+
+            malformed = await _send_generate(
+                ws,
+                {
+                    "type": "admin_generate",
+                    "kind": "module",
+                    "description": "another marsh mystery",
+                    "options": {"media": "cover"},
+                },
+            )
+            assert malformed["type"] == "admin_generated"
+            assert malformed["ok"] is True
+            # `media` was not a list -> dropped, so no media pass ran for the second module.
+            assert len(services.imagegen.calls) == 1
+            assert "media deck" not in malformed["detail"]
+
+            await ws.close()
+        finally:
+            await server.close()
+    finally:
+        skills_module._USER_SKILL_DIR = original_skill_dir
+        forge_module._USER_MODULE_DIR = original_module_dir
+        skills_module.reload_skills()
 
 
 async def test_deleting_a_room_over_the_wire_drops_its_turn_lock_after_the_frame(tmp_path):
@@ -2975,3 +3068,53 @@ async def test_admin_embedding_hot_swap_failure_keeps_live_index_and_config(tmp_
         await ws.close()
     finally:
         await server.close()
+
+
+async def test_admin_generate_module_streams_started_progress_then_result(tmp_path):
+    """Async module generation: `admin_generate kind=module` immediately replies
+    `admin_generate_started`, streams at least one `admin_generate_progress` stage, then pushes
+    the final `admin_generated` — all on the requesting connection, without the client blocking
+    on a single request/reply."""
+    module_dir = tmp_path / "modules"
+    module_dir.mkdir()
+    original_module_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = module_dir
+    try:
+        script = [
+            assistant_text(_GENERATED_MODULE_MD),
+            assistant_text(_scripted_module_analysis_json()),
+        ]
+        settings = Settings(
+            locale="en", data_dir=str(tmp_path), llm=LLMSettings(provider="openai", chat_model="gpt-4o")
+        )
+        services = build_services(settings, llm=FakeLLM(script=script), embeddings=FakeEmbeddings(64))
+        keystore = Keystore()
+        keeper_key = keystore.add(room="arkham", name="Keeper", role="keeper")
+        server = TuiServer(services, keystore, port=0)
+        url = await _start(server)
+        try:
+            ws, *_ = await _connect_and_join(url, keeper_key, "Keeper")
+
+            await ws.send(json.dumps({"type": "admin_generate", "kind": "module", "description": "a marsh mystery", "locale": "zh"}))
+            seen: list[str] = []
+            result = None
+            for _ in range(20):
+                frame = await _recv(ws)
+                seen.append(str(frame.get("type")))
+                if frame.get("type") == "admin_generate_started":
+                    assert frame.get("kind") == "module"
+                if frame.get("type") == "admin_generate_progress":
+                    assert frame.get("stage")
+                if frame.get("type") == "admin_generated":
+                    result = frame
+                    break
+            # The started frame came first, at least one progress frame streamed, and the
+            # final result landed.
+            assert seen[0] == "admin_generate_started"
+            assert any(t == "admin_generate_progress" for t in seen)
+            assert result is not None and result.get("ok") is True
+            assert result.get("kind") == "module"
+        finally:
+            await server.close()
+    finally:
+        forge_module._USER_MODULE_DIR = original_module_dir

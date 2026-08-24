@@ -203,6 +203,30 @@ async def test_empty_llm_response_is_rejected(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+async def test_cjk_named_rulepack_installs_with_stable_content_hash_id(tmp_path: Path) -> None:
+    """Rulepack analogue of the skill hash fallback: all-CJK `names:` have no ASCII slug, so the
+    pack installs under a stable `pack-<hash>` id instead of being rejected -- the zh-locale
+    companion rulepack could not install at all before this fallback existed."""
+    cjk_pack = VALID_RULEPACK_YAML.replace("names: [pulp-adventure, pulp]", "names: [消失的图书管理员]")
+    services = _services(cjk_pack)
+
+    original_user_dir = rulepacks_module._USER_RULEPACK_DIR
+    rulepacks_module._USER_RULEPACK_DIR = tmp_path
+    _clear_rulepack_caches()
+    try:
+        result = await generate_and_install_rulepack(services, "上海图书馆密室谜案的规则")
+
+        assert result.ok, result.error
+        assert result.skill_id.startswith("pack-") and len(result.skill_id) == len("pack-") + 8
+        assert result.name == "消失的图书管理员"
+        assert Path(result.path).is_file()
+        loaded = rulepacks_module.load_rulepack(result.skill_id)
+        assert loaded is not None
+    finally:
+        rulepacks_module._USER_RULEPACK_DIR = original_user_dir
+        _clear_rulepack_caches()
+
+
 async def test_generated_id_colliding_with_a_built_in_is_rejected(tmp_path: Path) -> None:
     collision_pack = VALID_RULEPACK_YAML.replace("pulp-adventure, pulp", "coc7")
     services = _services(collision_pack)
@@ -371,6 +395,29 @@ async def test_oversized_generated_rulepack_content_is_refused_before_parsing(tm
         assert elapsed < _FAST_REJECTION_BOUND_SECONDS, (
             f"oversized rulepack rejection took {elapsed:.3f}s (bound {_FAST_REJECTION_BOUND_SECONDS}s)"
         )
+    finally:
+        rulepacks_module._USER_RULEPACK_DIR = original_user_dir
+        _clear_rulepack_caches()
+
+
+async def test_code_fenced_rulepack_yaml_is_unwrapped_and_installed(tmp_path: Path) -> None:
+    """Models sometimes wrap the YAML in a markdown code fence despite the prompt's "Output ONLY"
+    rule. A fence wrapping the WHOLE reply is stripped before validation; a partial fence stays
+    the model's real (invalid) output."""
+    fenced = f"```yaml\n{VALID_RULEPACK_YAML}\n```"
+    services = _services(fenced)
+
+    original_user_dir = rulepacks_module._USER_RULEPACK_DIR
+    rulepacks_module._USER_RULEPACK_DIR = tmp_path
+    _clear_rulepack_caches()
+    try:
+        result = await generate_and_install_rulepack(services, "a pulp adventure system")
+
+        assert result.ok, result.error
+        assert result.skill_id == "pulp-adventure"
+        assert Path(result.path).is_file()
+        loaded = rulepacks_module.load_rulepack("pulp-adventure")
+        assert loaded is not None
     finally:
         rulepacks_module._USER_RULEPACK_DIR = original_user_dir
         _clear_rulepack_caches()

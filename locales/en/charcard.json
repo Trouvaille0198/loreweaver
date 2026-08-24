@@ -28,6 +28,7 @@
   "charcard.tools.preview.tags_line": "Tags: {tags}",
   "charcard.tools.preview.world_line": "World machinery: {hooks} hook script(s), {vars} variable declaration(s), {ejs} template block(s) — keeper-imported via `.import <card file> world`.",
   "charcard.tools.world.cast_line": "Cast registered ({count}): {names} — players claim with `.pc claim <name>`.",
+  "charcard.tools.world.skills_enabled_line": "Enabled the pack's KP skills for this room: {ids}.",
   "charcard.tools.world.done": "Imported “{name}” as world content: {lore} lore entries (keeper trust), {vars} variable declaration(s) seeded, {hooks} hook script(s) installed.",
   "charcard.tools.world.failed": "Failed to import world card: {error}",
   "charcard.tools.world.pregen_line": "Cast: “{name}” is on the room's pre-generated roster — players take it with `.pc claim {name}` (for an AI-played version use `.import <card file> companion`).",

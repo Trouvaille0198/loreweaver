@@ -1,10 +1,10 @@
 *[English](protocol.md) · 中文*
 
-# Loreweaver 联网 TUI —— 协议 2.4
+# Loreweaver 联网 TUI —— 协议 2.5
 
 这是 loreweaver 服务器（通过 `python -m app --serve` 启动）与 OpenTUI 终端客户端之间开放、带版本的协议。引擎本身（确定性内核加 AI 守秘人）和用什么传输无关；与传输无关的会话逻辑在 `net.session.SessionCore` 里，这份文档描述的是接口，不绑定任何编程语言。
 
-控制流使用 `{"type": ...}` 形状的 JSON 帧，协议版本为 `"2.4"`。同一套帧和 `join` 握手可以跑在两种传输上：
+控制流使用 `{"type": ...}` 形状的 JSON 帧，协议版本为 `"2.5"`。同一套帧和 `join` 握手可以跑在两种传输上：
 
 - **Iroh** 是 `--serve` 实际启动的默认传输：点对点 QUIC，服务端打印可分享 ticket，不需要域名、证书或端口转发。控制帧是在长连接双向流上的 newline-delimited JSON；媒体字节使用同一连接上的额外双向流。
 - **WebSocket**（`net.tui_server`）只留作离线测试和本机回环，不是 `--serve` 的一个选项。控制帧是文本消息，媒体字节是二进制消息。
@@ -41,7 +41,7 @@
 ## 服务端 → 客户端
 
 - `welcome` — 成功 `join` 时发送一次：
-  `{type:"welcome", protocol:"2.3", features:["media","audio","imagegen"?,"demo"?,"update"?], room:string, you:{id:string,name:string,role:"player"|"keeper"}, locale:string, server:string, version?:string}`
+  `{type:"welcome", protocol:"2.5", features:["media","audio","imagegen"?,"demo"?,"update"?], room:string, you:{id:string,name:string,role:"player"|"keeper"}, locale:string, server:string, version?:string}`
   `version` 是服务端自己的发布版本（和客户端一比就能看出两边不一致）。`"update"` 特性仅在守秘人连接且服务端运维配置了自更新命令时出现，有它才允许发 `admin_update_server`。
   `demo` 表示服务端正在用离线示例守秘人、向量功能已启用，且本次检查时这个守秘人房间为空。服务端会在房间回合锁内再次检查，过期 flag 不会覆盖战役状态；客户端收到 `admin_config{using_demo:false}`（例如从模型页保存后）会立即移除入口，否则重连时重新计算，过期操作也会被服务端拒绝。
 - `error` — 本地化的故障通知；`bad_key`、`join_timeout` 和 `too_many_connections` 关闭连接（它们仅在 `join` 握手期间或之前发生），其他不关闭：
@@ -249,8 +249,9 @@ role = "player"  # 或 "keeper"；默认为 "player"
   `{type:"admin_enable_skill", id:string, on:boolean, locale?:string}`
 - `admin_list_rules` — 列出所有可发现的规则系统（Layer A）：
   `{type:"admin_list_rules"}`
-- `admin_generate` — 通过对应的 `agent.forge` 自扩展引擎，从自然语言描述创作并安装全新的技能/规则系统/模组（Layer B.3）；`kind:"module"` 的生成会安装进调用者自己的房间。这是一次较慢的 LLM 调用，按普通请求/应答处理——客户端在等待 `admin_generated` 期间显示加载动画：
-  `{type:"admin_generate", kind:"skill"|"rule"|"module", description:string}`
+- `admin_generate` — 通过对应的 `agent.forge` 自扩展引擎，从自然语言描述创作并安装全新的技能/规则系统/模组（Layer B.3）；`kind:"module"` 的生成会安装进调用者自己的房间。`kind:"skill"`/`"rule"` 较快，同步以 `admin_generated` 应答；`kind:"module"`/`"pack"` 较慢（世界卡 + 可选配图 + 配套技能/规则包可能需要数分钟），改为**后台异步**——服务器先回 `admin_generate_started`，随后通过 `admin_generate_progress` 逐阶段推送进度，最后以 `admin_generated` 推送最终结果，全部发往发起请求的那条连接：
+  `{type:"admin_generate", kind:"skill"|"rule"|"module"|"pack", description:string, locale?:"en"|"zh", options?:{media?:string[], companion?:string[]}}`
+  `locale` 选择创作语言，缺省用连接/服务端语言。`kind:"pack"`（2.6）会把模组写成一个完整的原生世界卡并包进 `.lwpack` 内容包——引擎的标准完整模组形态（lorebook + 类型化状态量 + 可认领演员表 + 可选素材 + 随包技能/规则包）——经守秘人世界导入路径装进调用者房间。其 `options.media` 插图随包打进 `assets/`；`options.companion` 的技能/规则包会打进包的 `contents.skills`/`contents.rulepacks`（预建卡已由世界卡自身的 `pregens:` 承载）。`options`（增量，2.5）仅对 `kind:"module"` 生效：守秘人按次勾选的额外内容——`media` 取自 `["cover","scenes","npcs","items"]`（经房间图像通道生成的模组插图，存入房间媒体库、不自动广播），`companion` 取自 `["skills","rulepacks","cards"]`（分别走各自既有生成器的 KP 技能、规则体系、可认领预建角色卡）。未知 id 一律忽略；缺省/为空即与此前行为一致。额外内容绝不会让模组失败——`admin_generated.detail` 会列出生成了什么、或为何更少。
 
 服务器 → 客户端：
 
@@ -273,7 +274,12 @@ role = "player"  # 或 "keeper"；默认为 "player"
 - `admin_rules` — 所有可发现的规则系统，`built_in` 区分内置系统（`coc7`/`dnd5e`）与生成/用户安装的系统：
   `{type:"admin_rules", systems:[{id:string, built_in:boolean}]}`
 - `admin_generated` — 锻造引擎的结果；`ok` 为 `false` 时 `id`/`name` 为空、`error` 携带（未翻译的）诊断信息，且没有任何东西被安装。`detail` 携带按房间的安装结果——对 `kind:"module"` 它是模组是否真正落进房间的唯一信号（`ok` 只表示成功创作并写出了合法文档）；对 `skill`/`rule` 为空（无按房间安装步骤）：
-  `{type:"admin_generated", kind:"skill"|"rule"|"module", ok:boolean, id:string, name:string, error:string, detail:string}`
+  `{type:"admin_generated", kind:"skill"|"rule"|"module"|"pack", ok:boolean, id:string, name:string, error:string, detail:string}`
+- `admin_generate_started` — 在异步 `admin_generate`（`kind:"module"`/`"pack"`）时立即回给请求方，确认生成已排队并在后台运行；最终结果稍后以 `admin_generated` 到达：
+  `{type:"admin_generate_started", kind:"module"|"pack"}`
+- `admin_generate_progress` — 在异步模组/包生成过程中逐阶段推送，让客户端可以显示实时进度而不是光转圈：
+  `{type:"admin_generate_progress", kind:"module"|"pack", stage:string, detail:string}`
+  `stage` 是封闭词表——`authoring`、`world_card`、`media`、`skill`、`rulepack`、`analyzing`、`building`、`installing`、`importing`——`detail` 携带可选的阶段说明。
 - `admin_error` — 本地化的故障通知（不关闭连接）：
   `{type:"admin_error", code:"forbidden"|"unknown_provider"|"bad_request"|"set_failed"|"not_found"|"op_failed"|"not_configured"|"last_keeper", message?:string}`
 

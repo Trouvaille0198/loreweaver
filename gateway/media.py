@@ -14,8 +14,10 @@ from infra.store import Store
 MEDIA_HISTORY_REPLAY_CAP = 30
 
 
-def media_frame(record: MediaRecord, *, from_name: str, frame_id: str | None = None) -> dict[str, Any]:
-    return {
+def media_frame(
+    record: MediaRecord, *, from_name: str, frame_id: str | None = None, prompt: str | None = None
+) -> dict[str, Any]:
+    frame = {
         "type": "media",
         "id": frame_id or uuid.uuid4().hex,
         "hash": record.hash,
@@ -25,6 +27,12 @@ def media_frame(record: MediaRecord, *, from_name: str, frame_id: str | None = N
         "from": from_name,
         "ts": record.created_at,
     }
+    # The image-generation prompt that produced this picture rides along so a
+    # client can show it (hover tooltip) and a keeper can audit why it looks
+    # the way it does. Only present for generated handouts.
+    if prompt:
+        frame["prompt"] = prompt
+    return frame
 
 
 async def record_media_history(store: Store, chat_key: str, frame: dict[str, Any]) -> None:

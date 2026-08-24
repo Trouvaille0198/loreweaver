@@ -88,15 +88,35 @@ async def test_minimax_imagegen_uses_native_endpoint_shape_and_decodes_base64():
     }
 
 
-async def test_minimax_imagegen_refuses_private_byte_reference():
-    gen = MiniMaxImageGen(
-        ImageGenSettings(provider="minimax-cn", api_key="secret", model="image-01")
-    )
+async def test_minimax_imagegen_inlines_base64_reference():
+    ref_bytes = b"\x89PNG\r\n\x1a\nportrait-bytes"
+    class _Transport(httpx.AsyncBaseTransport):
+        def __init__(self):
+            self.seen = {}
+        async def handle_async_request(self, request):
+            self.seen["url"] = str(request.url)
+            self.seen["auth"] = request.headers.get("authorization")
+            self.seen["json"] = json.loads(request.content)
+            payload = {
+                "data": {"image_base64": [base64.b64encode(b"\x89PNG\r\n\x1a\nout").decode()]},
+                "metadata": {"success_count": 1, "failed_count": 0},
+                "base_resp": {"status_code": 0, "status_msg": "success"},
+            }
+            return httpx.Response(200, json=payload, request=request)
 
-    with pytest.raises(ImageGenError) as exc:
-        await gen.generate("portrait", reference=b"private portrait")
+    t = _Transport()
+    client = httpx.AsyncClient(transport=t)
+    gen = MiniMaxImageGen(ImageGenSettings(provider="minimax-cn", api_key="secret", model="image-01"), client=client)
+    try:
+        data, mime = await gen.generate("portrait", reference=ref_bytes, reference_mime="image/png")
+    finally:
+        await client.aclose()
 
-    assert exc.value.code == "imagegen_reference_unsupported"
+    assert mime == "image/png"
+    # The reference rides as a base64 Data URL in subject_reference (character).
+    assert t.seen["json"]["subject_reference"] == [
+        {"type": "character", "image_file": "data:image/png;base64,iVBORw0KGgpwb3J0cmFpdC1ieXRlcw=="}
+    ]
 
 
 async def test_siliconflow_imagegen_uses_native_shape_and_decodes_data_url():

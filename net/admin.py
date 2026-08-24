@@ -26,6 +26,7 @@ from agent.context import AgentCtx, FsAdapter
 from agent.forge import (
     ForgeResult,
     generate_and_install_module,
+    generate_and_install_pack_module,
     generate_and_install_rulepack,
     generate_and_install_skill,
 )
@@ -140,6 +141,7 @@ class AdminService:
         i18n: I18n,
         *,
         reauthorize: Any = None,
+        emit_frame: Any = None,
     ) -> dict[str, Any]:
         if role == _KEEPER_ROLE and frame.get("type") == "admin_delete_key":
             binding = await self._chat_binding_for_id(caller_room, str(frame.get("id") or ""))
@@ -162,6 +164,7 @@ class AdminService:
             fs=self.fs,
             reauthorize=reauthorize,
             hub=self.hub,
+            emit_frame=emit_frame,
         )
         if reply.get("type") != "admin_error" and frame.get("type") in {
             "admin_delete_room",
@@ -247,6 +250,7 @@ async def _dispatch_admin_frame(
     fs: FsAdapter | None = None,
     reauthorize: Any = None,
     hub: Any = None,
+    emit_frame: Any = None,
 ) -> dict[str, Any]:
     """Handle one admin request `frame`, returning the reply frame to send.
 
@@ -336,7 +340,7 @@ async def _dispatch_admin_frame(
     if kind == "admin_list_rules":
         return _rules_frame()
     if kind == "admin_generate":
-        return await _generate(services, caller_room, fs, frame, i18n)
+        return await _generate(services, caller_room, fs, frame, i18n, emit_frame=emit_frame)
     return _error("bad_request", i18n)
 
 
@@ -1453,7 +1457,7 @@ def _rules_frame() -> dict[str, Any]:
 
 # -- self-extension forge (Layer B.3) ----------------------------------------
 
-_FORGE_KINDS: frozenset[str] = frozenset({"skill", "rule", "module"})
+_FORGE_KINDS: frozenset[str] = frozenset({"skill", "rule", "module", "pack"})
 
 
 async def _generate(
@@ -1462,6 +1466,8 @@ async def _generate(
     fs: FsAdapter | None,
     frame: dict[str, Any],
     i18n: I18n,
+    *,
+    emit_frame: Any = None,
 ) -> dict[str, Any]:
     """Answer `admin_generate`: run the matching `agent.forge` engine and reply
     `admin_generated`. Never `eval`/`exec`s anything — see `agent.forge`'s module docstring;
@@ -1480,22 +1486,97 @@ async def _generate(
     room_chat_key = chat_key_for_room(caller_room)
     if kind == "skill":
         result = await generate_and_install_skill(services, description, chat_key=room_chat_key)
-    elif kind == "rule":
+        return _generated_frame(kind, result)
+    if kind == "rule":
         result = await generate_and_install_rulepack(services, description, chat_key=room_chat_key)
-    else:
-        # Mirrors `net.session.SessionCore._ctx_for`'s AgentCtx construction: a keeper-role
-        # context scoped to the CALLER'S room, so the generated module lands in the calling
-        # keeper's own knowledge pool via `agent.kp_tools_knowledge.DocumentTools.upload_document`.
-        ctx = AgentCtx(
-            chat_key=room_chat_key,
-            user_id="keeper",
-            platform="tui",
-            locale=generation_i18n.locale,
-            fs=fs,
-            extra={"role": _KEEPER_ROLE},
+        return _generated_frame(kind, result)
+
+    # module / pack: a long generation (world card + optional media + companion skill/rulepack can
+    # take minutes). Run it in the BACKGROUND, stream stage progress to the calling keeper, and
+    # push the final result when done — so the keeper's UI is not blocked on a spinner for the
+    # whole pipeline. `emit_frame` is the connection's `send_frame` (provided by the session);
+    # without it (a test caller), we fall back to a synchronous await so the reply still lands.
+    ctx = AgentCtx(
+        chat_key=room_chat_key,
+        user_id="keeper",
+        platform="tui",
+        locale=generation_i18n.locale,
+        fs=fs,
+        extra={"role": _KEEPER_ROLE},
+    )
+
+    async def _progress(stage: str, detail: str = "") -> None:
+        if emit_frame is None:
+            return
+        frame = {"type": "admin_generate_progress", "kind": kind, "stage": stage, "detail": detail}
+        try:
+            await emit_frame(frame)
+        except Exception:  # noqa: BLE001 — a dead connection must not fail the generation
+            pass
+
+    async def _run() -> ForgeResult:
+        if kind == "pack":
+            return await generate_and_install_pack_module(
+                services,
+                ctx,
+                description,
+                media=_option_list(frame.get("options"), "media"),
+                companion=_option_list(frame.get("options"), "companion"),
+                progress=_progress,
+                auto_import=False,
+                extends_base=str(_option_value(frame.get("options"), "extends") or ""),
+                system=str(_option_value(frame.get("options"), "system") or ""),
+            )
+        return await generate_and_install_module(
+            services,
+            ctx,
+            description,
+            media=_option_list(frame.get("options"), "media"),
+            companion=_option_list(frame.get("options"), "companion"),
+            progress=_progress,
+            auto_import=False,
         )
-        result = await generate_and_install_module(services, ctx, description)
+
+    import asyncio
+
+    if emit_frame is not None:
+        asyncio.get_running_loop().create_task(_finish_generation(_run(), kind, emit_frame))
+        return {"type": "admin_generate_started", "kind": kind}
+    result = await _run()
     return _generated_frame(kind, result)
+
+
+async def _finish_generation(coro: Any, kind: str, emit_frame: Any) -> None:
+    """Await a background forge generation and push its `admin_generated` result to the caller.
+    Best-effort: a dead connection just loses the result frame."""
+    try:
+        result = await coro
+        await emit_frame(_generated_frame(kind, result))
+    except Exception:  # noqa: BLE001 — a background generation must never crash the loop
+        pass
+
+
+def _option_list(options: Any, key: str) -> list[str] | None:
+    """Pull one string list out of the additive `options` field on `admin_generate` (protocol
+    2.5). Anything that is not a dict holding a list of strings degrades to `None` -- unknown or
+    malformed ids are ignored downstream (`agent.forge._normalize_option_ids`), never an error."""
+    if not isinstance(options, dict):
+        return None
+    value = options.get(key)
+    if not isinstance(value, list):
+        return None
+    return [item for item in value if isinstance(item, str)]
+
+
+def _option_value(options: Any, key: str) -> str | None:
+    """Pull one scalar string out of `options` (e.g. ``extends``) — `None` when absent or not a
+    non-empty string."""
+    if not isinstance(options, dict):
+        return None
+    value = options.get(key)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    return value.strip()
 
 
 def _generated_frame(kind: str, result: ForgeResult) -> dict[str, Any]:
