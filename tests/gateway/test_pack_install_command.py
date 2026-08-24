@@ -526,3 +526,65 @@ async def test_a_skill_a_builtin_shadows_is_enabled_and_named(server, tmp_path):
     assert i18n.t("commands.pack.shadowed", ids="mature-mode") in reply
     # Enabled exactly as any other skill would be — the line is a receipt, not a gate.
     assert "mature-mode" in await get_enabled_skills(server.store, chat_key)
+
+
+async def test_fetch_lands_a_module_pack_without_importing_it(server, tmp_path):
+    """`.pack fetch <ref>` is the door a keeper uses to GET a pack without changing the
+    room they are standing in: the pack lands on the server and its skill becomes
+    discoverable, but NO skill is enabled and NO world card is imported. The trust card is
+    rendered with its `.import` guidance intact because that work is still to do."""
+    router = CommandRouter(server)
+    chat_key = "cli:dm:fetch"
+    pack = _built_module_pack(tmp_path)
+
+    reply = await router.dispatch(_keeper(chat_key), f".pack fetch {pack}")
+
+    i18n = server.i18n.with_locale("en")
+    # The fetch headline, not install's.
+    assert i18n.t("commands.pack.fetched", id="tidemodule", version="1.0.0") in reply
+    # Trust card rendered INSTRUCTIONAL: the `.import <file> world` guidance is real work
+    # still to do, so it names the command (unlike the install door's `_plain` variant).
+    assert i18n.t("pack.card.world_cards", count=1) in reply
+    # The fetch-only receipt names the world card ref a room would import, and where the
+    # files landed.
+    assert i18n.t("commands.pack.fetched_world_cards", refs="tidemodule/cards/world.json") in reply
+    assert str(Path(server.settings.data_dir) / "packs" / "tidemodule@1.0.0") in reply
+    assert i18n.t("commands.pack.risk") in reply
+
+    # The pack LANDED: its skill is on disk and discoverable.
+    assert (Path(server.settings.data_dir) / "skills" / "tideline" / "SKILL.md").is_file()
+    assert skills_module.load_skill("tideline") is not None
+    # ...but NOTHING was enabled or imported for this room.
+    assert await server.store.state_get(chat_key, "world_import") is None
+    assert await get_enabled_skills(server.store, chat_key) == []
+    assert await get_enabled_panel_packs(server.store, chat_key) == []
+
+
+async def test_fetch_of_an_extension_pack_enables_nothing_and_stays_usable(server, tmp_path):
+    """Fetch applies the same "land only" discipline to an extension pack (no world card):
+    skills/rulepacks land discoverable, yet nothing is enabled — the pack is there for a
+    keeper to bring up room by room with `.skill enable` / `.panels enable`, never shoved
+    into the room that happened to fetch it."""
+    router = CommandRouter(server)
+    chat_key = "cli:dm:fetch-ext"
+    pack = _built_pack(tmp_path)
+
+    reply = await router.dispatch(_keeper(chat_key), f".pack fetch {pack}")
+
+    i18n = server.i18n.with_locale("en")
+    assert i18n.t("commands.pack.fetched", id="tidepack", version="1.0.0") in reply
+    # An extension pack carries no world card, so the receipt names none.
+    assert "fetched_world_cards" not in reply
+    assert i18n.t("commands.pack.risk") in reply
+
+    # Landed and usable, but off in this room.
+    assert rulepacks_module.load_rulepack("tiderules").system == "tiderules"
+    assert await get_enabled_skills(server.store, chat_key) == []
+    assert await get_enabled_panel_packs(server.store, chat_key) == []
+
+
+async def test_a_fetch_without_a_ref_prints_the_usage(server):
+    router = CommandRouter(server)
+    usage = server.i18n.with_locale("en").t("commands.pack.usage")
+
+    assert await router.dispatch(_keeper("cli:dm:usage"), ".pack fetch") == usage
