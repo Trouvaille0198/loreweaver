@@ -67,6 +67,13 @@ async def test_a_ready_room_reads_as_play():
     assert await room_phase(services.store, CHAT) == PLAY_PHASE
 
 
+async def test_a_world_card_module_reads_as_play_without_text_analysis():
+    services = _services()
+    await services.store.state_set(CHAT, "active_module", '{"source_id":"world-card"}')
+
+    assert await room_phase(services.store, CHAT) == PLAY_PHASE
+
+
 async def test_a_keeper_pin_beats_the_lifecycle_both_ways():
     services = _services()
     await services.store.state_set(CHAT, "module_init_status", "ready")

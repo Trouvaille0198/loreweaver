@@ -175,7 +175,14 @@ class WorldCommands:
             # keeper" structural rather than behavioral.
             if not _is_keeper(ctx.raw_ctx):
                 return ctx.fail(ctx.i18n.t("charcard.commands.import.world_denied"))
-            return await tools.import_world_card(self._agent_ctx(ctx), file_path=file_path, system=system)
+            result = await tools.import_world_card(
+                self._agent_ctx(ctx), file_path=file_path, system=system
+            )
+            if self.hub is not None:
+                from gateway.panels import publish_ui_manifests
+
+                await publish_ui_manifests(self.hub, ctx.services, ctx.chat_key)
+            return result
         if as_ == "companion" and not _is_keeper(ctx.raw_ctx):
             return ctx.fail(ctx.i18n.t("charcard.commands.import.companion_denied"))
         return await tools.import_character(self._agent_ctx(ctx), file_path=file_path, system=system, as_=as_)

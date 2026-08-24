@@ -281,7 +281,8 @@ async def test_keeper_world_import_installs_the_module_half(tmp_path):
     assert "1 hook script" in result
     # Hooks registered under the card's source id (idempotent per source).
     raw = await services.store.state_get("chat-world", "room_hooks")
-    assert raw and "card:理" in raw
+    active = json.loads(await services.store.state_get("chat-world", "active_module"))
+    assert raw and active["source_id"] in raw
     # The variable tree is seeded, hidden state included.
     tree = await load_mvu(services.documents, "chat-world")
     assert tree["理"]["好感度"][0] == 33

@@ -21,13 +21,22 @@ fields (name/description/tags) are game DATA supplied at runtime, not string lit
 
 from __future__ import annotations
 
+import json
 from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 
 from agent import npc as npc_records
 from agent.char_from_persona import build_sheet_from_persona, infer_pronoun_note
 from agent.context import AgentCtx
 from agent.hook_runtime import install_room_hooks
 from agent.kp_tools_npc import keeper_npc_refusal, player_name_refusal
+from agent.module_lifecycle import (
+    ModuleImportTransaction,
+    active_module,
+    identity_for_world_card,
+    publish_active_module,
+    purge_active_module,
+)
 from agent.services import Services
 from agent.tools import tool
 from core.card_split import WorldPayloads, card_hook_codes, detect_world_payloads, split_card
@@ -37,7 +46,11 @@ from core.charcard import PNG_SIGNATURE, CharacterCard, parse_card_bytes
 from core.documents import MODULE_POOL_ID, PLAYER_VIEWER
 from core.lorecard import Lorecard, looks_like_lorecard, parse_lorecard_bytes
 from core.module_brief import BRIEF_DOC_TYPE, brief_id, build_brief
-from core.modvars import define_modvar
+from core.modvars import apply_define, load_modvars, save_modvars
+from core.modvars import apply_set as apply_modvar_set
+from core.modvars import empty_state as empty_modvar_state
+from core.mvu_compat import MVU_DOC_ID, MVU_DOC_TYPE, flatten_leaves, load_mvu
+from core.mvu_compat import apply_set as apply_mvu_set
 from core.pregen_roster import pregen_add
 from core.rulepacks import load_rulepack
 from infra.i18n import I18n
@@ -72,6 +85,39 @@ def _parse_any_card_file(host_path: Path) -> tuple[CharacterCard, Lorecard | Non
         lorecard = parse_lorecard_bytes(data, host_path.name)
         return lorecard.card, lorecard
     return parse_card_bytes(data, host_path.name), None
+
+
+def _pack_manifest_for_room_import(home: Path) -> object | None:
+    """Read a built/dev manifest, tolerating minimal pre-schema test fixtures."""
+    import core.pack as core_pack
+
+    path = home / "pack.yaml"
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for expect_trust in (True, False):
+        try:
+            return core_pack.parse_manifest_text(text, expect_trust=expect_trust)
+        except Exception:
+            continue
+    try:
+        from core.yaml_safety import safe_load_no_aliases
+
+        raw = safe_load_no_aliases(text)
+        contents = raw.get("contents") if isinstance(raw, dict) else None
+        if not isinstance(contents, dict):
+            return None
+        normalized = {
+            key: tuple(
+                str(item.get("path") if isinstance(item, dict) else item)
+                for item in (contents.get(key) or [])
+            )
+            for key in ("skills", "lorebooks", "panels", "presentation")
+        }
+        return SimpleNamespace(id=str(raw.get("id") or home.name.partition("@")[0]), contents=normalized)
+    except Exception:
+        return None
 
 
 # The virtual per-player user_key a companion's CharacterSheet is stored under (M10) —
@@ -368,6 +414,7 @@ class CharcardTools:
         no matter how this call ends.
         """
         i18n = self._i18n(ctx)
+        transaction: ModuleImportTransaction | None = None
 
         def _refuse(key: str, **fields: object) -> str:
             message = i18n.t(key, **fields)
@@ -408,15 +455,38 @@ class CharcardTools:
                     system = pack.system
 
             card, lorecard = _parse_any_card_file(host_path)
-            # A native bundle may declare its own rule system (`system: coc7` in the card
-            # JSON, e.g. a generated module that "directly uses" a built-in system without
-            # shipping a rulepack). It wins over the room's fallback but NOT over an
+            module_identity = identity_for_world_card(
+                Path(self._services.settings.data_dir), host_path, display_name=card.name or host_path.stem
+            )
+            source_id = str(module_identity["source_id"])
+            # A native bundle may declare its own rule system in the card JSON without
+            # shipping a rulepack. It wins over the room's fallback but NOT over an
             # explicit `system=` argument (handled above) or a shipped pack rulepack.
             if not pin_system and lorecard is not None and lorecard.system:
                 system = lorecard.system
                 pin_system = lorecard.system
                 pinned_line = i18n.t("charcard.tools.world.system_pinned", system=pin_system)
             character, world = split_card(card)
+            transaction = ModuleImportTransaction(self._services, ctx.chat_key)
+            await transaction.__aenter__()
+            await self._services.store.state_set(ctx.chat_key, "module_import_name", card.name or host_path.name)
+            previous = await active_module(self._services, ctx.chat_key)
+            same_source = previous is not None and previous.get("source_id") == source_id
+            if previous is not None and previous.get("source_id") != source_id:
+                await purge_active_module(self._services, ctx.chat_key)
+            elif previous is None and (
+                await self._services.store.state_get(ctx.chat_key, "world_import")
+                or await self._services.store.state_get(ctx.chat_key, "module_fulltext")
+            ):
+                # Heal rooms created before the shared identity record existed.
+                await purge_active_module(self._services, ctx.chat_key)
+            old_modvars = await load_modvars(self._services.documents, ctx.chat_key)
+            old_mvu = await load_mvu(self._services.documents, ctx.chat_key)
+            old_mvu_doc = await self._services.documents.get(ctx.chat_key, MVU_DOC_TYPE, MVU_DOC_ID)
+            old_exposed = list(old_mvu_doc.data.get("exposed") or []) if old_mvu_doc else []
+            # Rebuild imported schemas from the card so removed variables cannot
+            # survive a refresh; overlapping values are restored below.
+            await self._services.documents.delete(ctx.chat_key, MVU_DOC_TYPE, MVU_DOC_ID)
             # Keeper trust: secrecy flags are honored and InitVar declarations are consumed
             # into the shared MVU tree (`core.worldbook.import_entries` gates that on
             # `is_keeper=True`). The ORIGINAL entries are imported, not the stripped half —
@@ -425,31 +495,44 @@ class CharcardTools:
             lore = await self._services.worldbook.import_entries(
                 ctx.chat_key,
                 card.character_book,
-                source=card.name,
+                source=source_id,
                 is_keeper=True,
                 char_name=card.name,
                 skipped_titles=skipped_titles,
             )
+            refreshed_mvu = await load_mvu(self._services.documents, ctx.chat_key)
+            refreshed_paths = {leaf["path"] for leaf in flatten_leaves(refreshed_mvu)}
+            for leaf in flatten_leaves(old_mvu):
+                if leaf["path"] not in refreshed_paths:
+                    continue
+                try:
+                    refreshed_mvu = apply_mvu_set(refreshed_mvu, leaf["path"], leaf["value"])
+                except (TypeError, ValueError):
+                    continue
+            if refreshed_mvu:
+                await self._services.documents.put(
+                    ctx.chat_key,
+                    MVU_DOC_TYPE,
+                    MVU_DOC_ID,
+                    {"tree": refreshed_mvu, "exposed": old_exposed},
+                    source=source_id,
+                )
             hooks = card_hook_codes(card)
             if hooks:
-                await install_room_hooks(self._services, ctx.chat_key, f"card:{card.name}", hooks)
+                await install_room_hooks(self._services, ctx.chat_key, source_id, hooks)
+            else:
+                # Same-source refresh also removes scripts no longer declared.
+                await install_room_hooks(self._services, ctx.chat_key, source_id, [])
             # Durable "this room runs an imported module" marker: the prompt builder folds the
             # keeper_discipline/module_fidelity blocks into the lore section ONLY for rooms
             # that actually loaded a module this way — a free-sandbox room whose keeper merely
             # `.lore add`ed some setting notes must never receive run-the-module directives.
             new_world_name = card.name or "card"
-            old_world_import = await self._services.store.state_get(ctx.chat_key, "world_import")
             await self._services.store.state_set(ctx.chat_key, "world_import", new_world_name)
-            # Lock the Keeper's lore injection to THIS module's source, so the current campaign
-            # sees only the current module's worldbook (and never another imported module's).
-            await self._services.worldbook.set_active_source(ctx.chat_key, new_world_name)
-            # A room runs ONE module at a time. Importing a DIFFERENT module replaces the
-            # previous one outright: its lore, its pregen cast and the KP skills it enabled are
-            # purged so the current campaign sees ONLY the current module (old content never
-            # bleeds into the Keeper's context or the roster). Same-module re-import is a
-            # refresh and touches nothing.
-            if old_world_import and old_world_import != new_world_name:
-                await self._purge_old_module(ctx, old_world_import)
+            # There is only one module, so stale module sources are removed physically.
+            # An empty selector keeps standalone pack lorebooks and keeper-attached
+            # supplemental lore visible beside that module.
+            await self._services.worldbook.set_active_source(ctx.chat_key, "")
 
             # The card's PROSE gets a home (UPSTREAM item 10): a keeper-only brief
             # document, copied deterministically — before this, description/scenario
@@ -465,13 +548,14 @@ class CharcardTools:
                     openings = tuple(str(entry) for entry in alt if isinstance(entry, str))
             brief = build_brief(card, openings)
             brief_line = ""
+            await self._services.documents.delete_type(ctx.chat_key, BRIEF_DOC_TYPE)
             if brief is not None:
                 await self._services.documents.put(
                     ctx.chat_key,
                     BRIEF_DOC_TYPE,
                     brief_id(card.name),
                     brief,
-                    source=f"card:{card.name}",
+                    source=source_id,
                 )
                 brief_line = i18n.t("charcard.tools.world.brief_line")
 
@@ -479,10 +563,25 @@ class CharcardTools:
             # flavor of what an ST card can only ship as an [InitVar] tree. Keeper trust:
             # they land as real `core.modvars` trackers (validated/clamped from here on).
             specs_line = ""
+            refreshed_modvars = empty_modvar_state()
             if lorecard is not None and lorecard.variable_specs:
                 for spec in lorecard.variable_specs:
-                    await define_modvar(self._services.documents, ctx.chat_key, dict(spec))
+                    refreshed_modvars = apply_define(refreshed_modvars, dict(spec))
+                for var_id, value in old_modvars.get("values", {}).items():
+                    if var_id not in refreshed_modvars["specs"]:
+                        continue
+                    try:
+                        refreshed_modvars, _old, _new = apply_modvar_set(
+                            refreshed_modvars, var_id, value
+                        )
+                    except (TypeError, ValueError):
+                        continue
+                await save_modvars(
+                    self._services.documents, ctx.chat_key, refreshed_modvars, source=source_id
+                )
                 specs_line = i18n.t("charcard.tools.world.specs_line", count=len(lorecard.variable_specs))
+            else:
+                await self._services.documents.delete_type(ctx.chat_key, "modvars")
 
             # Only a card with an actual PERSONA half self-registers as a claimable PC.
             # A pure world/module card (no personality; for native bundles `opening` is
@@ -491,13 +590,15 @@ class CharcardTools:
             has_persona = bool(character.personality.strip()) or (
                 lorecard is None and bool(character.first_mes.strip())
             )
+            desired_pregen_ids: set[str] = set()
             pregen_line = ""
             if character.name.strip() and has_persona:
                 sheet = await self._build_pregen_sheet(ctx, character, system, host_path)
                 entry = await pregen_add(
-                    self._services.documents, ctx.chat_key, sheet, source=f"card:{card.name}"
+                    self._services.documents, ctx.chat_key, sheet, source=source_id
                 )
                 if entry is not None:
+                    desired_pregen_ids.add(str(entry["id"]))
                     pregen_line = i18n.t("charcard.tools.world.pregen_line", name=sheet.name)
 
             # Native bundles may ship a claimable CAST (`pregens:`): deterministic sheets
@@ -527,10 +628,11 @@ class CharcardTools:
                         self._services.documents,
                         ctx.chat_key,
                         sheet,
-                        source=f"card:{card.name}",
+                        source=source_id,
                         blurb=str(spec.get("blurb", "")),
                     )
                     if entry is not None:
+                        desired_pregen_ids.add(str(entry["id"]))
                         cast_names.append(sheet.name)
                 if cast_names:
                     cast_line = i18n.t(
@@ -538,6 +640,9 @@ class CharcardTools:
                         count=len(cast_names),
                         names=i18n.t("common.list_separator").join(cast_names),
                     )
+            for document in await self._services.documents.list(ctx.chat_key, "pregen"):
+                if document.source == source_id and document.id not in desired_pregen_ids:
+                    await self._services.documents.delete(ctx.chat_key, "pregen", document.id)
 
             # The import made it through every step — only now does the pin land.
             if pin_system:
@@ -548,31 +653,75 @@ class CharcardTools:
             # the box — its pacing/rules skill enabled — not require the keeper to remember
             # `.skill enable <id>`. Only when the card comes from an installed pack.
             skill_line = ""
-            try:
-                from core.pack import pack_home_of
-                from gateway.ops import toggle_enabled_skill
+            prior_owned_skills = (
+                set(previous.get("enabled_skills") or []) if same_source and previous else set()
+            )
+            prior_owned_panels = (
+                set(previous.get("enabled_panel_packs") or []) if same_source and previous else set()
+            )
+            desired_skills: list[str] = []
+            desired_panels: list[str] = []
+            from core.pack import pack_home_of
+            from gateway.ops import (
+                get_enabled_panel_packs,
+                get_enabled_skills,
+                toggle_enabled_panel_pack,
+                toggle_enabled_skill,
+            )
 
-                home = pack_home_of(Path(self._services.settings.data_dir), host_path)
-                if home is not None:
-                    manifest_path = home / "pack.yaml"
-                    if manifest_path.is_file():
-                        import core.pack as core_pack
+            home = pack_home_of(Path(self._services.settings.data_dir), host_path)
+            if home is not None:
+                manifest_path = home / "pack.yaml"
+                if manifest_path.is_file():
+                    manifest = _pack_manifest_for_room_import(home)
+                    if manifest is None:
+                        raise ValueError("unreadable pack manifest")
+                    for skill_path in manifest.contents.get("skills", ()):
+                        skill_id = PurePosixPath(str(skill_path)).name
+                        if skill_id and skill_id not in desired_skills:
+                            desired_skills.append(skill_id)
+                    if desired_skills:
+                        skill_line = i18n.t(
+                            "charcard.tools.world.skills_enabled_line",
+                            ids=", ".join(desired_skills),
+                        )
+                    if manifest.contents.get("panels") or manifest.contents.get("presentation"):
+                        desired_panels.append(manifest.id)
+                    # Lorebooks declared beside the selected world card are part of
+                    # that module, under the same provenance and transaction.
+                    for lorebook_path in manifest.contents.get("lorebooks", ()):
+                        raw_book = json.loads((home / lorebook_path).read_text(encoding="utf-8-sig"))
+                        lore += await self._services.worldbook.import_entries(
+                            ctx.chat_key,
+                            raw_book,
+                            source=source_id,
+                            is_keeper=True,
+                            char_name=card.name,
+                            skipped_titles=skipped_titles,
+                            replace_source=False,
+                        )
 
-                        manifest = core_pack.parse_manifest_text(manifest_path.read_text(encoding="utf-8"), expect_trust=True)
-                        enabled_ids: list[str] = []
-                        for skill_path in manifest.contents.get("skills", ()):
-                            skill_id = PurePosixPath(str(skill_path)).name
-                            if not skill_id:
-                                continue
-                            await toggle_enabled_skill(self._services.store, ctx.chat_key, skill_id, on=True)
-                            enabled_ids.append(skill_id)
-                        if enabled_ids:
-                            skill_line = i18n.t(
-                                "charcard.tools.world.skills_enabled_line",
-                                ids=", ".join(enabled_ids),
-                            )
-            except Exception:  # noqa: BLE001 — skill enabling must never fail a world import
-                pass
+            before_skills = set(await get_enabled_skills(self._services.store, ctx.chat_key))
+            for skill_id in prior_owned_skills - set(desired_skills):
+                await toggle_enabled_skill(self._services.store, ctx.chat_key, skill_id, on=False)
+            owned_skills: list[str] = []
+            for skill_id in desired_skills:
+                await toggle_enabled_skill(self._services.store, ctx.chat_key, skill_id, on=True)
+                if skill_id in prior_owned_skills or skill_id not in before_skills:
+                    owned_skills.append(skill_id)
+
+            before_panels = set(await get_enabled_panel_packs(self._services.store, ctx.chat_key))
+            for pack_id in prior_owned_panels - set(desired_panels):
+                await toggle_enabled_panel_pack(self._services.store, ctx.chat_key, pack_id, on=False)
+            owned_panels: list[str] = []
+            for pack_id in desired_panels:
+                await toggle_enabled_panel_pack(self._services.store, ctx.chat_key, pack_id, on=True)
+                if pack_id in prior_owned_panels or pack_id not in before_panels:
+                    owned_panels.append(pack_id)
+
+            module_identity["enabled_skills"] = owned_skills
+            module_identity["enabled_panel_packs"] = owned_panels
+            await publish_active_module(self._services, ctx.chat_key, module_identity)
 
             result = i18n.t(
                 "charcard.tools.world.done",
@@ -591,10 +740,16 @@ class CharcardTools:
             extra_lines = [
                 line for line in (pinned_line, specs_line, brief_line, pregen_line, cast_line, skill_line, skipped_line) if line
             ]
+            await transaction.__aexit__(None, None, None)
+            transaction = None
             return "\n".join([result, *extra_lines])
-        except CardImportRefused:
+        except CardImportRefused as exc:
+            if transaction is not None:
+                await transaction.__aexit__(CardImportRefused, exc, exc.__traceback__)
             raise
         except Exception as exc:
+            if transaction is not None:
+                await transaction.__aexit__(type(exc), exc, exc.__traceback__)
             if raise_on_failure:
                 raise
             return i18n.t("charcard.tools.world.failed", error=str(exc))

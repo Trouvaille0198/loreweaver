@@ -100,6 +100,18 @@ async def test_build_system_prompt_is_localized_per_ctx_locale():
     assert SENTINEL_SECRET in prompt
 
 
+async def test_room_system_drives_expertise_before_any_character_exists():
+    services = _services("en")
+    chat_key = "world-card-system-prompt"
+    ctx = AgentCtx(chat_key=chat_key, user_id="first-player", locale="en")
+    await services.store.state_set(chat_key, "room_system", "dnd5e")
+
+    prompt = await build_system_prompt(ctx, services)
+
+    assert load_rulepack("dnd5e").expertise_text("en") in prompt
+    assert load_rulepack("coc7").expertise_text("en") not in prompt
+
+
 async def test_build_system_prompt_filters_party_to_active_character_system():
     services = _services("en")
     chat_key = "chat-mixed-system-prompt"

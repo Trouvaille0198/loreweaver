@@ -43,6 +43,7 @@ FACET_MODULES: tuple[str, ...] = (
     "core.game_clock",
     "core.module_brief",
     "agent.module_initializer",
+    "agent.module_lifecycle",
     "core.modvars",
     "core.mvu_compat",
     "core.pregen_roster",

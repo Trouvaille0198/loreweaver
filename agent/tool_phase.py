@@ -51,10 +51,15 @@ async def room_phase(store: Store, chat_key: str) -> str:
         if pinned in PHASES:
             return pinned
         status = await store.state_get(chat_key, "module_init_status")
+        import_status = await store.state_get(chat_key, "module_import_status")
+        active_module = await store.state_get(chat_key, "active_module")
+        world_import = await store.state_get(chat_key, "world_import")
     except Exception:  # noqa: BLE001 — see docstring
         logger.debug("tool phase unreadable for %s; falling back to prep", chat_key, exc_info=True)
         return PREP_PHASE
-    return PLAY_PHASE if status in _READY_STATES else PREP_PHASE
+    if import_status == "processing":
+        return PREP_PHASE
+    return PLAY_PHASE if status in _READY_STATES or active_module or world_import else PREP_PHASE
 
 
 # Room capabilities (see `needs` on `agent.tools.tool`). One name so far: the module

@@ -659,7 +659,8 @@ async def test_import_world_runs_for_the_keeper(tmp_path):
     assert reply is not None and "hook script" in reply
     assert (await load_mvu(services.documents, chat_key))["真凶"][0] == "butler"
     raw = await services.store.state_get(chat_key, "room_hooks")
-    assert raw and "card:Manor" in raw
+    active = _json.loads(await services.store.state_get(chat_key, "active_module"))
+    assert raw and active["source_id"] in raw
 
 
 async def test_var_command_is_keeper_gated_and_curates_exposure():

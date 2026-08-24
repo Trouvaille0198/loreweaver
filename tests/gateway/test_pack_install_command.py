@@ -123,8 +123,9 @@ async def test_a_keeper_installs_a_pack_and_it_is_live_in_this_room(server, tmp_
     assert (Path(server.settings.data_dir) / "skills" / "tideline" / "SKILL.md").is_file()
     assert (Path(server.settings.data_dir) / "rulepacks" / "tiderules.yaml").is_file()
 
-    # Enabled for this room — install IS enable on a remote table.
-    assert "tidepack" in await get_enabled_panel_packs(server.store, chat_key)
+    # This extension ships no panels, so no nonexistent panel pack is claimed.
+    assert await get_enabled_panel_packs(server.store, chat_key) == []
+    assert "tideline" in await get_enabled_skills(server.store, chat_key)
 
     # And immediately usable: the rulepack resolves by every name it declares, with no
     # restart and no cache to clear by hand (see `core.rulepacks` discovery self-heal).
@@ -244,8 +245,9 @@ async def test_installing_a_module_pack_leaves_the_room_playable(server, tmp_pat
     reply = await router.dispatch(_keeper(chat_key), f".pack install {_built_module_pack(tmp_path)}")
 
     i18n = server.i18n.with_locale("en")
-    # Panels, the skill, and the module itself — all live, without a second command.
-    assert "tidemodule" in await get_enabled_panel_packs(server.store, chat_key)
+    # The skill and module are live without a second command. This fixture ships
+    # no panels, so no empty panel pack is enabled.
+    assert await get_enabled_panel_packs(server.store, chat_key) == []
     assert "tideline" in await get_enabled_skills(server.store, chat_key)
     assert await server.store.state_get(chat_key, "world_import")
     assert i18n.t("commands.pack.live_skill", id="tideline") in reply
@@ -282,8 +284,9 @@ async def test_several_world_cards_are_the_one_fork_left_to_a_human(server, tmp_
     assert i18n.t("commands.pack.next_card", ref="tidemodule/cards/world.json") in reply
     # Nothing was imported behind the keeper's back...
     assert await server.store.state_get(chat_key, "world_import") is None
-    # ...but everything unambiguous still went live.
-    assert "tideline" in await get_enabled_skills(server.store, chat_key)
+    # Module-owned skills stay off until one world card is selected, so switching
+    # modules cannot leave a pack's instructions mixed into the previous module.
+    assert await get_enabled_skills(server.store, chat_key) == []
 
 
 async def test_the_room_card_never_tells_a_keeper_to_import_what_it_just_imported(server, tmp_path):
@@ -375,8 +378,8 @@ async def test_a_world_import_that_fails_is_not_reported_as_a_module(server, tmp
     assert i18n.t("commands.pack.card_failed", ref="tidemodule/cards/world.json") in reply
     assert i18n.t("commands.pack.next_card", ref="tidemodule/cards/world.json") not in reply
     assert i18n.t("commands.pack.next_header") in reply
-    # The skill still went live: one card failing is not the install failing.
-    assert "tideline" in await get_enabled_skills(server.store, chat_key)
+    # Module-owned switches roll back together with the failed module import.
+    assert await get_enabled_skills(server.store, chat_key) == []
 
 
 async def test_the_system_pin_is_claimed_only_when_the_room_is_really_on_it(server, tmp_path):

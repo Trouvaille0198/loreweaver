@@ -156,6 +156,52 @@ class VectorStore:
             self._vectors = vectors
             self._payloads = payloads
 
+    async def replace_filtered(
+        self,
+        *,
+        filters: list[dict],
+        points: list[tuple[str, list[float], dict]],
+    ) -> None:
+        """Atomically replace the union of several payload-filtered lanes.
+
+        Used by module-import rollback: module documents and worldbook vectors
+        have different payload shapes but form one transaction boundary.
+        """
+        replacements: dict[str, tuple[np.ndarray, dict]] = {}
+        for point_id, vector, payload in points:
+            replacements[str(point_id)] = (self._as_vector(vector), dict(payload))
+        async with self._lock:
+            target_ids = {
+                point_id
+                for point_id, payload in self._payloads.items()
+                if any(_matches(payload, item) for item in filters)
+            }
+            collisions = set(replacements) - target_ids
+            if any(point_id in self._payloads for point_id in collisions):
+                raise ValueError("filtered replacement collides with an unowned vector")  # i18n-exempt: internal invariant
+            conn = self._ensure_conn() if self._path is not None else None
+            if conn is not None:
+                try:
+                    conn.execute("BEGIN IMMEDIATE")
+                    conn.executemany("DELETE FROM vectors WHERE id = ?", [(point_id,) for point_id in target_ids])
+                    conn.executemany(
+                        "INSERT OR REPLACE INTO vectors (id, vector, payload) VALUES (?, ?, ?)",
+                        [
+                            (point_id, json.dumps(vector.tolist()), json.dumps(payload))
+                            for point_id, (vector, payload) in replacements.items()
+                        ],
+                    )
+                    self._commit(conn)
+                except BaseException:
+                    conn.rollback()
+                    raise
+            for point_id in target_ids:
+                self._vectors.pop(point_id, None)
+                self._payloads.pop(point_id, None)
+            for point_id, (vector, payload) in replacements.items():
+                self._vectors[point_id] = vector
+                self._payloads[point_id] = payload
+
     async def search(self, vector: list[float], *, limit: int = 5, filter: dict | None = None) -> list[VectorHit]:
         async with self._lock:
             query = self._as_vector(vector)

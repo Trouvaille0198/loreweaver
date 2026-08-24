@@ -107,6 +107,42 @@ async def test_sole_rulepack_pack_pins_the_room_system(tmp_path, user_rulepack_d
     assert pack.system == "harbour-tides"
 
 
+async def test_same_source_refresh_reconciles_module_owned_switches(tmp_path):
+    services = _services(tmp_path)
+    card_path = Path(_install_world_card(tmp_path / "data", rulepacks=[]))
+    home = card_path.parent.parent
+    (home / "skills" / "module-skill").mkdir(parents=True)
+    (home / "panels").mkdir()
+    (home / "panels" / "main.json").write_text("{}", encoding="utf-8")
+    manifest_path = home / "pack.yaml"
+    manifest = manifest_path.read_text(encoding="utf-8")
+    manifest_path.write_text(
+        manifest
+        + "  skills: [skills/module-skill]\n"
+        + "  panels: [panels/main.json]\n",
+        encoding="utf-8",
+    )
+    await services.store.state_set("refresh-room", "skills_enabled", '["manual-skill"]')
+    await services.store.state_set("refresh-room", "panels_enabled", '["manual-panels"]')
+    ctx = _keeper_ctx(tmp_path, "refresh-room")
+
+    await CharcardTools(services).import_world_card(ctx, file_path=str(card_path))
+    assert json.loads(await services.store.state_get(ctx.chat_key, "skills_enabled")) == [
+        "manual-skill",
+        "module-skill",
+    ]
+    assert json.loads(await services.store.state_get(ctx.chat_key, "panels_enabled")) == [
+        "manual-panels",
+        "harbour",
+    ]
+
+    manifest_path.write_text(manifest, encoding="utf-8")
+    await CharcardTools(services).import_world_card(ctx, file_path=str(card_path))
+
+    assert json.loads(await services.store.state_get(ctx.chat_key, "skills_enabled")) == ["manual-skill"]
+    assert json.loads(await services.store.state_get(ctx.chat_key, "panels_enabled")) == ["manual-panels"]
+
+
 async def test_two_bundled_rulepacks_do_not_pin(tmp_path, user_rulepack_dir):
     """Two declared, one of them not discoverable: undecidable — no pin."""
     services = _services(tmp_path)
@@ -331,8 +367,9 @@ async def test_importing_a_different_module_purges_the_old_one(tmp_path, user_ru
     await CharcardTools(services).import_world_card(ctx_b, file_path=card_b)
 
     assert await services.store.state_get("purge-room", "world_import") == "Module B"
-    # Keeper lore injection locks to the new module's source.
-    assert await services.worldbook.active_source("purge-room") == "Module B"
+    # Stale module lore is deleted by provenance; an empty selector leaves
+    # standalone/supplemental lorebooks visible beside the sole module.
+    assert await services.worldbook.active_source("purge-room") == ""
     # Old module A's lore is gone; only module B's remains.
     entries = await services.worldbook.list("purge-room")
     assert [e.title for e in entries if e.enabled] == ["B secret"]

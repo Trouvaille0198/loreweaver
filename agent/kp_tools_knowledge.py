@@ -80,9 +80,9 @@ spoiler patterns in uploaded documents, and this repo's own module fixture
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -767,6 +767,15 @@ class ModuleTools(_KnowledgeToolsBase):
             player = player_raw if isinstance(player_raw, dict) else {}
 
             target = _find_by_name(keeper.get(element_type, []), name)
+            if target is None and element_type == "clues":
+                scene_clues: list[dict[str, Any]] = []
+                for scene in keeper.get("scenes", []):
+                    if not isinstance(scene, dict):
+                        continue
+                    for clue in scene.get("clues", []):
+                        if isinstance(clue, dict):
+                            scene_clues.append({**clue, "location": scene.get("name", "")})
+                target = _find_by_name(scene_clues, name)
             if target is None:
                 return i18n.t("kp_tools.know.unlock.not_found", element_type=element_type, name=name)
 
@@ -775,16 +784,9 @@ class ModuleTools(_KnowledgeToolsBase):
             if element_type == "scenes":
                 unlocked = {
                     "name": target_name,
+                    "focus": target.get("focus", "探索"),
                     "description": target.get("description", ""),
                     "npcs_present": target.get("npcs_present", []),
-                    "clues": [
-                        {
-                            "name": c.get("name", ""),
-                            "description": c.get("description", ""),
-                            "discovery_method": c.get("discovery_method", ""),
-                        }
-                        for c in target.get("clues", [])
-                    ],
                 }
             elif element_type == "npcs":
                 unlocked = {"name": target_name, "description": target.get("description", ""), "role": target.get("role", "")}
@@ -801,11 +803,21 @@ class ModuleTools(_KnowledgeToolsBase):
                 return i18n.t("kp_tools.know.unlock.unsupported_type", element_type=element_type)
 
             player.setdefault(element_type, [])
-            already = any((u.get("name") == target_name or u.get("title") == target_name) for u in player[element_type])
-            if already:
-                return i18n.t("kp_tools.know.unlock.already_unlocked", element_type=element_type, name=target_name)
-
-            player[element_type].append(unlocked)
+            existing_index = next(
+                (
+                    index
+                    for index, value in enumerate(player[element_type])
+                    if value.get("name") == target_name or value.get("title") == target_name
+                ),
+                None,
+            )
+            if existing_index is None:
+                player[element_type].append(unlocked)
+            else:
+                merged = {**player[element_type][existing_index], **unlocked}
+                if merged == player[element_type][existing_index]:
+                    return i18n.t("kp_tools.know.unlock.already_unlocked", element_type=element_type, name=target_name)
+                player[element_type][existing_index] = merged
             await _save_pools(self._services, chat_key, keeper, player)
 
             try:
@@ -986,6 +998,7 @@ class DocumentTools(_KnowledgeToolsBase):
             A confirmation summarizing what was stored.
         """
         i18n = self._i18n(ctx)
+        transaction = None
         if not self._services.settings.enable_vector_db:
             return i18n.t("kp_tools.know.document.disabled")
         if doc_type not in _VALID_DOC_TYPES:
@@ -1010,10 +1023,35 @@ class DocumentTools(_KnowledgeToolsBase):
                 return i18n.t("kp_tools.know.upload.empty_content")
 
             chat_key = ctx.chat_key
+            module_identity = None
+            if doc_type in _MODULE_INIT_DOC_TYPES:
+                from agent.module_lifecycle import (
+                    ModuleImportTransaction,
+                    active_module,
+                    identity_for_text,
+                    publish_active_module,
+                    purge_active_module,
+                )
+
+                module_identity = identity_for_text(host_path, name=filename)
+                transaction = ModuleImportTransaction(self._services, chat_key)
+                await transaction.__aenter__()
+                await self._services.store.state_set(chat_key, "module_import_name", filename)
+                previous = await active_module(self._services, chat_key)
+                if previous is not None and previous.get("source_id") != module_identity["source_id"]:
+                    await purge_active_module(self._services, chat_key)
+                elif previous is None and (
+                    await self._services.store.state_get(chat_key, "world_import")
+                    or await self._services.store.state_get(chat_key, "module_fulltext")
+                ):
+                    await purge_active_module(self._services, chat_key)
             await _emit(progress, "read", str(len(text_content)))
             await _emit(progress, "embed")
+            document_id = hashlib.sha256(
+                f"{chat_key}\0{doc_type}\0{filename.casefold()}".encode()
+            ).hexdigest()
             chunk_count = await self._services.vector_db.store_document(
-                document_id=str(uuid.uuid4()),
+                document_id=document_id,
                 filename=filename,
                 text_content=text_content,
                 chat_key=chat_key,
@@ -1037,6 +1075,9 @@ class DocumentTools(_KnowledgeToolsBase):
                     model=await self._services.room_llm_model(chat_key),
                 )
                 status = await self._services.store.state_get(chat_key, _status_key(chat_key))
+                if status not in {"ready", "ready_fallback"}:
+                    error = await self._services.store.state_get(chat_key, _error_key(chat_key))
+                    raise RuntimeError(error or f"module initialization ended in {status or 'unknown'}")
                 await _emit(progress, "done", status or "")
                 if status == "ready_fallback":
                     error = await self._services.store.state_get(chat_key, _error_key(chat_key))
@@ -1057,13 +1098,37 @@ class DocumentTools(_KnowledgeToolsBase):
                     init_note += "\n" + i18n.t(
                         "kp_tools.know.upload.assets_imported", count=imported_assets
                     )
+                await self._services.store.state_set(chat_key, "module_source", filename)
+                await publish_active_module(self._services, chat_key, module_identity)
+
+            # Heal legacy duplicates left by random document ids.  The canonical
+            # point set is already live, so deleting the stale ids cannot create a
+            # gap even when a re-import shortened the file.
+            hits = await self._services.vector_db.vector_store.scroll(
+                filter={"chat_key": chat_key, "filename": filename, "document_type": doc_type},
+                limit=100_000,
+            )
+            stale_document_ids = {
+                str(hit.payload.get("document_id") or "")
+                for hit in hits
+                if str(hit.payload.get("document_id") or "") not in {"", document_id}
+            }
+            for stale_id in stale_document_ids:
+                if not await self._services.vector_db.delete_document(stale_id, chat_key):
+                    raise RuntimeError("failed to remove a stale document revision")
 
             emoji = _DOC_TYPE_EMOJI.get(doc_type, _DEFAULT_DOC_EMOJI)
-            return (
+            result = (
                 i18n.t("kp_tools.know.upload.done", emoji=emoji, filename=filename, chunk_count=chunk_count, char_count=len(text_content))
                 + init_note
             )
+            if transaction is not None:
+                await transaction.__aexit__(None, None, None)
+                transaction = None
+            return result
         except Exception as exc:
+            if transaction is not None:
+                await transaction.__aexit__(type(exc), exc, exc.__traceback__)
             return i18n.t("kp_tools.know.upload.failed", error=str(exc))
 
     @tool(prep_only=True)
@@ -1083,16 +1148,31 @@ class DocumentTools(_KnowledgeToolsBase):
 
         try:
             chat_key = ctx.chat_key
-            documents = await self._services.vector_db.list_documents(chat_key)
-            target = next((doc for doc in documents if doc["filename"] == filename), None)
-            if target is None:
+            hits = await self._services.vector_db.vector_store.scroll(
+                filter={"chat_key": chat_key, "filename": filename}, limit=100_000
+            )
+            targets_by_id: dict[str, dict[str, Any]] = {}
+            for hit in hits:
+                document_id = str(hit.payload.get("document_id") or "")
+                if document_id:
+                    targets_by_id.setdefault(
+                        document_id,
+                        {
+                            "document_id": document_id,
+                            "filename": filename,
+                            "document_type": str(hit.payload.get("document_type") or ""),
+                        },
+                    )
+            targets = list(targets_by_id.values())
+            if not targets:
                 return i18n.t("kp_tools.know.delete.not_found", filename=filename)
 
-            success = await self._services.vector_db.delete_document(target["document_id"], chat_key)
-            if not success:
-                return i18n.t("kp_tools.know.delete.failed_generic", filename=filename)
+            for target in targets:
+                success = await self._services.vector_db.delete_document(target["document_id"], chat_key)
+                if not success:
+                    return i18n.t("kp_tools.know.delete.failed_generic", filename=filename)
 
-            if target.get("document_type") in _MODULE_INIT_DOC_TYPES:
+            if any(target.get("document_type") in _MODULE_INIT_DOC_TYPES for target in targets):
                 store = self._services.store
                 await self._services.documents.delete_type(chat_key, "module_pool")
                 for key in (
@@ -1102,7 +1182,7 @@ class DocumentTools(_KnowledgeToolsBase):
                 ):
                     await store.state_set(chat_key, key, "")
 
-            emoji = _DOC_TYPE_EMOJI.get(target["document_type"], _DEFAULT_DOC_EMOJI)
+            emoji = _DOC_TYPE_EMOJI.get(targets[0]["document_type"], _DEFAULT_DOC_EMOJI)
             return i18n.t("kp_tools.know.delete.done", emoji=emoji, filename=filename)
         except Exception as exc:
             return i18n.t("kp_tools.know.delete.failed", filename=filename, error=str(exc))

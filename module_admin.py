@@ -88,6 +88,9 @@ class ModuleAdminService:
         if role != "keeper":
             return _error("forbidden", i18n)
         try:
+            if kind == "module_import" and self.hub is not None:
+                async with self.hub.turn_lock(chat_key_for_room(caller_room)):
+                    return await self._dispatch_module(caller_room, frame, i18n)
             return await self._dispatch_module(caller_room, frame, i18n)
         except ValueError:
             return _error("bad_request", i18n)
@@ -146,6 +149,46 @@ class ModuleAdminService:
         except OSError:
             pass
         return total
+
+    @staticmethod
+    def _pack_world_cards(home: Path) -> tuple[Any | None, list[tuple[Any, Path]]]:
+        """Manifest-declared world cards, preserving nested paths and file formats."""
+        manifest_path = home / core_pack.MANIFEST_NAME
+        if not manifest_path.is_file():
+            return None, []
+        text = manifest_path.read_text(encoding="utf-8")
+        manifest = None
+        for expect_trust in (True, False):
+            try:
+                manifest = core_pack.parse_manifest_text(text, expect_trust=expect_trust)
+                break
+            except Exception:
+                continue
+        if manifest is None:
+            return None, []
+        cards: list[tuple[Any, Path]] = []
+        is_dev = home in core_pack.DEV_PACK_HOMES.values()
+        base = home.resolve()
+        for card in manifest.card_entries:
+            try:
+                path = (home / card.path).resolve(strict=True)
+                path.relative_to(base)
+            except (OSError, ValueError):
+                continue
+            kind = card.kind
+            if is_dev:
+                try:
+                    kind = core_pack.detect_card_kind(card.path, path.read_bytes())
+                except Exception:
+                    continue
+            if kind == "world" and path.is_file():
+                cards.append((card, path))
+        return manifest, cards
+
+    async def _active_module(self, caller_room: str) -> dict[str, Any]:
+        from agent.module_lifecycle import active_module
+
+        return await active_module(self.services, chat_key_for_room(caller_room)) or {}
     @staticmethod
     def _payload(frame: dict[str, Any]) -> dict[str, Any]:
         raw = frame.get("description")
@@ -205,19 +248,19 @@ class ModuleAdminService:
         entries, typed variables, and pregen cast."""
         from gateway.panels import installed_pack_homes
 
+        pack_id, _, selected_path = raw_name.strip().partition("/")
         homes = installed_pack_homes(Path(self.services.settings.data_dir))
-        home = homes.get(raw_name.strip())
+        home = homes.get(pack_id)
         if home is None:
             return _module_reply("module_detail", False, raw_name, {"error": "source_not_found"})
-        manifest_path = home / "pack.yaml"
-        cards_dir = home / "cards"
-        if not manifest_path.is_file() or not cards_dir.is_dir():
+        manifest, world_cards = self._pack_world_cards(home)
+        if manifest is None or not world_cards:
             return _module_reply("module_detail", False, raw_name, {"error": "source_not_found"})
-        try:
-            manifest = core_pack.parse_manifest_text(manifest_path.read_text(encoding="utf-8"), expect_trust=True)
-        except Exception:  # noqa: BLE001 — a broken pack degrades to a clean miss
-            return _module_reply("module_detail", False, raw_name, {"error": "source_not_found"})
-        title = dict(manifest.name).get("en") or raw_name
+        if selected_path:
+            world_cards = [pair for pair in world_cards if pair[0].path == selected_path]
+            if not world_cards:
+                return _module_reply("module_detail", False, raw_name, {"error": "source_not_found"})
+        title = dict(manifest.name).get("en") or pack_id
         description = dict(manifest.description).get("en") or ""
 
         # Read the pack's own world card(s): its lore, variables, pregens, and prose. The world
@@ -227,7 +270,7 @@ class ModuleAdminService:
         pregens: list[dict[str, str]] = []
         scenario = ""
         opening = ""
-        for card_path in sorted(cards_dir.glob("*.lorecard.json"))[:4]:
+        for _card_entry, card_path in world_cards:
             try:
                 card = json.loads(card_path.read_text(encoding="utf-8"))
             except Exception:  # noqa: BLE001 — skip an unreadable card
@@ -344,7 +387,13 @@ class ModuleAdminService:
                 "modified": int(home.stat().st_mtime * 1000),
                 "content": content,
                 "source_kind": "pack",
-                "current": False,
+                "current": (
+                    (await self._active_module(caller_room)).get("pack_id") == pack_id
+                    and (
+                        not selected_path
+                        or (await self._active_module(caller_room)).get("card_path") == selected_path
+                    )
+                ),
                 "status": "ready",
                 "import_status": "",
                 "importing": False,
@@ -360,6 +409,11 @@ class ModuleAdminService:
 
     async def _current_name(self, caller_room: str, root: Path, files: list[tuple[str, Path]]) -> str:
         chat_key = chat_key_for_room(caller_room)
+        active = await self._active_module(caller_room)
+        if active.get("kind") == "text":
+            source = str(active.get("source") or "")
+            if any(candidate == source for candidate, _ in files):
+                return source
         recorded = str(await self.services.store.state_get(chat_key, "module_source") or "")
         if recorded:
             try:
@@ -383,7 +437,7 @@ class ModuleAdminService:
         files = self._files(root)
         current = await self._current_name(caller_room, root, files)
         chat_key = chat_key_for_room(caller_room)
-        imported_module = str(await self.services.store.state_get(chat_key, "world_import") or "")
+        active = await self._active_module(caller_room)
         import_status = str(await self.services.store.state_get(chat_key, "module_import_status") or "")
         importing_name = str(await self.services.store.state_get(chat_key, "module_import_name") or "")
         modules = []
@@ -406,21 +460,16 @@ class ModuleAdminService:
         from gateway.panels import installed_pack_homes
 
         for pack_id, home in sorted(installed_pack_homes(Path(self.services.settings.data_dir)).items()):
-            manifest_path = home / "pack.yaml"
-            if not manifest_path.is_file():
-                continue
-            try:
-                manifest = core_pack.parse_manifest_text(manifest_path.read_text(encoding="utf-8"), expect_trust=True)
-            except Exception:  # noqa: BLE001 — a broken pack must not break the whole listing
+            manifest, world_cards = self._pack_world_cards(home)
+            if manifest is None or not world_cards:
                 continue
             display = dict(manifest.name).get("en") or pack_id
             stat = home.stat()
             # Summarize the pack's content for the library row: lore entry count + pregen cast size.
             entry_count = 0
             pregen_count = 0
-            cards_dir = home / "cards"
-            if cards_dir.is_dir():
-                for card_path in sorted(cards_dir.glob("*.lorecard.json"))[:4]:
+            for _card_entry, card_path in world_cards:
+                if card_path.suffix.casefold() == ".json":
                     try:
                         card = json.loads(card_path.read_text(encoding="utf-8"))
                     except Exception:  # noqa: BLE001 — skip an unreadable card
@@ -429,25 +478,44 @@ class ModuleAdminService:
                         continue
                     entry_count += len([e for e in (card.get("worldbook") or []) if isinstance(e, dict)])
                     pregen_count += len([p for p in (card.get("pregens") or []) if isinstance(p, dict)])
-            modules.append(
-                {
-                    "name": pack_id,
-                    "title": display,
+            for card_entry, _card_path in world_cards:
+                module_name = pack_id if len(world_cards) == 1 else f"{pack_id}/{card_entry.path}"
+                modules.append(
+                    {
+                    "name": module_name,
+                    "title": display if len(world_cards) == 1 else f"{display} — {PurePosixPath(card_entry.path).stem}",
                     "size": self._pack_dir_size(home),
                     "modified": int(stat.st_mtime * 1000),
                     "source_kind": "pack",
                     "entry_count": entry_count,
                     "pregen_count": pregen_count,
-                    "current": bool(display and display == imported_module),
+                    "current": bool(
+                        active.get("pack_id") == pack_id
+                        and active.get("card_path") == card_entry.path
+                    ),
                     "importing": False,
-                }
-            )
+                    }
+                )
         status = str(await self.services.store.state_get(chat_key, "module_init_status") or "")
+        visible_current = current
+        if not visible_current and active.get("kind") == "world_card":
+            pack_id = str(active.get("pack_id") or "")
+            card_path = str(active.get("card_path") or "")
+            if pack_id:
+                active_home = installed_pack_homes(Path(self.services.settings.data_dir)).get(pack_id)
+                cards = self._pack_world_cards(active_home)[1] if active_home is not None else []
+                visible_current = (
+                    pack_id if len(cards) == 1 else f"{pack_id}/{card_path}" if card_path else pack_id
+                )
         return _module_reply(
             "module_list",
             True,
-            current,
-            {"modules": modules, "current": current, "status": status},
+            visible_current,
+            {
+                "modules": modules,
+                "current": visible_current,
+                "status": status or ("ready" if active else ""),
+            },
         )
 
     async def _detail(self, caller_room: str, root: Path, raw_name: str) -> dict[str, Any]:
@@ -610,19 +678,15 @@ class ModuleAdminService:
         # into the room.
         from gateway.panels import installed_pack_homes
 
-        pack_home = installed_pack_homes(Path(self.services.settings.data_dir)).get(raw_name)
+        pack_id, _, selected_card = raw_name.partition("/")
+        pack_home = installed_pack_homes(Path(self.services.settings.data_dir)).get(pack_id)
         if pack_home is not None:
-            return await self._import_pack(caller_room, raw_name, pack_home, i18n)
+            return await self._import_pack(caller_room, pack_id, pack_home, i18n, selected_card=selected_card)
         name, path = self._path(root, raw_name)
         if not path.is_file():
             return _module_reply("module_import", False, name, {"error": "source_not_found"})
         source_text = path.read_text(encoding="utf-8")
         chat_key = chat_key_for_room(caller_room)
-        # Publish an explicit transition before vector extraction/LLM analysis. The
-        # old pool remains stored for rollback, but every gameplay request is refused
-        # while this marker is present, so it can never be mistaken for the new module.
-        await self.services.store.state_set(chat_key, "module_import_status", "processing")
-        await self.services.store.state_set(chat_key, "module_import_name", name)
         ctx = AgentCtx(
             chat_key=chat_key,
             user_id="keeper",
@@ -637,13 +701,10 @@ class ModuleAdminService:
         ok = status in {"ready", "ready_fallback"} and installed_text == source_text
         if ok:
             await self.services.store.state_set(chat_key, "module_source", name)
-            await self.services.store.state_delete(chat_key, "module_import_status")
-            await self.services.store.state_delete(chat_key, "module_import_name")
         else:
             # DocumentTools returns a localized failure string instead of raising when
             # vector extraction/initialization fails before publishing a final state.
             await self.services.store.state_set(chat_key, "module_init_error", receipt[-1000:])
-            await self.services.store.state_set(chat_key, "module_import_status", "failed")
         return _module_reply(
             "module_import",
             ok,
@@ -651,17 +712,37 @@ class ModuleAdminService:
             {"receipt": receipt, "status": status, "current": ok},
         )
 
-    async def _import_pack(self, caller_room: str, pack_id: str, home: Path, i18n: Any) -> dict[str, Any]:
+    async def _import_pack(
+        self,
+        caller_room: str,
+        pack_id: str,
+        home: Path,
+        i18n: Any,
+        *,
+        selected_card: str = "",
+    ) -> dict[str, Any]:
         """Import an installed .lwpack content pack into the room through its bundled world
         card (`core.pack` + `CharcardTools.import_world_card`): the keeper world-import path
         loads the pack's lorebook, typed variables, pregen cast, bundled skill auto-enable and
         its declared rule system. Nothing is imported for a pack with no world card."""
         from agent.kp_tools_charcard import CharcardTools
 
-        cards = sorted(home.glob("cards/*.lorecard.json"))
-        if not cards:
+        _manifest, world_cards = self._pack_world_cards(home)
+        if selected_card:
+            world_cards = [pair for pair in world_cards if pair[0].path == selected_card]
+        if not world_cards:
             return _module_reply("module_import", False, pack_id, {"error": "no_world_card"})
-        card_path = str(cards[0])
+        if len(world_cards) > 1:
+            return _module_reply(
+                "module_import",
+                False,
+                pack_id,
+                {
+                    "error": "multiple_world_cards",
+                    "choices": [f"{pack_id}/{card.path}" for card, _path in world_cards],
+                },
+            )
+        card_path = str(world_cards[0][1])
         chat_key = chat_key_for_room(caller_room)
         ctx = AgentCtx(
             chat_key=chat_key,
@@ -672,9 +753,15 @@ class ModuleAdminService:
             extra={"role": "keeper"},
         )
         try:
-            receipt = await CharcardTools(self.services).import_world_card(ctx, file_path=card_path)
+            receipt = await CharcardTools(self.services).import_world_card(
+                ctx, file_path=card_path, raise_on_failure=True
+            )
         except Exception as exc:  # noqa: BLE001 — a failed import degrades to a clean reply
             return _module_reply("module_import", False, pack_id, {"error": f"import_failed: {exc}"})
+        if self.hub is not None:
+            from gateway.panels import publish_ui_manifests
+
+            await publish_ui_manifests(self.hub, self.services, chat_key)
         return _module_reply("module_import", True, pack_id, {"receipt": receipt, "current": True})
 
 

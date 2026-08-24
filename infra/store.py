@@ -493,6 +493,64 @@ class Store:
                 conn.execute("ROLLBACK")
                 raise
 
+    async def replace_room_subset(
+        self,
+        room: str,
+        *,
+        document_types: Iterable[str],
+        state_keys: Iterable[str],
+        documents: list[dict],
+        state: list[dict],
+    ) -> None:
+        """Replace selected room document types and exact state keys atomically.
+
+        Module installation uses this as its rollback boundary.  It restores only
+        the content families the installer owns, so an independent room setting or
+        append-only history record cannot be overwritten by a failed import.
+        """
+        doc_types = tuple(dict.fromkeys(str(item) for item in document_types))
+        keys = tuple(dict.fromkeys(str(item) for item in state_keys))
+        if any(str(row.get("type")) not in doc_types for row in documents):
+            raise ValueError("document snapshot contains an unclaimed type")  # i18n-exempt: internal transaction invariant
+        if any(str(row.get("key")) not in keys for row in state):
+            raise ValueError("state snapshot contains an unclaimed key")  # i18n-exempt: internal transaction invariant
+        async with self._lock:
+            conn = self._ensure_conn()
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                conn.executemany(
+                    "DELETE FROM documents WHERE room = ? AND type = ?",
+                    [(room, doc_type) for doc_type in doc_types],
+                )
+                for row in documents:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO documents"
+                        " (room, type, id, schema_version, data, meta, grants, seq)"
+                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            room,
+                            str(row.get("type")),
+                            str(row.get("id")),
+                            int(row.get("schema_version", 1) or 1),
+                            str(row.get("data", "{}")),
+                            str(row.get("meta", "{}")),
+                            str(row.get("grants", "[]")),
+                            int(row.get("seq", 0) or 0),
+                        ),
+                    )
+                conn.executemany(
+                    "DELETE FROM room_state WHERE room = ? AND key = ?",
+                    [(room, key) for key in keys],
+                )
+                conn.executemany(
+                    "INSERT OR REPLACE INTO room_state (room, key, value) VALUES (?, ?, ?)",
+                    [(room, str(row.get("key")), row.get("value")) for row in state],
+                )
+                self._commit(conn)
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+
     # ------------------------------------------------------------------
     # Chat-history tree (M20 D) — append-only records, rewound by pointer.
     # ------------------------------------------------------------------

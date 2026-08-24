@@ -467,9 +467,11 @@ async def load_modvars(documents: Any, chat_key: str) -> ModvarState:
     return normalize_state(doc.data) if doc is not None else empty_state()
 
 
-async def save_modvars(documents: Any, chat_key: str, state: ModvarState) -> None:
+async def save_modvars(
+    documents: Any, chat_key: str, state: ModvarState, *, source: str | None = None
+) -> None:
     """Persist `state` verbatim (already normalized/validated by the caller)."""
-    await documents.put(chat_key, MODVARS_DOC_TYPE, MODVARS_DOC_ID, state)
+    await documents.put(chat_key, MODVARS_DOC_TYPE, MODVARS_DOC_ID, state, source=source)
 
 
 async def define_modvar(documents: Any, chat_key: str, spec: dict[str, Any]) -> None:

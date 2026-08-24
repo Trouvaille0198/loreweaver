@@ -102,18 +102,38 @@ def installed_card_entries(data_dir: Path) -> list[dict[str, str]]:
     """
     entries: list[dict[str, str]] = []
     for pack_id, home in sorted(installed_pack_homes(data_dir).items()):
-        cards_dir = home / "cards"
-        if not cards_dir.is_dir():
-            continue
+        manifest_paths: list[str] = []
+        is_dev = home in _DEV_HOMES.values()
+        declared_kinds = _manifest_card_kinds(
+            home, is_dev, _file_stamp(home / MANIFEST_NAME)
+        )
         kinds = _card_kinds(home)
-        for entry in sorted(cards_dir.iterdir()):
+        if declared_kinds is not None:
+            manifest_paths = list(declared_kinds)
+        else:
+            # Tolerate pre-manifest fixtures, but real installed packs always use
+            # the declaration as the inventory and may place cards in nested dirs.
+            cards_dir = home / "cards"
+            if cards_dir.is_dir():
+                manifest_paths = [
+                    path.relative_to(home).as_posix()
+                    for path in sorted(cards_dir.iterdir())
+                    if path.is_file() and path.suffix.casefold() in {".json", ".png"}
+                ]
+        base = home.resolve()
+        for relative in manifest_paths:
+            try:
+                entry = (home / relative).resolve(strict=True)
+                entry.relative_to(base)
+            except (OSError, ValueError):
+                continue
             if entry.is_file() and entry.suffix.casefold() in {".json", ".png"}:
                 entries.append(
                     {
-                        "ref": f"{pack_id}/cards/{entry.name}",
+                        "ref": f"{pack_id}/{relative}",
                         "pack": pack_id,
                         "name": entry.stem,
-                        "kind": kinds(f"cards/{entry.name}", entry),
+                        "kind": kinds(relative, entry),
                     }
                 )
     return entries

@@ -113,9 +113,11 @@ A Keeper can instead install from inside a remote room:
 .pack install <local-path|https-url|gh:owner/repo[@tag]>
 ```
 
-That room command installs the pack and enables its panels / presentation kit and KP skills. If
-the pack contains exactly one world card, it imports that card. If it contains several, the receipt
-lists explicit choices and leaves the fork to the Keeper.
+That room command first installs the pack. If the pack contains exactly one world card, the card,
+same-source lorebooks, panels, presentation kit, and KP skills become the room module together. If
+it contains several world cards, the receipt lists explicit choices and enables no module-owned
+switch before the Keeper selects one. An extension-only pack occupies no module slot and enables
+the KP skills and UI it actually declares.
 
 Activation differs by content kind:
 
@@ -124,9 +126,9 @@ Activation differs by content kind:
 | World card | Installed | Imported when unique; choice when multiple | `.import <pack/card> world` |
 | Character card | Installed | Not claimed | Player `.import <pack/card> pc` |
 | Rulepack | Installed and discoverable | Available to the world card | Selected by the card or character creation |
-| KP skill | Installed and discoverable | Enabled | `.skill enable <id>` |
-| Panels and presentation | Installed and discoverable | Enabled | `.panels enable <pack-id>` |
-| Standalone lorebook | Installed | Not imported | `.lore import <pack/path>` |
+| KP skill | Installed and discoverable | Enabled for one world card or an extension pack; waits on a multi-card choice | `.skill enable <id>` |
+| Panels and presentation | Installed and discoverable | Enabled for one world card or an extension pack; waits on a multi-card choice | `.panels enable <pack-id>` |
+| Standalone lorebook | Installed | Imported as same-source module material for one world card; otherwise not imported | `.lore import <pack/path>` |
 | Prompt preset | Installed | Not enabled | `.preset import …`, then `.preset enable <id>` |
 | Prep script | Installed | Not run | Explicit Keeper action during prep |
 | Asset | Installed and served by hash | Used through references | Referenced by cards, panels, hooks, or Director |
@@ -155,10 +157,13 @@ A world-card import processes:
 5. module identity and the Keeper-only brief;
 6. typed variable definitions;
 7. pregens and card-native cast records;
-8. the room-system pin and KP skills shipped by the same pack.
+8. the room-system pin and KP skills, panels, presentation material, and standalone lorebooks
+   shipped by the same pack.
 
-An import receipt means preparation landed; it is not opening narration. Confirm characters,
-rules, panels, and the tool phase. The next ordinary player action then enters the normal turn
+The whole operation is an atomic replacement: each room has exactly one module, and prose modules
+and world cards are mutually exclusive. Any failure restores the current module and room switches
+to their pre-import state. An import receipt means preparation landed; it is not opening narration.
+Confirm characters, rules, and panels. The next ordinary player action then enters the normal turn
 pipeline.
 
 ### Route D: live mounting while authoring
@@ -284,32 +289,29 @@ the whole preflight:
 .phase                      inspect prep / play Keeper tool phase
 ```
 
-When a room uses only a world card and no `.module` source, automatic tool-phase selection does not
-recognize that world import. Before play, explicitly run:
-
-```text
-.phase play
-```
+A successful prose-module or world-card import makes automatic tool-phase selection enter `play`.
+Only an explicit `.phase` pin overrides that automatic choice.
 
 Also verify that:
 
 - the selected rule system matches the character sheets;
 - intended MVU branches are exposed and secrets remain hidden;
-- required panels, KP skills, and prompt preset are enabled;
-- standalone lorebooks are imported as the author directs;
+- required panels and KP skills are enabled;
+- prompt presets and prep scripts are explicitly enabled or run as the receipt directs;
+- same-module lorebooks are present and extra material is handled as the author directs;
 - every player has claimed a pregen or created a legal character;
 - an important campaign is backed up before its first live-model turn.
 
 ### Switching to another module
 
-The safest course is **a new room for a new campaign**. Logs, characters, chronicles, habits, UI
-switches, and prompt settings are durable room state and should not be erased by guesswork during an
-import.
+Independent campaigns usually deserve independent rooms. Logs, player characters, chronicles,
+habits, and manual settings are durable campaign state and are not owned by module import.
 
-If a room must be reused, back it up, apply the reset scope appropriate to the campaign, and inspect
-`.skill`, `.panels`, `.preset`, `.var`, and `.phase`. Do not treat another `.import … world` as a
-complete cleanup operation. The implementation audit below confirms that the replacement path does
-not yet own every piece of module machinery.
+Importing another prose module or world card in the same room replaces the current module's
+worldbooks, knowledge pools, brief, hooks, variable schemas, MVU tree, pregens, module NPCs, module
+vectors, and module-owned skill and UI switches. Manually enabled general skills, non-module
+material, player characters, and campaign records remain. Back up an important campaign first; a
+failed import leaves the room in its pre-import state.
 
 ---
 
@@ -374,57 +376,33 @@ the model should cover with more prose.
 
 ---
 
-## 8. Implementation audit awaiting maintainer decisions
+## 8. Implementation contract and regression boundaries
 
-This is the 2026-08-24 audit of the working-tree implementation, targeted tests, and service-level
-simulations. No finding was fixed as part of this documentation work. **Reproduced** means observed
-through real stores and tool paths; **code review** means confirmed from control flow and state
-contracts and still deserving a regression test.
+Every module entry point follows these contracts. Changes to module import must preserve them:
 
-| # | Evidence | Finding | Impact |
-|---:|---|---|---|
-| 1 | Reproduced | `.module` and `.import … world` coexist; neither clears the other route. | The Keeper can receive one prose module pool and another world card's lore in the same prompt. |
-| 2 | Reproduced | World-card replacement removes only part of the prior lore / pregens. Prior hooks, typed variables, and Keeper briefs remain; MVU, UI, presets, and module NPCs have no complete provenance cleanup. | Machinery and state from the prior module may keep firing. |
-| 3 | Reproduced | Replacement disables **every** enabled skill, rather than skills owned by the prior pack. | Manually enabled general-purpose Keeper skills are lost. |
-| 4 | Reproduced | World import is not atomic. Lore, hooks, and the module marker land before later rulepack or pregen failures, with no rollback. | The receipt says failure while the room is partially imported and may have already purged prior content. |
-| 5 | Reproduced | The admin pack-import path does not promote a failed world-card import to a failed result. | It returns `ok: true` while the receipt says failure and no playable module landed. |
-| 6 | Code review | Admin import sorts `cards/*.lorecard.json` and selects the first, ignoring manifest paths, `kind`, and multi-world-card forks; ST JSON / PNG and nested declarations are missed. | It can choose a character card, the wrong world card, or report a usable pack as unusable. |
-| 7 | Code review | Admin listing treats every installed pack as a module; `detail.current` is fixed false, while list current compares pack display name with card name. | Studio's current-module marker and source picker can be inaccurate. |
-| 8 | Code review | Admin pack import does not mirror `.pack install` panel / presentation enablement, progress locking, or multi-card selection. | The same pack produces different room features by entry point and may compete with a player turn. |
-| 9 | Code review | Activating a world card filters lore to `source == card name`; standalone `.lore import` uses a filename source. | A card and its pack's standalone lorebook cannot naturally be active together. |
-| 10 | Code review | `.pack install`'s “every switch / playable” contract does not cover standalone lorebooks, prompt presets, or prep scripts. | The receipt can imply that all declared pack content is live when it is not. |
-| 11 | Code review | Source documents receive random ids on each upload; same-name reimports accumulate vectors, while delete removes only the first filename match. | Retrieval tools can recall prior imports of the scenario. |
-| 12 | Code review | Active module identity uses a repeatable card display name rather than pack id, version, and card path provenance. | Same-name modules can bypass cleanup and admin cannot reliably determine current. |
-| 13 | Code review | Runtime rule resolution reads `room_system`, but Keeper expertise uses the deployment default when no player character is active. | Before a character is claimed, the Keeper may be taught a different system from the card's room pin. |
-| 14 | Code review | Automatic tool phase recognizes only `.module` initialization, not a successful world-card import. | World-card-only rooms remain in `prep` and retain bulk tools unless the Keeper runs `.phase play`. |
-| 15 | Contract risk | The analyzed player pool includes “player-visible clues” from every scene, and fallback analysis copies source paragraphs. The normal player state frame currently consumes only a bounded overview, but the pool itself has no discovery state. | A future consumer of the full player pool could reveal undiscovered scene clues; “player-safe” and “player-known” need separate contracts. |
-| 16 | Test reproduction | NPC / companion actors permit callers to omit `chat_key`, while room-model selection unconditionally calls `.startswith()` on it. | These calls fail with `AttributeError` before reaching the model; 11 full-suite tests reproduce it. |
+| # | Contract | Observable result |
+|---:|---|---|
+| 1 | Each room has one module; prose modules and world cards are mutually exclusive. | The Keeper never receives prompt material from two modules. |
+| 2 | Every module artifact has stable provenance and replacement cleans by source. | Hooks, variables, briefs, MVU, pregens, NPCs, and UI do not leak across modules. |
+| 3 | Skill and UI switches record module ownership. | Replacement disables only module-owned entries and preserves manual general-purpose choices. |
+| 4 | Admission, cleanup, system pinning, and switch activation share one transaction. | Any failure restores the complete pre-import room state. |
+| 5 | Command and admin entry points return the real transaction result. | A body-level failure cannot accompany `ok: true`, and partial content is not current. |
+| 6 | Pack cards are resolved from manifest paths and `kind`. | Nested native JSON and Tavern JSON / PNG work, while multiple world cards require a choice. |
+| 7 | Admin lists only packs that can be modules and matches current by stable identity. | Extension packs do not masquerade as modules and same-name cards do not collide. |
+| 8 | Admin import and room commands share the transaction, turn lock, and activation rules. | Every entry point creates the same room and cannot interleave writes with a player turn. |
+| 9 | A world card and its pack's standalone lorebooks share one module source. | Authors can compose structured cards and supplemental lorebooks into one module. |
+| 10 | Install receipts distinguish activated content from manual follow-up. | Presets, prep scripts, and inactive lorebooks are never implied to be playable. |
+| 11 | Source documents have stable ids; same-name reimport replaces vectors and delete covers every same-name record. | Retrieval cannot recall stale text from the same path. |
+| 12 | Module identity includes type, pack id, pack version, and card path provenance. | Same-name modules switch safely and admin can match current reliably. |
+| 13 | Keeper expertise uses the room-pinned rule system. | It cannot load unrelated system guidance before a player character is claimed. |
+| 14 | Either successful module form makes automatic tool phase enter `play`. | World-card rooms do not retain prep-only bulk tools. |
+| 15 | The player pool begins with the opening scene and scene clues unlock through discovery. | Player-visible does not mean player-known, and undiscovered clues stay out of player projection. |
+| 16 | NPC / companion calls without a room key use the deployment default model. | Standalone actor calls do not fail in room-model selection before the model request. |
 
-Representative service-level observations:
-
-```text
-after replacing A -> B: hooks = [A, B], modvars = [a_only, b_only], briefs = [A, B]
-after a card with a missing rulepack fails: world_import and its lore are written; its hook is installed
-```
-
-Full-repository verification has three further baseline blockers unrelated to module lifecycle but
-retained in this delivery record: PDF tests assume `pypdf` is absent although it is installed in
-this environment (three tests); example system names in `agent/forge.py` trip the zero-system-token
-architecture check (one test); and four Chinese demo-data strings in `adapters/cli/demo.py` trip the
-i18n check and its two tests. This documentation change does not edit those files.
-
-Review map: world-card import and replacement live in `agent/kp_tools_charcard.py`; the admin path
-is `module_admin.py`; room commands are in `gateway/commands/world.py` and
-`gateway/commands/panels.py`; source filtering is in `core/worldbook.py`; prose indexing is in
-`agent/document_manager.py` / `agent/kp_tools_knowledge.py`; phase selection is in
-`agent/tool_phase.py`; runtime rule selection and prompt expertise are in `agent/services.py` /
-`core/prompt_sections.py`; and player-pool construction is in `agent/module_initializer.py`.
-
-The maintainer decision entry is
-[`notes/pending/module-lifecycle-consistency.md`](notes/pending/module-lifecycle-consistency.md).
-The first decisions should be whether a prose pool and world card may coexist, which artifacts a
-module source owns, and where import transaction boundaries sit; the remaining findings depend on
-those answers.
+The rule ownership and transaction boundary are recorded in
+[`notes/implemented/module-lifecycle-consistency.md`](notes/implemented/module-lifecycle-consistency.md).
+Implementation entry points include `agent/module_lifecycle.py`, `agent/kp_tools_charcard.py`,
+`agent/kp_tools_knowledge.py`, `module_admin.py`, and `gateway/commands/panels.py`.
 
 ---
 
