@@ -1,5 +1,6 @@
 """Content packs: `.panel` (a panel as text, per viewer), `.panels` (pack enablement for
-this room) and `.pack install` (landing a pack on this server in the first place)."""
+this room), `.pack install` (landing a pack on this server and enabling it here) and
+`.pack fetch` (landing a pack on this server WITHOUT touching any room)."""
 
 from __future__ import annotations
 
@@ -22,8 +23,14 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# `.pack <sub>` — one subcommand for now, spelled in both dialects.
+# `.pack <sub>` — spelled in both dialects. `install`/`add` lands a pack AND enables its
+# unambiguous module/extension for this room (the owner's 2026-08-19/20 verdict: on a
+# remote table install IS playable). `fetch` lands the pack on THIS server only — nothing
+# is enabled and no world card is imported — leaving every room untouched; the keeper who
+# fetched it loads the module explicitly in the room that wants it. `fetch` is the door a
+# keeper uses to "get the pack without importing it into the room they are standing in".
 _PACK_INSTALL_WORDS = {"install", "add", "安装", "安裝"}
+_PACK_FETCH_WORDS = {"fetch", "获取", "獲取"}
 
 
 class PanelsCommands:
@@ -167,8 +174,9 @@ class PanelsCommands:
         parts = ctx.args.split(maxsplit=1)
         sub = parts[0].casefold() if parts else ""
         ref = parts[1].strip() if len(parts) > 1 else ""
-        if sub not in _PACK_INSTALL_WORDS or not ref:
+        if sub not in (_PACK_INSTALL_WORDS | _PACK_FETCH_WORDS) or not ref:
             return ctx.i18n.t("commands.pack.usage")
+        fetch_only = sub in _PACK_FETCH_WORDS
 
         data_dir = Path(ctx.services.settings.data_dir)
         # Every step below is blocking (network, zip verification, extraction) and this
@@ -197,6 +205,11 @@ class PanelsCommands:
         # is rebuilt. Dispatch self-heals on a miss too — the out-of-process door has no
         # other way in — but this door knows a pack just landed, so it skips the throttle.
         self.refresh_pack_words(force=True)
+        if fetch_only:
+            # `.pack fetch`: landed on the server, nothing enabled, nothing imported.
+            # Every room stays exactly as it was; the keeper loads the module in the room
+            # that wants it. The receipt must NOT run `_switch_everything_on`.
+            return await self._pack_fetch(ctx, report)
         live, leftover = await _switch_everything_on(ctx, report, pack_id)
         if self.hub is not None:
             await publish_ui_manifests(self.hub, ctx.services, ctx.chat_key)
@@ -227,6 +240,43 @@ class PanelsCommands:
             ctx.i18n.t("commands.pack.risk"),
             *leftover,
         ]
+        return "\n".join(lines)
+
+    async def _pack_fetch(self, ctx: CommandCtx, report: InstallReport) -> str:
+        """`.pack fetch <ref>` — land a content pack on THIS server, nothing more.
+
+        The pack is extracted under ``data_dir/packs/<id>@<version>/`` and its skills/
+        rulepacks become discoverable (so a `make_char` word routes), exactly like
+        `.pack install` and `--install`. Unlike install, NOTHING is enabled for the
+        calling room and no world card is imported — the keeper who fetched it decides
+        which room loads the module, with `.module <name>` or `.import <ref> world`.
+        That is the whole point: "get the pack without changing the room I am standing
+        in". The trust card is rendered `instructional=True` because the `.import`
+        guidance it carries is real work still to do, not already done.
+        """
+        pack_id = report.manifest.id
+        from gateway.pack_install import trust_card_lines
+
+        lines = [
+            ctx.i18n.t("commands.pack.fetched", id=pack_id, version=report.manifest.version),
+            *trust_card_lines(ctx.i18n, report.manifest, ctx.locale, instructional=True),
+        ]
+        if report.world_cards:
+            refs = ", ".join(f"{pack_id}/{name}" for name in report.world_cards)
+            lines.append(ctx.i18n.t("commands.pack.fetched_world_cards", refs=refs))
+        if report.pack_dir is not None:
+            lines.append(
+                ctx.i18n.t(
+                    "commands.pack.fetched_packdir",
+                    path=str(report.pack_dir),
+                    cards=len(report.cards),
+                    lorebooks=len(report.lorebooks),
+                    assets=report.assets,
+                )
+            )
+        if report.shadowed:
+            lines.append(ctx.i18n.t("commands.pack.shadowed", ids=", ".join(report.shadowed)))
+        lines.append(ctx.i18n.t("commands.pack.risk"))
         return "\n".join(lines)
 
     async def _panels_set(self, ctx: CommandCtx, pack_id: str, *, enable: bool) -> str:
