@@ -121,11 +121,55 @@ async def test_build_room_state_surfaces_pregen_roster_to_every_viewer():
     assert state["pregens"] == [
         {
             "name": "Mira Vane",
-            "claimed_by": "player-1",
+            "claimed_by": "player",
             "blurb": "A reporter tracking a disappearance.",
         },
         {"name": "老陈", "claimed_by": ""},
     ]
+
+
+async def test_build_room_state_resolves_legacy_offline_pregen_claim_without_exposing_member_id():
+    from core.character_manager import CharacterSheet
+    from core.pregen_roster import pregen_add, pregen_claim
+
+    services = _services()
+    ctx = _room_ctx("pregen-offline-room")
+    await pregen_add(
+        services.documents,
+        ctx.chat_key,
+        CharacterSheet(name="白露", system="CoC"),
+        source="module",
+    )
+    await pregen_claim(services.documents, ctx.chat_key, "白露", "tui:legacy", services.characters)
+
+    state = await build_room_state(
+        services,
+        ctx,
+        claimant_name_resolver=lambda member_id: "甲" if member_id == "tui:legacy" else "",
+    )
+
+    assert state["pregens"] == [{"name": "白露", "claimed_by": "甲"}]
+    assert "tui:legacy" not in str(state)
+
+
+async def test_build_room_state_hides_unresolvable_legacy_pregen_claim_id():
+    from core.character_manager import CharacterSheet
+    from core.pregen_roster import pregen_add, pregen_claim
+
+    services = _services()
+    ctx = _room_ctx("pregen-unknown-room")
+    await pregen_add(
+        services.documents,
+        ctx.chat_key,
+        CharacterSheet(name="白露", system="CoC"),
+        source="module",
+    )
+    await pregen_claim(services.documents, ctx.chat_key, "白露", "tui:unknown", services.characters)
+
+    state = await build_room_state(services, ctx)
+
+    assert state["pregens"] == [{"name": "白露", "claimed_by": "player"}]
+    assert "tui:unknown" not in str(state)
 
 
 async def test_build_room_state_surfaces_player_visible_variables_in_definition_order():
