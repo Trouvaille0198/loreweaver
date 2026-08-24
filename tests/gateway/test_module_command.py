@@ -175,3 +175,84 @@ def test_chat_attachment_filesystem_does_not_publish_temporary_paths() -> None:
             fs.forward_file("report.md")
     finally:
         fs.close()
+
+
+class _FakeForge:
+    calls: list[dict] = []
+
+    @staticmethod
+    async def generate_and_install_module(services, ctx, description, **kw):
+        _FakeForge.calls.append({"kind": "md", "services": services, "ctx": ctx, "description": description, **kw})
+        from agent.forge import ForgeResult
+        return ForgeResult(True, "md1", "A md module", "/data/modules/md1.md", "", detail="md done")
+
+    @staticmethod
+    async def generate_and_install_pack_module(services, ctx, description, **kw):
+        _FakeForge.calls.append({"kind": "pack", "services": services, "ctx": ctx, "description": description, **kw})
+        from agent.forge import ForgeResult
+        return ForgeResult(True, "p1", "A pack module", "/data/modules/p1-0.1.0.lwpack", "", detail="pack done")
+
+
+async def test_forge_command_defaults_to_md_module(tmp_path, monkeypatch):
+    _FakeForge.calls = []
+    monkeypatch.setattr("agent.forge.generate_and_install_module", _FakeForge.generate_and_install_module)
+    monkeypatch.setattr("agent.forge.generate_and_install_pack_module", _FakeForge.generate_and_install_pack_module)
+    services = _services()
+    router = CommandRouter(services)
+    ctx = AgentCtx(chat_key="cli:dm:forge", user_id="keeper", platform="cli", locale="en", fs=LocalFs(tmp_path))
+    reply = await router.dispatch(ctx, ".forge a haunted lighthouse")
+    assert reply == "md done"
+    assert len(_FakeForge.calls) == 1
+    call = _FakeForge.calls[0]
+    assert call["kind"] == "md"
+    assert call["description"] == "a haunted lighthouse"
+    assert call["auto_import"] is False
+
+
+async def test_forge_command_pack_system_coc(tmp_path, monkeypatch):
+    _FakeForge.calls = []
+    monkeypatch.setattr("agent.forge.generate_and_install_module", _FakeForge.generate_and_install_module)
+    monkeypatch.setattr("agent.forge.generate_and_install_pack_module", _FakeForge.generate_and_install_pack_module)
+    services = _services()
+    router = CommandRouter(services)
+    ctx = AgentCtx(chat_key="cli:dm:forge", user_id="keeper", platform="cli", locale="en", fs=LocalFs(tmp_path))
+    reply = await router.dispatch(
+        ctx, ".forge a foggy manor --pack --system coc7 --media cover,scenes --companion skills,rulepacks"
+    )
+    assert reply == "pack done"
+    assert len(_FakeForge.calls) == 1
+    call = _FakeForge.calls[0]
+    assert call["kind"] == "pack"
+    assert call["description"] == "a foggy manor"
+    assert call["system"] == "coc7"
+    assert call["extends_base"] == ""
+    assert call["media"] == ["cover", "scenes"]
+    assert call["companion"] == ["skills", "rulepacks"]
+    assert call["auto_import"] is False
+
+
+async def test_forge_command_pack_extends(tmp_path, monkeypatch):
+    _FakeForge.calls = []
+    monkeypatch.setattr("agent.forge.generate_and_install_module", _FakeForge.generate_and_install_module)
+    monkeypatch.setattr("agent.forge.generate_and_install_pack_module", _FakeForge.generate_and_install_pack_module)
+    services = _services()
+    router = CommandRouter(services)
+    ctx = AgentCtx(chat_key="cli:dm:forge", user_id="keeper", platform="cli", locale="en", fs=LocalFs(tmp_path))
+    reply = await router.dispatch(ctx, ".forge a den --pack --extends dnd5e")
+    assert reply == "pack done"
+    call = _FakeForge.calls[0]
+    assert call["kind"] == "pack"
+    assert call["extends_base"] == "dnd5e"
+    assert call["system"] == ""
+
+
+async def test_forge_command_requires_description(monkeypatch):
+    _FakeForge.calls = []
+    monkeypatch.setattr("agent.forge.generate_and_install_module", _FakeForge.generate_and_install_module)
+    monkeypatch.setattr("agent.forge.generate_and_install_pack_module", _FakeForge.generate_and_install_pack_module)
+    services = _services()
+    router = CommandRouter(services)
+    ctx = AgentCtx(chat_key="cli:dm:forge", user_id="keeper", platform="cli", locale="en")
+    reply = await router.dispatch(ctx, ".forge --pack")
+    assert "Usage" in reply or "用法" in reply
+    assert _FakeForge.calls == []
