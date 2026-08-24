@@ -307,3 +307,98 @@ async def test_delete_pack_module_refuses_current_module(tmp_path, monkeypatch):
     assert reply["ok"] is False
     assert json.loads(reply["detail"])["error"] == "module_in_use"
     assert home.exists(), "in-use pack home untouched"
+
+
+@pytest.mark.asyncio
+async def test_module_import_does_not_self_deadlock_under_session_lock(tmp_path, monkeypatch):
+    """Regression: the transport choke point (`net.session._on_frame`) holds the room's
+    `turn_lock` around the ENTIRE `admin_generate` dispatch, and that lock is a plain
+    (non-reentrant) `asyncio.Lock`. `module_import` must NOT re-acquire the same lock —
+    doing so self-deadlocks the import and strands the room lock forever, wedging every
+    later module request for that room (the browser's "import to this room" button then
+    never answers). The dispatch must return while the session-style lock is held."""
+    import asyncio
+
+    from gateway.hub import RoomHub
+    from infra.i18n import get_i18n
+
+    store = Store(":memory:")
+    services = SimpleNamespace(
+        settings=SimpleNamespace(data_dir=tmp_path),
+        store=store,
+        documents=DocumentStore(store),
+        worldbook=Worldbook(store),
+    )
+    hub = RoomHub()
+    admin = ModuleAdminService(SimpleNamespace(services=services, keystore=None, fs=None, hub=hub))
+    room = "fog-room"
+    chat_key = chat_key_for_room(room)
+
+    # A fake installed pack home carrying one world card (same fixture shape as
+    # `test_import_pack_routes_to_world_card_import`).
+    home = tmp_path / "packs" / "fog@1.0.0"
+    (home / "cards").mkdir(parents=True)
+    (home / "cards" / "fog.lorecard.json").write_text(
+        json.dumps(
+            {
+                "format": "loreweaver.card",
+                "format_version": 1,
+                "name": "Fog Manor",
+                "opening": "It begins.",
+                "worldbook": [{"title": "[InitVar]", "content": '{"fog": 1}'}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    card_size = (home / "cards" / "fog.lorecard.json").stat().st_size
+    (home / "pack.yaml").write_text(
+        """manifest_version: 2
+id: fog
+version: 1.0.0
+name: Fog
+description: Fog fixture
+authors: [tester]
+license: MIT
+contents:
+  cards:
+    - path: cards/fog.lorecard.json
+      kind: world
+trust:
+  cards: 1
+  world_cards: 1
+files:
+  - path: cards/fog.lorecard.json
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    size: """
+        + str(card_size)
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("gateway.panels.installed_pack_homes", lambda data_dir: {"fog": home})
+
+    class _FakeCharcardTools:
+        def __init__(self, services) -> None:
+            self._services = services
+
+        async def import_world_card(self, ctx, file_path, **kw):
+            return "world card imported"
+
+    monkeypatch.setattr("agent.kp_tools_charcard.CharcardTools", _FakeCharcardTools)
+
+    i18n = get_i18n("en")
+
+    async def session_style_dispatch():
+        # Exactly what `net.session._on_frame` does for an `admin_generate` frame: hold the
+        # room's turn lock, then hand the frame to the admin service.
+        async with hub.turn_lock(chat_key):
+            frame = {
+                "type": "admin_generate",
+                "kind": "module_import",
+                "description": json.dumps({"name": "fog", "locale": "en"}),
+            }
+            return await admin.dispatch("keeper", room, frame, i18n)
+
+    # If the inner lock comes back, this times out (self-deadlock) instead of returning.
+    reply = await asyncio.wait_for(session_style_dispatch(), timeout=10)
+    assert reply["ok"] is True
+    assert reply["kind"] == "module_import"
