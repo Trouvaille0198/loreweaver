@@ -152,10 +152,10 @@ class ForgeTools:
             companion: Optional companion content to bundle INTO the pack, chosen from: "skills"
                 (a KP skill for this scenario), "rulepacks" (a rule system for it). Pregen cards
                 are already carried by the world card's own `pregens:` cast.
-            extends_base: When set (e.g. "coc7"), the generated rulepack is a PATCH on that base
+            extends_base: When set to a base pack id, the generated rulepack is a PATCH on that base
                 system (``extends: <base>``) instead of a standalone replacement — so the module
                 reuses a known system's attributes/skills and just adds its own mechanics.
-            system: When set (e.g. "dnd5e"), the module DIRECTLY uses that built-in rule system —
+            system: When set to a rule-system id, the module DIRECTLY uses that built-in rule system —
                 the world card declares it and the room pins it on import, with NO rulepack
                 generated or shipped (mutually exclusive with ``extends_base``).
 

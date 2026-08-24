@@ -20,7 +20,7 @@ _CALL_IDS = count(1)
 def demo_kp_responder(messages, tools):
     if messages and messages[0].get("role") == "user" and "system" not in {item.get("role") for item in messages}:
         prompt = str(messages[0].get("content") or "")
-        locale = "zh" if "所有自然语言字段" in prompt else "en"
+        locale = "zh" if any("\u4e00" <= char <= "\u9fff" for char in prompt) else "en"
         if DEMO_MODULE_TEXT not in prompt:
             # The offline responder only knows the built-in sample adventure.
             # Returning non-JSON for every other source lets ModuleInitializer's
@@ -104,7 +104,7 @@ def _last_tool_result(messages: list[dict]) -> str:
 
 def _demo_analysis(locale: str = "en") -> dict:
     zh = locale == "zh"
-    sentinel = "灯塔看守人就是凶手" if zh else DEMO_SENTINEL
+    sentinel = t("cli.demo.analysis.sentinel", locale=locale) if zh else DEMO_SENTINEL
     return {
         "summary": t("cli.demo.analysis.summary", locale=locale),
         "background": t("cli.demo.analysis.background", locale=locale),
@@ -132,7 +132,7 @@ def _demo_analysis(locale: str = "en") -> dict:
                 "role": "旅店老板" if zh else "innkeeper",
             },
             {
-                "name": "伊莱亚斯·克兰" if zh else "Elias Crane",
+                "name": t("cli.demo.analysis.npc.elias.name", locale=locale),
                 "description": t("cli.demo.analysis.npc.elias.description", locale=locale),
                 "secret": t("cli.demo.analysis.npc.elias.secret", locale=locale),
                 "role": "对立者" if zh else "antagonist",
@@ -150,7 +150,7 @@ def _demo_analysis(locale: str = "en") -> dict:
             {
                 "time": "第一夜" if zh else "Night 1",
                 "event": t("cli.demo.analysis.timeline.night1", locale=locale),
-                "involved": ["伊莱亚斯·克兰" if zh else "Elias"],
+                "involved": [t("cli.demo.analysis.npc.elias.name", locale=locale)],
             }
         ],
         "threats": [

@@ -316,18 +316,32 @@ async def test_knowledge_tools_end_to_end(tmp_path):
     dispatched_summary = await toolset.dispatch("get_module_summary", ctx, {})
     assert dispatched_summary == summary
 
-    # -- 3. unlock_for_player moves an element keeper -> player pool ----------------------------------
-    # `module_player_pool` is pre-seeded with a spoiler-free copy of every scene/npc by
-    # `ModuleInitializer._build_knowledge_pools` (see agent/module_initializer.py); only the
-    # module-wide `clues` catalog starts empty, so unlocking a clue is what actually demonstrates a
-    # keeper -> player move here.
+    # -- 3. discovery explicitly promotes scene/NPC/clue knowledge to the player pool -----------------
     player_before = await services.documents.get_view(CHAT_KEY, "module_pool", MODULE_POOL_ID, PLAYER_VIEWER)
     assert player_before["clues"] == []
+    assert player_before["npcs"] == []
+    assert player_before["scenes"] == [{"name": "The Salt & Anchor Inn", "focus": "explore"}]
+
+    scene_result = await module_tools.unlock_for_player(
+        ctx, element_type="scenes", name="The Salt & Anchor Inn"
+    )
+    assert "✅" in scene_result
+    player_scene = await services.documents.get_view(
+        CHAT_KEY, "module_pool", MODULE_POOL_ID, PLAYER_VIEWER
+    )
+    assert player_scene["scenes"][0]["description"].startswith("A low-beamed")
+    assert "clues" not in player_scene["scenes"][0]
+
+    local_clue_result = await module_tools.unlock_for_player(
+        ctx, element_type="clues", name="Tide table"
+    )
+    assert "✅" in local_clue_result
 
     unlock_result = await module_tools.unlock_for_player(ctx, element_type="clues", name="Human teeth in the lens")
     assert "✅" in unlock_result
 
     player_after = await services.documents.get_view(CHAT_KEY, "module_pool", MODULE_POOL_ID, PLAYER_VIEWER)
+    assert any(clue["name"] == "Tide table" for clue in player_after["clues"])
     assert any(clue["name"] == "Human teeth in the lens" for clue in player_after["clues"])
     assert SENTINEL not in json.dumps(player_after, ensure_ascii=False)  # still holds for this unlocked clue
 

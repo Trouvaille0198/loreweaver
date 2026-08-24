@@ -218,8 +218,8 @@ async def test_initialize_falls_back_to_offline_heuristic_on_unparsable_llm_resp
     assert len(keeper["scenes"]) > 0
     assert keeper["scenes"][0]["name"] == "场景1"  # source's literal fallback default, ported verbatim
     assert keeper["scenes"][0]["focus"] == "探索"
-    assert len(player["scenes"]) == len(keeper["scenes"])
-    assert player["background"] == keeper["background"]
+    assert player["scenes"] == [{"name": "场景1", "focus": "探索"}]
+    assert player["background"] == ""
 
 
 async def test_initialize_retries_analysis_once_and_marks_retry_success_ready():
@@ -463,26 +463,25 @@ def test_build_knowledge_pools_keeps_full_secrets_in_keeper_and_redacts_player()
     keeper, player = mi._build_knowledge_pools(analysis)
 
     assert keeper["npcs"][0]["secret"] == SENTINEL
-    assert "secret" not in player["npcs"][0]
+    assert player["npcs"] == []
     assert keeper["scenes"][0]["keeper_notes"] == "trap door under the bar"
-    assert "keeper_notes" not in player["scenes"][0]
+    assert player["scenes"][0] == {"name": "Inn", "focus": "explore"}
     assert "truths" not in player
     assert "threats" not in player
     assert "timeline" not in player
     assert player["clues"] == []  # top-level player clues stay empty; unlocked incrementally elsewhere
     assert keeper["clues"] == analysis["clues"]
     assert keeper["threats"] == analysis["threats"]
-    assert player["scenes"][0]["clues"] == [{"name": "map", "description": "old map", "discovery_method": "search"}]
-    assert player["background"] == "bg"
-    assert player["summary"] == "sum"
+    assert player["background"] == ""
+    assert player["summary"] == ""
 
 
 def test_build_knowledge_pools_handles_missing_optional_fields_with_defaults():
     mi = _make_initializer()
     keeper, player = mi._build_knowledge_pools({"scenes": [{}], "npcs": [{}]})
 
-    assert player["scenes"][0] == {"name": "", "focus": "探索", "description": "", "npcs_present": [], "clues": []}
-    assert player["npcs"][0] == {"name": "", "description": "", "role": ""}
+    assert player["scenes"][0] == {"name": "", "focus": "探索"}
+    assert player["npcs"] == []
     assert keeper["background"] == ""
     assert keeper["summary"] == ""
 

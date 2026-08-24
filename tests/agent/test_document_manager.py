@@ -10,10 +10,12 @@ no Qdrant, matching the M1 spec's "no network in tests" rule.
 
 from __future__ import annotations
 
+from importlib.util import find_spec
 from pathlib import Path
 
 import pytest
 
+import agent.document_manager as document_manager_module
 from agent.document_manager import DOCX_AVAILABLE, PDF_AVAILABLE, DocumentProcessor, VectorDatabaseManager
 from infra.embeddings import FakeEmbeddings
 from infra.i18n import I18n, t
@@ -56,22 +58,23 @@ def test_extract_text_from_txt_falls_back_through_encodings_for_gbk_bytes():
 
 
 def test_pdf_library_is_not_installed_in_this_environment():
-    """Sanity-check the premise of the guarded-import tests below."""
-    assert PDF_AVAILABLE is False
+    assert PDF_AVAILABLE is (find_spec("pypdf") is not None)
 
 
 def test_docx_library_is_not_installed_in_this_environment():
-    assert DOCX_AVAILABLE is False
+    assert DOCX_AVAILABLE is (find_spec("docx") is not None)
 
 
-def test_extract_text_from_pdf_raises_localized_error_when_lib_missing():
+def test_extract_text_from_pdf_raises_localized_error_when_lib_missing(monkeypatch):
+    monkeypatch.setattr(document_manager_module, "PDF_AVAILABLE", False)
     with pytest.raises(ValueError) as exc_info:
         DocumentProcessor.extract_text_from_pdf(b"%PDF-1.4 fake bytes")
 
     assert str(exc_info.value) == t("document.error.pdf_unavailable")
 
 
-def test_extract_text_from_docx_raises_localized_error_when_lib_missing():
+def test_extract_text_from_docx_raises_localized_error_when_lib_missing(monkeypatch):
+    monkeypatch.setattr(document_manager_module, "DOCX_AVAILABLE", False)
     with pytest.raises(ValueError) as exc_info:
         DocumentProcessor.extract_text_from_docx(b"PK fake docx bytes")
 
@@ -94,13 +97,15 @@ def test_extract_text_by_extension_dispatches_markdown_as_plain_text():
     assert DocumentProcessor.extract_text_by_extension("module.markdown", content) == "# Module\n\nPlain markdown content"
 
 
-def test_extract_text_by_extension_dispatches_pdf_to_the_guarded_pdf_path():
+def test_extract_text_by_extension_dispatches_pdf_to_the_guarded_pdf_path(monkeypatch):
+    monkeypatch.setattr(document_manager_module, "PDF_AVAILABLE", False)
     with pytest.raises(ValueError) as exc_info:
         DocumentProcessor.extract_text_by_extension("scan.pdf", b"fake")
     assert str(exc_info.value) == t("document.error.pdf_unavailable")
 
 
-def test_extract_text_by_extension_dispatches_docx_and_doc_to_the_guarded_docx_path():
+def test_extract_text_by_extension_dispatches_docx_and_doc_to_the_guarded_docx_path(monkeypatch):
+    monkeypatch.setattr(document_manager_module, "DOCX_AVAILABLE", False)
     for filename in ("report.docx", "report.doc"):
         with pytest.raises(ValueError) as exc_info:
             DocumentProcessor.extract_text_by_extension(filename, b"fake")

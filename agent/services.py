@@ -97,9 +97,14 @@ class Services:
     _room_llm_cache: dict[str, LLMClient] = field(default_factory=dict, init=False, repr=False)
     _room_imagegen_cache: dict[str, ImageGen] = field(default_factory=dict, init=False, repr=False)
 
-    async def room_model_selection(self, chat_key: str) -> dict[str, Any]:
+    async def room_model_selection(self, chat_key: str | None) -> dict[str, Any]:
         """Return this room's validated-shape model assignment record."""
         selection = dict(ROOM_MODEL_DEFAULTS)
+        # Knowledge-scoped actors may be exercised outside a live room (for
+        # example authoring previews and unit tests).  With no room identity
+        # there cannot be a room override, so inherit the deployment client.
+        if not chat_key:
+            return selection
         raw = await self.store.state_get(chat_key, ROOM_LLM_SELECTION_KEY)
         # Keeper admin frames are addressed by the human room name (for example
         # ``table``), while live TUI turns carry the canonical session key
@@ -131,7 +136,7 @@ class Services:
         selection = await self.room_model_selection(chat_key)
         return globally_enabled and bool(selection[f"{lane}_enabled"])
 
-    async def room_llm(self, chat_key: str, lane: str = "main") -> LLMClient | None:
+    async def room_llm(self, chat_key: str | None, lane: str = "main") -> LLMClient | None:
         """Build the chat profile assigned to one room lane, or ``None`` to inherit."""
         if lane not in {"main", "scribe", "director"}:
             raise ValueError("lane")
@@ -158,11 +163,11 @@ class Services:
         self._room_llm_cache[profile_id] = client
         return client
 
-    async def main_llm(self, chat_key: str) -> LLMClient:
+    async def main_llm(self, chat_key: str | None) -> LLMClient:
         """The room's primary model, falling back to the live global client."""
         return await self.room_llm(chat_key, "main") or self.llm
 
-    async def room_llm_model(self, chat_key: str, lane: str = "main") -> str:
+    async def room_llm_model(self, chat_key: str | None, lane: str = "main") -> str:
         """Return the selected room model name, or the deployment default."""
         if lane not in {"main", "scribe", "director"}:
             raise ValueError("lane")

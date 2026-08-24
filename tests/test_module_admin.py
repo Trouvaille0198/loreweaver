@@ -124,20 +124,52 @@ async def test_import_pack_routes_to_world_card_import(tmp_path, monkeypatch):
     home = tmp_path / "packs" / "fog@1.0.0"
     (home / "cards").mkdir(parents=True)
     (home / "cards" / "fog.lorecard.json").write_text(
-        json.dumps({"format": "loreweaver.card", "format_version": 1, "name": "Fog Manor", "opening": "It begins."}),
+        json.dumps(
+            {
+                "format": "loreweaver.card",
+                "format_version": 1,
+                "name": "Fog Manor",
+                "opening": "It begins.",
+                "worldbook": [{"title": "[InitVar]", "content": '{"fog": 1}'}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    card_size = (home / "cards" / "fog.lorecard.json").stat().st_size
+    (home / "pack.yaml").write_text(
+        """manifest_version: 2
+id: fog
+version: 1.0.0
+name: Fog
+description: Fog fixture
+authors: [tester]
+license: MIT
+contents:
+  cards:
+    - path: cards/fog.lorecard.json
+      kind: world
+trust:
+  cards: 1
+  world_cards: 1
+files:
+  - path: cards/fog.lorecard.json
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+    size: """
+        + str(card_size)
+        + "\n",
         encoding="utf-8",
     )
     fake_homes = {"fog": home}
     monkeypatch.setattr("gateway.panels.installed_pack_homes", lambda data_dir: fake_homes)
 
-    calls: list[tuple[str, str]] = []
+    calls: list[tuple[str, str, bool]] = []
 
     class _FakeCharcardTools:
         def __init__(self, services) -> None:
             self._services = services
 
         async def import_world_card(self, ctx, file_path, **kw):
-            calls.append((ctx.chat_key, file_path))
+            calls.append((ctx.chat_key, file_path, bool(kw.get("raise_on_failure"))))
             return "world card imported"
 
     monkeypatch.setattr("agent.kp_tools_charcard.CharcardTools", _FakeCharcardTools)
@@ -147,7 +179,9 @@ async def test_import_pack_routes_to_world_card_import(tmp_path, monkeypatch):
     reply = await admin._import(room, tmp_path / "modules", {"name": "fog"}, i18n)
     assert reply["ok"] is True
     assert reply["kind"] == "module_import"
-    assert calls == [(chat_key_for_room(room), str(home / "cards" / "fog.lorecard.json"))]
+    assert calls == [
+        (chat_key_for_room(room), str(home / "cards" / "fog.lorecard.json"), True)
+    ]
 
     # A pack with no world card degrades cleanly.
     bare = tmp_path / "packs" / "empty@1.0.0"

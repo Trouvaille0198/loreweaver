@@ -197,9 +197,11 @@ async def _load_all(documents: Any, chat_key: str) -> list[tuple[str, NpcRecord]
     return pairs
 
 
-async def _save_record(documents: Any, chat_key: str, record: NpcRecord) -> None:
+async def _save_record(
+    documents: Any, chat_key: str, record: NpcRecord, *, source: str | None = None
+) -> None:
     record.updated_time = time.time()
-    await documents.put(chat_key, NPC_DOC_TYPE, record.id, record.to_dict())
+    await documents.put(chat_key, NPC_DOC_TYPE, record.id, record.to_dict(), source=source)
 
 
 async def _resolve_id(documents: Any, chat_key: str, name_or_id: str) -> str | None:
@@ -283,6 +285,7 @@ async def create_npc(
     role: str = "",
     major: bool = True,
     stat_char: str | None = None,
+    source: str | None = None,
 ) -> NpcRecord:
     """Create and persist a new NPC for `chat_key`, id = `slugify(name)` (collision-suffixed).
 
@@ -324,7 +327,7 @@ async def create_npc(
         major=major,
         stat_char=stat_char,
     )
-    await _save_record(documents, chat_key, record)
+    await _save_record(documents, chat_key, record, source=source)
     return record
 
 

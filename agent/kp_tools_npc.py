@@ -247,6 +247,10 @@ class NpcTools:
             imported: list[str] = []
             skipped: list[str] = []
             refused: list[str] = []
+            from agent.module_lifecycle import active_module
+
+            module = await active_module(self._services, ctx.chat_key)
+            module_source = str((module or {}).get("source_id") or "") or None
             for entry in entries:
                 if not isinstance(entry, dict):
                     continue
@@ -264,6 +268,7 @@ class NpcTools:
                         public_description=str(entry.get("description", "")),
                         secret_agenda=str(entry.get("secret", "")),
                         role=str(entry.get("role", "")),
+                        source=module_source,
                     )
                 except npc_records.PlayerNameReservedError as exc:
                     # A module NPC who is also one of its claimable pregens (or already

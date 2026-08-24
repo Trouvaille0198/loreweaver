@@ -25,7 +25,10 @@ two things differ from the source:
   names regardless of the operator's chosen locale.
 
 ``_build_knowledge_pools`` keeps the source data shapes and literal Chinese
-defaults (for example ``"探索"`` / ``"场景{i+1}"``). When no usable model
+defaults (for example ``"探索"`` / ``"场景{i+1}"``). Player knowledge follows
+an explicit discovery contract: only the opening scene identity is seeded;
+scene detail, NPCs, clues, background and conclusions must be unlocked during
+play. When no usable model
 response is available, the fallback also extracts the common Markdown
 headings and lists used by module authors, so an offline import still has a
 useful NPC/clue/truth/timeline catalog instead of only a paragraph summary.
@@ -591,12 +594,9 @@ class ModuleInitializer:
     def _build_knowledge_pools(self, analysis: dict) -> tuple[dict, dict]:
         """Split `analysis` into `(keeper_pool, player_pool)`.
 
-        Ported verbatim (data shape) from the source's
-        ``_build_knowledge_pools`` — see the module docstring. Notably:
-        `player_pool["clues"]` starts (and stays) empty — clues are unlocked
-        into it one at a time during play (an agent-layer concern, M1 §6.3's
-        `unlock_for_player` tool) — while scene-local clues are immediately
-        player-visible via each scene's own `"clues"` list.
+        Keeper content is complete. Player content starts with only the first
+        scene's identity so the room has an opening focus; every descriptive or
+        revelatory element is admitted explicitly through `unlock_for_player`.
         """
         keeper_pool: dict[str, Any] = {
             "scenes": [],
@@ -611,42 +611,25 @@ class ModuleInitializer:
             "scenes": [],
             "npcs": [],
             "clues": [],
-            "background": analysis.get("background", ""),
-            "summary": analysis.get("summary", ""),
+            "background": "",
+            "summary": "",
         }
 
-        # scenes: keeper gets the full scene (incl. keeper_notes), player
-        # only the spoiler-free fields.
-        for scene in analysis.get("scenes", []):
+        # Scenes are keeper-only until play exposes them.  The first scene's
+        # name/focus is a navigation seed, not narrative knowledge.
+        for index, scene in enumerate(analysis.get("scenes", [])):
             keeper_pool["scenes"].append(scene)
-            player_pool["scenes"].append(
-                {
-                    "name": scene.get("name", ""),
-                    "focus": scene.get("focus", "探索"),
-                    "description": scene.get("description", ""),
-                    "npcs_present": scene.get("npcs_present", []),
-                    "clues": [
-                        {
-                            "name": c.get("name", ""),
-                            "description": c.get("description", ""),
-                            "discovery_method": c.get("discovery_method", ""),
-                        }
-                        for c in scene.get("clues", [])
-                    ],
-                }
-            )
+            if index == 0:
+                player_pool["scenes"].append(
+                    {
+                        "name": scene.get("name", ""),
+                        "focus": scene.get("focus", "探索"),
+                    }
+                )
 
-        # npcs: keeper gets the full NPC (incl. secret), player only the
-        # outward-visible fields.
+        # NPCs are not visible merely because they exist in the module.
         for npc in analysis.get("npcs", []):
             keeper_pool["npcs"].append(npc)
-            player_pool["npcs"].append(
-                {
-                    "name": npc.get("name", ""),
-                    "description": npc.get("description", ""),
-                    "role": npc.get("role", ""),
-                }
-            )
 
         # clues (module-wide catalog): keeper only — player's copy is
         # unlocked incrementally during play, not seeded here.

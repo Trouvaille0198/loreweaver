@@ -253,10 +253,11 @@ async def build_system_prompt_parts(
     chronicle = await build_chronicle_sections(ctx, services, i18n, recent_context=recent_context)
 
     # --- STABLE HEAD: changes when the ROOM's configuration changes, not per turn ---
+    room_rulepack = await services.room_rulepack(ctx)
     stable: list[str] = [
         await inject_trpg_system_prompt(ctx, i18n),
         await inject_system_expertise_prompt(
-            ctx, services.characters, i18n, default_system=services.settings.default_rulepack
+            ctx, services.characters, i18n, default_system=room_rulepack.system
         ),
         await inject_interaction_style_prompt(ctx, i18n),
     ]

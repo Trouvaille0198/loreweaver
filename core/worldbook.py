@@ -294,6 +294,7 @@ class Worldbook:
         is_keeper: bool = False,
         char_name: str = "",
         skipped_titles: list[str] | None = None,
+        replace_source: bool = True,
     ) -> int:
         """Import lorebook entries into this room.
 
@@ -319,7 +320,7 @@ class Worldbook:
         # by design, not oversight — a player import that could remove by source would let
         # a crafted card named after the module wipe the keeper's lore and substitute its
         # own. Player re-imports stay additive, exactly as before.
-        if is_keeper and source:
+        if is_keeper and source and replace_source:
             await self.remove_by_source(chat_key, source)
         count = 0
         for index, raw in enumerate(raw_entries, start=1):

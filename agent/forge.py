@@ -470,7 +470,7 @@ def _build_rulepack_messages(services: Services, description: str, extends_base:
     schema+example framing text (`agent.forge.rulepack_system_prompt`) as the system message, and
     the keeper's raw rule-system `description` as the user message -- mirrors `_build_messages`.
 
-    When ``extends_base`` is given (e.g. ``coc7``), the system prompt gains an instruction to
+    When ``extends_base`` is given (for example a known base pack id), the system prompt gains an instruction to
     author the rulepack as a PATCH on that base system (``extends: <base>`` + only the deltas),
     so the module reuses a known system's attributes/skills/checks instead of inventing a
     standalone replacement."""
@@ -1388,8 +1388,8 @@ async def generate_and_install_pack_module(
     optional assets + companion systems), exactly like a hand-authored pack. Audio is
     deliberately absent (keeper veto), same as the md lane.
 
-    ``extends_base`` (e.g. ``coc7``) makes a generated companion rulepack a PATCH on that base
-    system. ``system`` (e.g. ``dnd5e``) instead declares that the module DIRECTLY uses a
+    ``extends_base`` makes a generated companion rulepack a PATCH on that base
+    system. ``system`` instead declares that the module DIRECTLY uses a
     built-in rule system: the world card carries ``system: <id>`` and, on import, the room pins
     that system WITHOUT shipping or generating any rulepack. ``system`` and ``extends_base``
     are mutually exclusive; ``system`` takes precedence and skips rulepack generation."""
@@ -1702,7 +1702,7 @@ async def _pack_rulepack(
 ) -> tuple[str | None, str]:
     """Generate a rulepack and write it into the pack source tree as `rulepacks/<id>.yaml`.
     Returns `(pack-relative rulepack path, localized note)` or `(None, note)` on failure.
-    ``extends_base`` (e.g. ``coc7``) makes the rulepack a PATCH on that base system."""
+    ``extends_base`` makes the rulepack a PATCH on that base system."""
     request = i18n.t(
         "agent.forge.module_companion_rulepack_request",
         title=description,

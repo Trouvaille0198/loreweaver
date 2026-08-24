@@ -197,7 +197,6 @@ class PanelsCommands:
         # is rebuilt. Dispatch self-heals on a miss too — the out-of-process door has no
         # other way in — but this door knows a pack just landed, so it skips the throttle.
         self.refresh_pack_words(force=True)
-        await toggle_enabled_panel_pack(ctx.services.store, ctx.chat_key, pack_id, on=True)
         live, leftover = await _switch_everything_on(ctx, report, pack_id)
         if self.hub is not None:
             await publish_ui_manifests(self.hub, ctx.services, ctx.chat_key)
@@ -210,7 +209,14 @@ class PanelsCommands:
             installed_panel_count(ctx.services, pack_id) > 0
             or installed_presentation_count(ctx.services, pack_id) > 0
         )
-        headline = "commands.pack.installed" if dressed else "commands.pack.installed_plain"
+        active_here = bool(live)
+        headline = (
+            "commands.pack.installed"
+            if dressed and active_here
+            else "commands.pack.installed_plain"
+            if active_here
+            else "commands.pack.installed_only"
+        )
         lines = [
             ctx.i18n.t(headline, id=pack_id, version=report.manifest.version),
             # `instructional=False`: this door already imported the unique world card, and
@@ -268,20 +274,6 @@ async def _switch_everything_on(
     live: list[str] = []
     leftover: list[str] = []
 
-    for skill_path in manifest.contents.get("skills", ()):
-        skill_id = PurePosixPath(str(skill_path)).name
-        if not skill_id:
-            continue
-        await toggle_enabled_skill(ctx.services.store, ctx.chat_key, skill_id, on=True)
-        live.append(ctx.i18n.t("commands.pack.live_skill", id=skill_id))
-    if report.shadowed:
-        # Enabled all the same (owner verdict 2026-08-20: a keeper who typed the ref
-        # decides, built-in ids included) — but the id the room now runs is the BUILT-IN,
-        # because a built-in always wins discovery. Saying so is what the terminal door
-        # already does (`pack.install.shadowed`); an author debugging "my skill changed
-        # nothing" has no other way to see it. A courtesy line, not a gate.
-        live.append(ctx.i18n.t("commands.pack.shadowed", ids=", ".join(report.shadowed)))
-
     world_refs = [
         f"{pack_id}/{card_path}"
         for index, card_path in enumerate(manifest.contents.get("cards", ()))
@@ -302,6 +294,32 @@ async def _switch_everything_on(
             live.append(ctx.i18n.t("commands.pack.live_card_pinned", ref=world_refs[0], system=pinned))
         else:
             live.append(ctx.i18n.t("commands.pack.live_card", ref=world_refs[0]))
+        if loaded:
+            for skill_path in manifest.contents.get("skills", ()):
+                skill_id = PurePosixPath(str(skill_path)).name
+                if skill_id:
+                    live.append(ctx.i18n.t("commands.pack.live_skill", id=skill_id))
+    else:
+        # No world card means this is an extension pack, not a room module.  Its
+        # ordinary skills and table dressing can be enabled independently without
+        # replacing the room's sole module.
+        for skill_path in manifest.contents.get("skills", ()):
+            skill_id = PurePosixPath(str(skill_path)).name
+            if not skill_id:
+                continue
+            await toggle_enabled_skill(ctx.services.store, ctx.chat_key, skill_id, on=True)
+            live.append(ctx.i18n.t("commands.pack.live_skill", id=skill_id))
+        if manifest.contents.get("panels") or manifest.contents.get("presentation"):
+            await toggle_enabled_panel_pack(ctx.services.store, ctx.chat_key, pack_id, on=True)
+            live.append(ctx.i18n.t("commands.pack.live_panels", id=pack_id))
+    if report.shadowed and (not world_refs or len(world_refs) == 1 and live):
+        live.append(ctx.i18n.t("commands.pack.shadowed", ids=", ".join(report.shadowed)))
+    if manifest.contents.get("presets"):
+        leftover.append(ctx.i18n.t("commands.pack.leftover_presets"))
+    if manifest.contents.get("prep"):
+        leftover.append(ctx.i18n.t("commands.pack.leftover_prep"))
+    if not world_refs and manifest.contents.get("lorebooks"):
+        leftover.append(ctx.i18n.t("commands.pack.leftover_lorebooks"))
     if leftover:
         leftover.insert(0, ctx.i18n.t("commands.pack.next_header"))
     return live, leftover
