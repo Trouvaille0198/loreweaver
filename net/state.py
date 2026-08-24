@@ -507,7 +507,7 @@ async def _variables(services: Services, ctx: AgentCtx) -> list[dict[str, Any]]:
 
 
 async def _pregens(services: Services, chat_key: str, members: list[Any] | None = None) -> list[dict[str, Any]]:
-    """The claimable pregen cast, v1.9 additive: one ``{name, claimed_by}`` per entry,
+    """The claimable pregen cast, v1.9 additive: one ``{name, blurb, claimed_by}`` per entry,
     insertion-ordered, consumed from the `pregen` documents' PLAYER projection (the cast
     list is table talk; the pristine sheet payload is what the projection withholds).
     Omitted (never an empty list) for roster-less rooms. Best-effort like the rest of
@@ -541,11 +541,17 @@ async def _pregens(services: Services, chat_key: str, members: list[Any] | None 
             or claimed_by
         )
 
-    return [
-        {"name": str(view.get("name", "")), "claimed_by": wire_claimer(view)}
-        for _doc, view in pairs
-        if view.get("name")
-    ]
+    entries: list[dict[str, Any]] = []
+    for _doc, view in pairs:
+        name = str(view.get("name", ""))
+        if not name:
+            continue
+        entry = {"name": name, "claimed_by": wire_claimer(view)}
+        blurb = str(view.get("blurb", "")).strip()
+        if blurb:
+            entry["blurb"] = blurb
+        entries.append(entry)
+    return entries
 
 
 async def _usage(services: Services, chat_key: str) -> dict[str, Any] | None:

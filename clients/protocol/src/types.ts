@@ -800,10 +800,12 @@ export interface ModuleVariable {
 
 // v1.9 additive: one claimable pre-generated character from the module's cast
 // (`.pc list` / `.pc claim` on the command surface). `claimed_by` is the claiming
-// member's id, or "" while unclaimed. Public to every viewer.
+// member's id, or "" while unclaimed. The optional blurb is the public persona
+// summary from the module card; the pristine sheet remains withheld. Public to every viewer.
 export interface PregenEntry {
   name: string
   claimed_by: string
+  blurb?: string
 }
 
 /** v2.3: one discoverable rule system. `make_char` is the dot-command word that

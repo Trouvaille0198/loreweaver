@@ -105,7 +105,11 @@ async def test_build_room_state_surfaces_pregen_roster_to_every_viewer():
     services = _services()
     ctx = _room_ctx("pregen-room")
     await pregen_add(
-        services.documents, ctx.chat_key, CharacterSheet(name="Mira Vane", system="CoC"), source="module"
+        services.documents,
+        ctx.chat_key,
+        CharacterSheet(name="Mira Vane", system="CoC"),
+        source="module",
+        blurb="A reporter tracking a disappearance.",
     )
     await pregen_add(
         services.documents, ctx.chat_key, CharacterSheet(name="老陈", system="CoC"), source="module"
@@ -115,7 +119,11 @@ async def test_build_room_state_surfaces_pregen_roster_to_every_viewer():
     state = await build_room_state(services, ctx)
 
     assert state["pregens"] == [
-        {"name": "Mira Vane", "claimed_by": "player-1"},
+        {
+            "name": "Mira Vane",
+            "claimed_by": "player-1",
+            "blurb": "A reporter tracking a disappearance.",
+        },
         {"name": "老陈", "claimed_by": ""},
     ]
 
