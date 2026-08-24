@@ -874,14 +874,14 @@ export type TurnActivity = "thinking" | "reading" | "dice" | "cast" | "bookkeepi
 
 export type TurnStatusFrame =
   | {
-      type: typeof FrameType.TurnStatus
-      status: "busy"
-      actor: string
-      /** 2.3.1, optional: a long turn refreshes `busy` once per tool round with this. */
-      activity?: TurnActivity
-      /** 2.3.1, optional: the tool round this refresh belongs to, counting from 1. */
-      round?: number
-    }
+    type: typeof FrameType.TurnStatus
+    status: "busy"
+    actor: string
+    /** 2.3.1, optional: a long turn refreshes `busy` once per tool round with this. */
+    activity?: TurnActivity
+    /** 2.3.1, optional: the tool round this refresh belongs to, counting from 1. */
+    round?: number
+  }
   | { type: typeof FrameType.TurnStatus; status: "idle"; actor?: never }
 
 export interface PongFrame {

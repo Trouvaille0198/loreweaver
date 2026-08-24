@@ -23,6 +23,7 @@ and this module's `state.character` can never diverge on the same caller.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 
 from agent.context import AgentCtx
@@ -35,13 +36,17 @@ from infra.usage_stats import USAGE_STATS_KEY
 
 
 async def build_room_state(
-    services: Services, ctx: AgentCtx, *, members: list[Any] | None = None
+    services: Services,
+    ctx: AgentCtx,
+    *,
+    members: list[Any] | None = None,
+    claimant_name_resolver: Callable[[str], str] | None = None,
 ) -> dict[str, Any]:
     """Assemble one `state` frame's payload (including `type`) for `ctx`'s room.
 
     `members` (the room hub's registered connections) lets the pregen cast resolve a
-    claimer's internal member id to its display name for the wire; `None` (tests,
-    offline claimers) keeps the id.
+    claimer's internal member id to its display name for the wire. The optional
+    `claimant_name_resolver` handles offline claims from the authentication store.
     """
     sheet = await resolve_active_character(services, ctx)
     party = await _party(services, ctx.chat_key, locale=ctx.locale)
@@ -79,7 +84,13 @@ async def build_room_state(
     if variables:
         state["variables"] = variables
 
-    pregens = await _pregens(services, ctx.chat_key, members)
+    pregens = await _pregens(
+        services,
+        ctx.chat_key,
+        members,
+        claimant_name_resolver=claimant_name_resolver,
+        locale=ctx.locale,
+    )
     if pregens:
         state["pregens"] = pregens
 
@@ -506,7 +517,14 @@ async def _variables(services: Services, ctx: AgentCtx) -> list[dict[str, Any]]:
     return entries
 
 
-async def _pregens(services: Services, chat_key: str, members: list[Any] | None = None) -> list[dict[str, Any]]:
+async def _pregens(
+    services: Services,
+    chat_key: str,
+    members: list[Any] | None = None,
+    *,
+    claimant_name_resolver: Callable[[str], str] | None = None,
+    locale: str = "en",
+) -> list[dict[str, Any]]:
     """The claimable pregen cast, v1.9 additive: one ``{name, blurb, claimed_by}`` per entry,
     insertion-ordered, consumed from the `pregen` documents' PLAYER projection (the cast
     list is table talk; the pristine sheet payload is what the projection withholds).
@@ -517,8 +535,8 @@ async def _pregens(services: Services, chat_key: str, members: list[Any] | None 
     verbatim ("已被 {name} 认领") and compare it against ``welcome.you.name`` to mark
     "yours" — a raw internal member id (``tui:…``) would read badly and never match.
     The claim-time display name (``claimed_name``) is authoritative and survives the
-    claimer going offline; the room hub's members are the fallback, and the raw id the
-    last resort for a claim that predates both."""
+    claimer going offline; the room hub's members and authentication store are fallbacks.
+    Internal member ids are never exposed in a player-facing frame."""
     try:
         pairs = await services.documents.list_views(chat_key, "pregen", PLAYER_VIEWER)
     except Exception:
@@ -533,12 +551,17 @@ async def _pregens(services: Services, chat_key: str, members: list[Any] | None 
         claimed_by = str(view.get("claimed_by", ""))
         if not claimed_by:
             return ""
-        # Claim-time display name first (works for offline claimers), then the
-        # live member registry, then the raw id as a last resort.
+        resolved_name = ""
+        if claimant_name_resolver is not None:
+            try:
+                resolved_name = str(claimant_name_resolver(claimed_by) or "")
+            except Exception:
+                resolved_name = ""
         return (
             str(view.get("claimed_name", ""))
             or member_names.get(claimed_by, "")
-            or claimed_by
+            or resolved_name
+            or ("玩家" if str(locale).lower().startswith("zh") else "player")
         )
 
     entries: list[dict[str, Any]] = []

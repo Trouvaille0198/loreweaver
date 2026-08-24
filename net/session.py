@@ -1157,5 +1157,10 @@ class SessionCore:
                 # and is not necessarily identical to AgentCtx.user_id.
                 "member_user_key": member.user_key,
                 "reauthorize": lambda: self._refresh_member_authorization(member),
+                "claimant_name_resolver": lambda member_id: self._resolve_member_name(member_id, member.room),
             },
         )
+
+    def _resolve_member_name(self, member_id: str, room: str) -> str:
+        entry = self.keystore.authorize_member(member_id, room=room)
+        return entry.name if entry is not None else ""

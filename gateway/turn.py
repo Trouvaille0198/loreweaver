@@ -30,6 +30,7 @@ import asyncio
 import json
 import logging
 import uuid
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from agent.context import AgentCtx
@@ -536,7 +537,10 @@ async def publish_state(hub: RoomHub, services: Services, ctx: AgentCtx, *, rese
             platform=str(getattr(member, "transport", ctx.platform)),
             locale=str(getattr(member, "locale", ctx.locale)),
             fs=ctx.fs,
-            extra={"role": str(getattr(member, "role", "") or "")},
+            extra={
+                "role": str(getattr(member, "role", "") or ""),
+                "claimant_name_resolver": ctx.extra.get("claimant_name_resolver"),
+            },
         )
 
     identity_contexts: list[tuple[AgentCtx, str]] = []
@@ -591,6 +595,7 @@ async def state_for_ctx(
     members: list[Member] | None = None,
     connected_names: set[str] | None = None,
     online: int | None = None,
+    claimant_name_resolver: Callable[[str], str] | None = None,
 ) -> dict[str, Any]:
     """`ctx`'s own room snapshot (`net.state.build_room_state`) with the hub's presence
     overlaid — the frame `publish_state` sends each member, for one member. A command
@@ -601,7 +606,12 @@ async def state_for_ctx(
     )
     # `members` also lets the pregen cast render claimers by display name, not
     # internal id (see net.state._pregens).
-    snapshot = await build_room_state(services, ctx, members=members)
+    snapshot = await build_room_state(
+        services,
+        ctx,
+        members=members,
+        claimant_name_resolver=claimant_name_resolver or ctx.extra.get("claimant_name_resolver"),
+    )
     snapshot["online"] = len(members) if online is None else online
     for party_member in snapshot.get("party", []):
         party_member["online"] = party_member.get("name") in connected_names
