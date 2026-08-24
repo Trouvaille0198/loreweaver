@@ -1350,6 +1350,7 @@ _PACK_MODULE_CARD_SCHEMA = """{
         {
             "id": "a stable snake_case id for a module tracker (e.g. 'fear')",
             "kind": "number|text|bool|enum",
+            "labels": {"en": "English display label", "zh": "Chinese display label"},
             "default": 0,
             "minimum": 0,
             "maximum": 10,
@@ -1361,6 +1362,22 @@ _PACK_MODULE_CARD_SCHEMA = """{
         {"name": "a claimable investigator", "concept": "one-line character concept"}
     ]
 }"""
+
+
+def _missing_pack_module_labels(card: dict, locale: str | None) -> list[int]:
+    """Return variable indexes that lack a display label for the requested locale."""
+    variables = card.get("variables")
+    if not isinstance(variables, list):
+        return []
+    requested = (locale or "en").split("-", 1)[0].lower()
+    missing: list[int] = []
+    for index, variable in enumerate(variables):
+        if not isinstance(variable, dict):
+            continue
+        labels = variable.get("labels")
+        if not isinstance(labels, dict) or not isinstance(labels.get(requested), str) or not labels[requested].strip():
+            missing.append(index)
+    return missing
 
 
 async def generate_and_install_pack_module(
@@ -1427,6 +1444,18 @@ async def generate_and_install_pack_module(
         # record it in the card so the room pins it on import. Mutually exclusive with
         # `extends_base` — a card that declares a system is not also generating a patch.
         card_text["system"] = system
+
+    missing_labels = _missing_pack_module_labels(card_text, ctx.locale)
+    if missing_labels:
+        requested = (ctx.locale or "en").split("-", 1)[0].lower()
+        indexes = ", ".join(str(index) for index in missing_labels)
+        return ForgeResult(
+            False,
+            "",
+            "",
+            "",
+            f"invalid_pack_module: variables missing {requested} labels at indexes {indexes}",
+        )
 
     # Validate through the REAL parser before anything is written.
     try:

@@ -44,7 +44,7 @@
   "agent.forge.pack_module_rulepack": "已将规则体系打进包里：{name}。",
   "agent.forge.pack_module_system_declared": "模组直接使用内置规则体系 {system}——不生成规则包；导入时房间会绑定该体系。",
   "agent.forge.pack_module_skill": "已将 KP 技能打进包里：{name}。",
-  "agent.forge.pack_module_language_requirement": "所有名称、描述、设定条目和变量描述都必须使用与这条系统提示词相同的语言（中文），与模组本身语言一致；不要把内容翻译成英文。",
+  "agent.forge.pack_module_language_requirement": "所有名称、描述、设定条目和变量描述都必须使用与这条系统提示词相同的语言（中文），与模组本身语言一致；每个变量都必须提供 labels 对象，并至少填写 zh 标签，不能只把变量 id 当作显示名称；不要把内容翻译成英文。",
   "agent.forge.pack_module_request": "守秘人的前提：{description}\n\n请把模组写成单个 JSON 对象，严格匹配以下 schema——不要解说、不要代码围栏、JSON 前后不要有任何文字：\n\n{schema}",
   "agent.forge.pack_module_system_prompt": "你正在把一部完整的 Loreweaver TTRPG 模组写成原生世界卡（world card）——这是引擎的标准完整模组形态。与纯文本剧本不同，世界卡把模组运行所需的一切装进一个可分发的包里：守秘人信任级的设定条目（玩家不该看到的标为 secret）、类型化的模组状态量、一批可认领的预生成调查员、以及模组的散文（定位、情境、开场）。之后会有独立的打包步骤把这张卡包进 .lwpack 内容包。\n\n只输出符合所给 schema 的 JSON 对象——绝不要 Markdown，绝不要 YAML。\n\n要点：\n- `worldbook`：每条是一个自包含的设定块，守秘人用它跑模组（一处场景、一个 NPC、一条线索、一块隐藏真相）。任何不能告诉玩家的内容都设 `secret: true`。`keys` 是触发该条目出现的词。每条保持聚焦。\n- `variables`：模组状态量（例如恐惧表 0-10、调查进度）。用稳定的 snake_case 名称并给出合理边界。\n- `pregens`：1-4 名可认领的玩家角色，每名一个名字加 2-4 句概念描述。\n- `scenario` 是第零回合的处境；`opening` 是守秘人可照念的开场文本。",
   "agent.forge.no_data_dir": "KP 技能生成功能不可用：服务器未配置数据目录。",
