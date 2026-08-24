@@ -1105,3 +1105,24 @@ async def test_rulepack_messages_inject_extends_instruction(tmp_path: Path) -> N
     assert "extends: coc7" in patched[0]["content"]
     assert "coc7" in patched[0]["content"]
     assert patched[1]["content"] == "a mystery"
+
+
+def test_repair_skill_frontmatter_appends_missing_closing_fence():
+    """A SKILL.md that opens frontmatter with `---` but forgets the closing fence is repaired by
+    appending it (then still parsed strictly); already-closed or non-frontmatter content is
+    untouched."""
+    from agent.forge import _repair_skill_frontmatter
+
+    # Missing closing fence: repaired.
+    text = "---\nname: My Skill\ndescription: Test\n\nBody text"
+    repaired = _repair_skill_frontmatter(text)
+    assert repaired.count("---") == 2
+    assert repaired.rstrip().endswith("---")
+
+    # Already closed: untouched.
+    closed = "---\nname: X\n---\nBody"
+    assert _repair_skill_frontmatter(closed) == closed
+
+    # No leading fence (not a frontmatter doc): untouched.
+    plain = "Just a body without frontmatter"
+    assert _repair_skill_frontmatter(plain) == plain

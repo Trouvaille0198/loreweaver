@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { useKeyboard, useTerminalDimensions, useTimeline } from "@opentui/react"
 import type { InputRenderable, KeyEvent, ScrollBoxRenderable } from "@opentui/core"
 import {
@@ -19,6 +19,7 @@ import {
   type WelcomeFrame,
 } from "loreweaver-protocol"
 import { HeaderBar } from "./components/HeaderBar"
+import { CommandHints } from "./components/CommandHints"
 import { lastChoicesFrameIndex, NarrativeLog, type LogFrame } from "./components/NarrativeLog"
 import { PanelsPanel } from "./components/PanelsPanel"
 import { PartyRoster } from "./components/PartyRoster"
@@ -34,6 +35,7 @@ import { droppedImagePath, openMedia, readAudioUpload, readUpload, type HalfBloc
 import type { Palette, ThemeName } from "./themes"
 import { usesAppClipboardCopy } from "./copy"
 import { writeTranscript } from "./transcript"
+import { commandHints, quickCommandHints, type CompletionHint } from "./commandCompletion"
 
 // The game view needs only these three from the client. `WsClient` (and the
 // shell's wider `AppClient`) satisfies it structurally; tests inject a mock.
@@ -189,6 +191,8 @@ export function GameView({
   // empty hides the sidebar import picker entirely.
   const [packCards, setPackCards] = useState<PackCardEntry[]>([])
   const [command, setCommand] = useState("")
+  const [hintIndex, setHintIndex] = useState(-1)
+  const [quickMenuOpen, setQuickMenuOpen] = useState(false)
   const [inputError, setInputError] = useState<string>()
   const [history, setHistory] = useState<string[]>([])
   const [historyIndex, setHistoryIndex] = useState<number | null>(null)
@@ -221,6 +225,15 @@ export function GameView({
   // character to expand/collapse, or (v1.9) an unclaimed pregen to claim.
   const rosterFocusable = Boolean(stateFrame.character) || (stateFrame.pregens ?? []).some((entry) => !entry.claimed_by)
   const roomBusy = turnStatus?.status === "busy"
+  const isKeeper = welcome.you.role === "keeper"
+  const hints = useMemo<CompletionHint[]>(
+    () =>
+      quickMenuOpen && command.trim() === ""
+        ? quickCommandHints(isKeeper)
+        : commandHints(command, isKeeper, stateFrame.image_names),
+    [command, isKeeper, quickMenuOpen, stateFrame.image_names],
+  )
+  const activeHint = hintIndex >= 0 && hintIndex < hints.length ? hints[hintIndex] : undefined
   const workingLabel = roomBusy
     ? tt(locale, "log.workingFor", { actor: stripControlChars(turnStatus.actor) })
     : tt(locale, "log.working")
@@ -382,6 +395,8 @@ export function GameView({
     setHistory((current) => [...current, text].slice(-50))
     setHistoryIndex(null)
     setCommand("")
+    setHintIndex(-1)
+    setQuickMenuOpen(false)
     setInputError(undefined)
     setInputVersion((current) => current + 1)
   }
@@ -497,6 +512,8 @@ export function GameView({
         : Math.max(0, Math.min(history.length - 1, historyIndex + direction))
     setHistoryIndex(nextIndex)
     setCommand(history[nextIndex])
+    setHintIndex(-1)
+    setQuickMenuOpen(false)
     if (inputRef.current) inputRef.current.value = history[nextIndex]
   }
 
@@ -505,6 +522,32 @@ export function GameView({
   // while the game view is mounted, so it can't fight the menu's arrow handling.
   useKeyboard((event) => {
     const name = keyName(event)
+    if (name === "escape" && (quickMenuOpen || hints.length > 0)) {
+      setQuickMenuOpen(false)
+      setHintIndex(-1)
+      return
+    }
+    if (hints.length > 0) {
+      if (name === "up" || name === "down") {
+        setHintIndex((current) => {
+          const next = name === "down" ? current + 1 : current <= 0 ? hints.length - 1 : current - 1
+          return Math.max(0, Math.min(hints.length - 1, next))
+        })
+        return
+      }
+      if (name === "tab") {
+        setHintIndex((current) => (event.shift ? (current <= 0 ? hints.length - 1 : current - 1) : (current + 1) % hints.length))
+        return
+      }
+    }
+    if (name === "f7" || (hasCtrl(event) && (name === "k" || name === "ctrl+k"))) {
+      setQuickMenuOpen((open) => {
+        const next = !open
+        setHintIndex(next ? 0 : -1)
+        return next
+      })
+      return
+    }
     if (name === "?" || name === "slash") setShowHelp((value) => !value)
     if (name === "pageup") scrollRef.current?.scrollBy?.(-1, "viewport")
     if (name === "pagedown") scrollRef.current?.scrollBy?.(1, "viewport")
@@ -617,6 +660,7 @@ export function GameView({
         ) : null}
       </box>
 
+      <CommandHints hints={hints} selectedIndex={hintIndex} theme={theme} locale={locale} quick={quickMenuOpen && command.trim() === ""} />
       <box
         height={3}
         flexDirection="row"
@@ -644,13 +688,24 @@ export function GameView({
           placeholder={tt(locale, "game.placeholder")}
           onInput={(value: string) => {
             setCommand(value)
+            setHintIndex(-1)
+            setQuickMenuOpen(false)
             setInputError(
               inputLimitState(value).atLimit
                 ? tt(locale, "game.inputAtLimit", { limit: CHAT_INPUT_LIMIT })
                 : undefined,
             )
           }}
-          onSubmit={(value?: string) => submit(value)}
+          onSubmit={(value?: string) => {
+            if (activeHint) {
+              setCommand(activeHint.next)
+              setHintIndex(-1)
+              setQuickMenuOpen(false)
+              if (inputRef.current) inputRef.current.value = activeHint.next
+              return
+            }
+            submit(value)
+          }}
         />
         {inputState.showCounter ? (
           <box flexShrink={0} marginLeft={1}>

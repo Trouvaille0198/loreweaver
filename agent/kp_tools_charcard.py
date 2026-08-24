@@ -48,6 +48,20 @@ _PREVIEW_CHARS = 200
 _KEY_STAT_COUNT = 6
 
 
+def _load_skill_list(raw: str | None) -> list[str]:
+    """Parse the room's `skills_enabled` state (a JSON list of skill ids) into a Python list,
+    tolerating a missing/blank/malformed value."""
+    if not raw:
+        return []
+    try:
+        import json
+
+        parsed = json.loads(raw)
+    except Exception:  # noqa: BLE001 — a malformed state degrades to an empty list
+        return []
+    return [str(item) for item in parsed if isinstance(item, str)]
+
+
 def _parse_any_card_file(host_path: Path) -> tuple[CharacterCard, Lorecard | None]:
     """`core.charcard.parse_card_bytes`, extended with the native-bundle sniff (M14):
     a `*.lorecard.json` (the studio forge's lossless export) parses through
@@ -423,7 +437,19 @@ class CharcardTools:
             # keeper_discipline/module_fidelity blocks into the lore section ONLY for rooms
             # that actually loaded a module this way — a free-sandbox room whose keeper merely
             # `.lore add`ed some setting notes must never receive run-the-module directives.
-            await self._services.store.state_set(ctx.chat_key, "world_import", card.name or "card")
+            new_world_name = card.name or "card"
+            old_world_import = await self._services.store.state_get(ctx.chat_key, "world_import")
+            await self._services.store.state_set(ctx.chat_key, "world_import", new_world_name)
+            # Lock the Keeper's lore injection to THIS module's source, so the current campaign
+            # sees only the current module's worldbook (and never another imported module's).
+            await self._services.worldbook.set_active_source(ctx.chat_key, new_world_name)
+            # A room runs ONE module at a time. Importing a DIFFERENT module replaces the
+            # previous one outright: its lore, its pregen cast and the KP skills it enabled are
+            # purged so the current campaign sees ONLY the current module (old content never
+            # bleeds into the Keeper's context or the roster). Same-module re-import is a
+            # refresh and touches nothing.
+            if old_world_import and old_world_import != new_world_name:
+                await self._purge_old_module(ctx, old_world_import)
 
             # The card's PROSE gets a home (UPSTREAM item 10): a keeper-only brief
             # document, copied deterministically — before this, description/scenario
@@ -626,6 +652,33 @@ class CharcardTools:
             if text:
                 lines.append(f"{i18n.t('charcard.tools.brief.label.alt_opening', index=index)}:\n{text}")
         return "\n\n".join(lines)
+
+    async def _purge_old_module(self, ctx: AgentCtx, old_name: str) -> None:
+        """Remove every trace of a previously imported module when a DIFFERENT one replaces it:
+        its lorebook entries, its pregen cast, and the KP skills it enabled. Runs keeper-side
+        only (import_world_card is keeper-gated); old content never bleeds into the current
+        campaign's Keeper context or roster. Best-effort — a purge failure must never fail the
+        new import."""
+        try:
+            # Lore: drop every entry this old module wrote (source == its card name).
+            await self._services.worldbook.remove_by_source(ctx.chat_key, old_name)
+            # Pregen cast: drop roster entries that shipped with this old module.
+            from core.pregen_roster import pregen_entries
+
+            old_source = f"card:{old_name}"
+            for entry in await pregen_entries(self._services.documents, ctx.chat_key):
+                if entry["source"] == old_source and entry["id"]:
+                    await self._services.documents.delete(ctx.chat_key, "pregen", entry["id"])
+            # KP skills: disable everything currently enabled. The new module's own skills are
+            # re-enabled right after this (import_world_card's skill pass), so the room ends up
+            # with exactly the current module's skills and none of the old one's.
+            from gateway.ops import toggle_enabled_skill
+
+            raw = await self._services.store.state_get(ctx.chat_key, "skills_enabled")
+            for skill_id in _load_skill_list(raw):
+                await toggle_enabled_skill(self._services.store, ctx.chat_key, skill_id, on=False)
+        except Exception:  # noqa: BLE001 — a failed purge must not break the new import
+            pass
 
     async def _build_pregen_sheet(
         self, ctx: AgentCtx, character: CharacterCard, system: str, host_path: Path

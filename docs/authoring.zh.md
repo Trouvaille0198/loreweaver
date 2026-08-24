@@ -630,6 +630,7 @@ Check Tidology: target 5 (effective 5), roll 13 -> Failure
 
 | 主题 | 文档 |
 |---|---|
+| 模组的完整导入与游玩生命周期 | [modules.zh.md](modules.zh.md) |
 | 完整扩展契约——每个字段、上限、信任规则 | [plugins.zh.md](plugins.zh.md) |
 | 从酒馆搬过来：什么能跑、哪里不一样 | [cards.zh.md](cards.zh.md) |
 | 钩子 API、事件、效果缓冲、失败语义 | [hooks.zh.md](hooks.zh.md) |

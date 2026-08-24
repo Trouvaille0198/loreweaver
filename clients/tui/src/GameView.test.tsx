@@ -60,6 +60,44 @@ function renderGame(client: MockClient, width = 110, height = 34, props: Partial
 }
 
 describe("GameView", () => {
+  test("offers command completion and inserts a selected argument without sending it", async () => {
+    const client = new MockClient()
+    const { renderer, flush, waitForFrame, mockInput } = await renderGame(client)
+    await flush()
+
+    await act(async () => {
+      await mockInput.typeText(".ra 侦")
+    })
+    const suggestions = await waitForFrame((text) => text.includes("COMMANDS") && text.includes("侦查"))
+    expect(suggestions).toContain("侦查")
+
+    await act(async () => mockInput.pressArrow("down"))
+    await flush()
+    await act(async () => mockInput.pressEnter())
+    await flush()
+    expect(client.sent).toEqual([])
+    expect(await waitForFrame((text) => text.includes(".ra 侦查"))).toContain(".ra 侦查")
+
+    act(() => renderer.destroy())
+  })
+
+  test("F7 opens the player quick-command list and Enter inserts a command", async () => {
+    const client = new MockClient()
+    const { renderer, flush, waitForFrame, mockInput } = await renderGame(client)
+    await flush()
+
+    await act(async () => mockInput.pressKey("F7"))
+    await flush()
+    expect(await waitForFrame((text) => text.includes("QUICK COMMANDS"))).toContain(".r")
+
+    await act(async () => mockInput.pressEnter())
+    await flush()
+    expect(client.sent).toEqual([])
+    expect(await waitForFrame((text) => text.includes(".r "))).toContain(".r ")
+
+    act(() => renderer.destroy())
+  })
+
   test("renders protocol frames and submits command input", async () => {
     const client = new MockClient()
     // testRender wraps createTestRenderer + createRoot and flushes the initial

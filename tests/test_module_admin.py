@@ -104,3 +104,55 @@ async def test_module_detail_includes_only_this_modules_forge_media(tmp_path):
     other = json.loads((await admin._detail(room, root, "other.md"))["detail"])
     assert other["current"] is False
     assert other["media"] == []
+
+
+@pytest.mark.asyncio
+async def test_import_pack_routes_to_world_card_import(tmp_path, monkeypatch):
+    """`module_import` of an installed .lwpack pack id routes to the keeper WORLD-CARD import
+    path (`CharcardTools.import_world_card`) — a binary bundle, not a Markdown scenario — and
+    a pack with no world card degrades to a clean miss instead of a malformed request."""
+    store = Store(":memory:")
+    services = SimpleNamespace(
+        settings=SimpleNamespace(data_dir=tmp_path),
+        store=store,
+        documents=DocumentStore(store),
+        worldbook=Worldbook(store),
+    )
+    admin = ModuleAdminService(SimpleNamespace(services=services, keystore=None, fs=None, hub=None))
+
+    # A fake installed pack home carrying one world card.
+    home = tmp_path / "packs" / "fog@1.0.0"
+    (home / "cards").mkdir(parents=True)
+    (home / "cards" / "fog.lorecard.json").write_text(
+        json.dumps({"format": "loreweaver.card", "format_version": 1, "name": "Fog Manor", "opening": "It begins."}),
+        encoding="utf-8",
+    )
+    fake_homes = {"fog": home}
+    monkeypatch.setattr("gateway.panels.installed_pack_homes", lambda data_dir: fake_homes)
+
+    calls: list[tuple[str, str]] = []
+
+    class _FakeCharcardTools:
+        def __init__(self, services) -> None:
+            self._services = services
+
+        async def import_world_card(self, ctx, file_path, **kw):
+            calls.append((ctx.chat_key, file_path))
+            return "world card imported"
+
+    monkeypatch.setattr("agent.kp_tools_charcard.CharcardTools", _FakeCharcardTools)
+
+    room = "fog-room"
+    i18n = SimpleNamespace(locale="en")
+    reply = await admin._import(room, tmp_path / "modules", {"name": "fog"}, i18n)
+    assert reply["ok"] is True
+    assert reply["kind"] == "module_import"
+    assert calls == [(chat_key_for_room(room), str(home / "cards" / "fog.lorecard.json"))]
+
+    # A pack with no world card degrades cleanly.
+    bare = tmp_path / "packs" / "empty@1.0.0"
+    bare.mkdir(parents=True)
+    monkeypatch.setattr("gateway.panels.installed_pack_homes", lambda data_dir: {"empty": bare})
+    reply = await admin._import(room, tmp_path / "modules", {"name": "empty"}, i18n)
+    assert reply["ok"] is False
+    assert json.loads(reply["detail"])["error"] == "no_world_card"
