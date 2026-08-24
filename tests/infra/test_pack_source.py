@@ -257,3 +257,105 @@ def test_other_ref_failures_carry_no_hint(tmp_path: Path):
     with pytest.raises(PackRefError) as bad_ref:
         resolve_pack_ref("gh:not-a-ref", cache_dir=tmp_path, fetch=lambda url: b"")
     assert pack_source.pack_ref_hint(bad_ref.value) == ""
+
+
+def test_github_tree_url_resolves_lwpack_in_directory(tmp_path: Path):
+    """`https://github.com/owner/repo/tree/main/packs/1940npc` lists the directory through
+    the contents API and downloads its `.lwpack` file via raw.githubusercontent.com — the
+    files-in-repo door alongside the release-asset `gh:` door."""
+    seen: list[str] = []
+    dir_listing = [
+        {"type": "file", "name": "README.md"},
+        {"type": "file", "name": "1940npc-0.1.0.lwpack",
+         "download_url": "https://raw.githubusercontent.com/ada/packs/main/packs/1940npc/1940npc-0.1.0.lwpack"},
+    ]
+
+    def fetch(url: str) -> bytes:
+        seen.append(url)
+        if url.startswith("https://api.github.com/repos/ada/packs/contents/"):
+            return json.dumps(dir_listing).encode("utf-8")
+        if url.startswith("https://raw.githubusercontent.com/"):
+            return b"pack-bytes"
+        raise AssertionError(f"unexpected fetch: {url}")
+
+    path = resolve_pack_ref(
+        "https://github.com/ada/packs/tree/main/packs/1940npc", cache_dir=tmp_path, fetch=fetch
+    )
+    assert path.read_bytes() == b"pack-bytes"
+    assert seen == [
+        "https://api.github.com/repos/ada/packs/contents/packs/1940npc?ref=main",
+        "https://raw.githubusercontent.com/ada/packs/main/packs/1940npc/1940npc-0.1.0.lwpack",
+    ]
+
+
+def test_github_tree_url_searches_one_level_deeper(tmp_path: Path):
+    """A repo root URL (no /tree path) resolves the default branch, lists the root, then
+    descends one directory level looking for a `.lwpack` — matching the common
+    `packs/<id>/dist/<id>.lwpack` layout."""
+    def fetch(url: str) -> bytes:
+        if url == "https://api.github.com/repos/ada/packs":
+            return json.dumps({"default_branch": "main"}).encode("utf-8")
+        if url == "https://api.github.com/repos/ada/packs/contents/?ref=main":
+            return json.dumps([{"type": "dir", "path": "packs"}, {"type": "file", "name": "README.md"}]).encode("utf-8")
+        if url == "https://api.github.com/repos/ada/packs/contents/packs?ref=main":
+            return json.dumps([{"type": "dir", "path": "packs/1940npc"}, {"type": "dir", "path": "packs/other"}]).encode("utf-8")
+        if url == "https://api.github.com/repos/ada/packs/contents/packs/1940npc?ref=main":
+            return json.dumps(
+                [{"type": "file", "name": "1940npc-0.1.0.lwpack",
+                  "download_url": "https://raw.githubusercontent.com/ada/packs/main/packs/1940npc/1940npc-0.1.0.lwpack"}]
+            ).encode("utf-8")
+        if url.startswith("https://raw.githubusercontent.com/"):
+            return b"pack-bytes"
+        raise AssertionError(f"unexpected fetch: {url}")
+
+    path = resolve_pack_ref("https://github.com/ada/packs", cache_dir=tmp_path, fetch=fetch)
+    assert path.read_bytes() == b"pack-bytes"
+
+
+def test_github_tree_url_without_an_lwpack_fails(tmp_path: Path):
+    def fetch(url: str) -> bytes:
+        if url == "https://api.github.com/repos/ada/packs":
+            return json.dumps({"default_branch": "main"}).encode("utf-8")
+        if url == "https://api.github.com/repos/ada/packs/contents/?ref=main":
+            return json.dumps([{"type": "file", "name": "README.md"}]).encode("utf-8")
+        raise AssertionError(f"unexpected fetch: {url}")
+
+    with pytest.raises(PackRefError, match="no .lwpack"):
+        resolve_pack_ref("https://github.com/ada/packs", cache_dir=tmp_path, fetch=fetch)
+
+
+def test_github_blob_url_translates_to_raw_download(tmp_path: Path):
+    """`https://github.com/owner/repo/blob/main/packs/1940npc/dist/1940npc-0.1.0.lwpack`
+    translates deterministically to raw.githubusercontent.com and downloads it — NO GitHub
+    API call, so no anonymous rate limit."""
+    seen: list[str] = []
+
+    def fetch(url: str) -> bytes:
+        seen.append(url)
+        if url == (
+            "https://raw.githubusercontent.com/ada/packs/main/packs/1940npc/dist/1940npc-0.1.0.lwpack"
+        ):
+            return b"pack-bytes"
+        raise AssertionError(f"unexpected fetch: {url}")
+
+    path = resolve_pack_ref(
+        "https://github.com/ada/packs/blob/main/packs/1940npc/dist/1940npc-0.1.0.lwpack",
+        cache_dir=tmp_path,
+        fetch=fetch,
+    )
+    assert path.read_bytes() == b"pack-bytes"
+    assert seen == [
+        "https://raw.githubusercontent.com/ada/packs/main/packs/1940npc/dist/1940npc-0.1.0.lwpack"
+    ]
+
+
+def test_github_blob_url_must_name_an_lwpack(tmp_path: Path):
+    def fetch(url: str) -> bytes:
+        raise AssertionError(f"unexpected fetch: {url}")
+
+    with pytest.raises(PackRefError, match="lwpack"):
+        resolve_pack_ref(
+            "https://github.com/ada/packs/blob/main/packs/1940npc/dist/notes.txt",
+            cache_dir=tmp_path,
+            fetch=fetch,
+        )
