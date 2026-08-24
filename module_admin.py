@@ -991,10 +991,10 @@ async def delete_installed_pack(
     Returns ``(ok, name, error_code)`` — ``error_code`` is ``""`` on success and one of
     ``source_not_found`` / ``dev_mount`` / ``module_in_use`` otherwise. Removes the
     installed home under ``packs/<id>@<version>/``, the forge build artifacts under
-    ``modules/``, strips the pack's admitted skills/panels from every room, and refreshes
-    skill/rulepack discovery. Shared discovery entries are deliberately KEPT (another pack
-    or a manual install may still reference them). ``pack_id`` is matched against the
-    newest installed home; a dev-mount source tree is never deleted.
+    ``modules/``, strips the pack's admitted skills/panels from every room, removes skill
+    directories no remaining installed pack declares, and refreshes skill/rulepack discovery.
+    ``pack_id`` is matched against the newest installed home; a dev-mount source tree is never
+    deleted.
     """
     from core.pack import DEV_PACK_HOMES
     from gateway.panels import installed_pack_homes
@@ -1009,11 +1009,10 @@ async def delete_installed_pack(
     if active and active.get("kind") == "world_card" and str(active.get("pack_id") or "") == pack_id:
         return False, pack_id, "module_in_use"
     # The pack's own skills (by id) are removed from every room's enabled list alongside
-    # the pack-id entries in `panels_enabled`. Skills live in the shared discovery dir, so
-    # only the ROOM references are stripped here — the skill files themselves are shared and
-    # are deliberately left for any other pack or manual install that still uses them.
+    # the pack-id entries in `panels_enabled`. Shared skill files are removed separately
+    # only when no remaining installed pack declares them.
     skill_ids = _pack_skill_ids(home)
-    _remove_pack_artifacts(services, pack_id, home)
+    _remove_pack_artifacts(services, pack_id, home, skill_ids=skill_ids)
     await _strip_pack_from_rooms(services, pack_id, skill_ids=skill_ids)
     return True, pack_id, ""
 
@@ -1043,10 +1042,16 @@ def _pack_skill_ids(home: Path) -> list[str]:
     return ids
 
 
-def _remove_pack_artifacts(services: Any, pack_id: str, home: Path) -> None:
-    """Physically delete an installed pack's home and the forge build artifacts, then
-    refresh skill/rulepack discovery. Shared discovery entries (skills/rulepacks/presets)
-    are deliberately KEPT: another pack or a manual install may still reference them."""
+def _remove_pack_artifacts(
+    services: Any, pack_id: str, home: Path, *, skill_ids: list[str] | None = None
+) -> None:
+    """Delete an installed pack and its orphaned skill files, then refresh discovery.
+
+    Skills are extracted into a shared directory, so a skill can only be removed when no
+    remaining installed pack declares the same id. A manually copied skill cannot be
+    distinguished from a pack-owned file; the pack manifest is the ownership boundary used
+    by the installer everywhere else.
+    """
     import shutil
 
     data_dir = Path(services.settings.data_dir)
@@ -1058,6 +1063,7 @@ def _remove_pack_artifacts(services: Any, pack_id: str, home: Path) -> None:
         entry.unlink(missing_ok=True)
     for entry in (data_dir / "modules").glob(f"{pack_id}.pack-src"):
         shutil.rmtree(entry, ignore_errors=True)
+    _remove_orphaned_pack_skills(data_dir, skill_ids or [])
     # A just-removed skill/rulepack must stop being discoverable without a restart.
     try:
         from core import rulepacks as core_rulepacks
@@ -1067,6 +1073,26 @@ def _remove_pack_artifacts(services: Any, pack_id: str, home: Path) -> None:
         core_rulepacks.reload_rulepacks()
     except Exception:  # noqa: BLE001 — discovery refresh is best-effort
         logger.exception("pack delete: discovery refresh failed")
+
+
+def _remove_orphaned_pack_skills(data_dir: Path, skill_ids: list[str]) -> None:
+    """Remove deleted-pack skill directories that no remaining installed pack owns."""
+    import shutil
+
+    if not skill_ids:
+        return
+    from gateway.panels import installed_pack_homes
+
+    retained_ids: set[str] = set()
+    for remaining_home in installed_pack_homes(data_dir).values():
+        retained_ids.update(_pack_skill_ids(remaining_home))
+
+    skills_dir = data_dir / "skills"
+    for skill_id in set(skill_ids) - retained_ids:
+        skill_home = skills_dir / skill_id
+        if skill_home.is_symlink() or not skill_home.is_dir():
+            continue
+        shutil.rmtree(skill_home, ignore_errors=True)
 
 
 async def _strip_pack_from_rooms(services: Any, pack_id: str, *, skill_ids: list[str] | None = None) -> None:

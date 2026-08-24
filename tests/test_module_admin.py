@@ -257,10 +257,12 @@ files:
 
 @pytest.mark.asyncio
 async def test_delete_pack_module_removes_home_artifacts_and_room_refs(tmp_path, monkeypatch):
-    """`module_delete` of an installed pack id removes its home, the forge build artifacts
-    under `modules/`, and strips its admitted skills/panels from every room."""
+    """`module_delete` removes the pack's orphaned KP skills as well as its home and refs."""
     services, admin, home = _pack_services(tmp_path)
     monkeypatch.setattr("gateway.panels.installed_pack_homes", lambda data_dir: {home.name.split("@")[0]: home})
+    skill_home = tmp_path / "skills" / "fog-skill"
+    skill_home.mkdir(parents=True)
+    (skill_home / "SKILL.md").write_text("---\nname: Fog Skill\n---\nBody\n", encoding="utf-8")
     # Forge build artifacts + a room that admitted this pack.
     (tmp_path / "modules").mkdir()
     (tmp_path / "modules" / "fog-0.1.0.lwpack").write_bytes(b"lwpack")
@@ -275,8 +277,34 @@ async def test_delete_pack_module_removes_home_artifacts_and_room_refs(tmp_path,
     assert not home.exists(), "installed pack home removed"
     assert not (tmp_path / "modules" / "fog-0.1.0.lwpack").exists(), "forge lwpack removed"
     assert not (tmp_path / "modules" / "fog.pack-src").exists(), "forge source tree removed"
+    assert not skill_home.exists(), "orphaned pack skill removed"
     assert json.loads(await services.store.state_get(room_key, "skills_enabled")) == ["keep-me"]
     assert json.loads(await services.store.state_get(room_key, "panels_enabled")) == ["other-pack"]
+
+
+@pytest.mark.asyncio
+async def test_delete_pack_module_keeps_skill_declared_by_another_pack(tmp_path, monkeypatch):
+    """A skill shared by two installed packs survives deletion of either pack."""
+    services, admin, home = _pack_services(tmp_path)
+    other_home = tmp_path / "packs" / "other@1.0.0"
+    other_home.mkdir(parents=True)
+    (other_home / "pack.yaml").write_text(
+        (home / "pack.yaml").read_text(encoding="utf-8").replace("id: fog", "id: other"),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "gateway.panels.installed_pack_homes",
+        lambda data_dir: {"fog": home, "other": other_home},
+    )
+    skill_home = tmp_path / "skills" / "fog-skill"
+    skill_home.mkdir(parents=True)
+    (skill_home / "SKILL.md").write_text("---\nname: Fog Skill\n---\nBody\n", encoding="utf-8")
+
+    reply = await admin._delete("fog-room", tmp_path / "modules", {"name": "fog", "source_kind": "pack"})
+
+    assert reply["ok"] is True
+    assert not home.exists()
+    assert skill_home.is_dir(), "skill retained while another pack declares it"
 
 
 @pytest.mark.asyncio
