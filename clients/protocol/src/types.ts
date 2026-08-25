@@ -1169,6 +1169,11 @@ export type ProviderAuthType = "api_key" | "oauth" | "api_key_or_oauth" | "none"
 export interface ProviderMetadata {
   id: string
   default_base_url: string
+  /** The repo-defined IMAGE endpoint for this provider, when it differs from the chat
+   * endpoint (e.g. DashScope image `.../api/v1` vs chat `.../compatible-mode/v1`). The
+   * model screen prefills this for image-kind profiles. Empty when the provider has no
+   * image preset (the chat default applies). */
+  image_default_base_url?: string
   auth_type: ProviderAuthType
   model_kinds: ModelKind[]
 }
