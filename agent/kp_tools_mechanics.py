@@ -42,10 +42,12 @@ from agent.items import (
     find_instance,
     grant_instance,
     instances_for_owner,
+    item_active,
     render_held_items,
     render_item_views,
     set_equipped,
 )
+from agent.module_lifecycle import active_module
 from agent.npc import list_companions
 from agent.services import Services, room_rule_variant
 from agent.tools import tool
@@ -116,7 +118,8 @@ async def _refresh_character_bonuses(
     the same bonuses and clients (via the roster) see the same items as the sheet."""
     try:
         items = await instances_for_owner(services.documents, ctx.chat_key, char_name)
-        bonuses = aggregate_equipped_bonuses(items)
+        active = await active_module(services, ctx.chat_key)
+        bonuses = aggregate_equipped_bonuses(items, active)
         sheet = await services.characters.get_character(owner_uid, ctx.chat_key, char_name)
         if not has_character(sheet):
             return
@@ -573,6 +576,9 @@ Rules:
             template = await catalog_template(self.services.documents, ctx.chat_key, item_id)
             if template is None:
                 return i18n.t("kp_tools.item.not_in_catalog", item=item_id)
+            active = await active_module(self.services, ctx.chat_key)
+            if not item_active(active, template):
+                return i18n.t("kp_tools.item.module_mismatch", item=item_id)
             await grant_instance(self.services.documents, ctx.chat_key, character, template, int(qty))
             await _refresh_character_bonuses(self.services, ctx, character, owner)
             return i18n.t("kp_tools.item.granted", character=character, item=item_id)

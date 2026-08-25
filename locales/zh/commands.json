@@ -292,5 +292,6 @@
   "commands.item.denied": "只有守密人才能把物品给其他角色。",
   "commands.item.equipped": "✅ {name} 已装备 {item}（{slot}）",
   "commands.item.unequipped": "✅ {name} 已卸下 {item}",
-  "commands.item.not_in_catalog": "❌ 「{item}」不在本房间的物品目录中"
+  "commands.item.not_in_catalog": "❌ 「{item}」不在本房间的物品目录中",
+  "commands.item.module_mismatch": "❌ 「{item}」属于其他剧本，在当前剧本中不会生效"
 }

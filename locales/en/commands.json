@@ -292,5 +292,6 @@
   "commands.item.denied": "Only the keeper may give items to other characters.",
   "commands.item.equipped": "✅ {name} equipped {item} ({slot})",
   "commands.item.unequipped": "✅ {name} unequipped {item}",
-  "commands.item.not_in_catalog": "❌ \"{item}\" is not in this room's item catalog"
+  "commands.item.not_in_catalog": "❌ \"{item}\" is not in this room's item catalog",
+  "commands.item.module_mismatch": "❌ \"{item}\" belongs to a different module and does not work in this room's current scenario"
 }

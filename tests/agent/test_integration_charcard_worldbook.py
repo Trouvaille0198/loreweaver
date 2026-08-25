@@ -348,9 +348,17 @@ async def test_world_import_seeds_item_catalog_from_native_items(tmp_path):
                 "name": "青铜古镜",
                 "kind": "gem",
                 "slot": "accessory",
+                "scope": "module",
                 "effect": "+1 to Spot Hidden",
                 "bonus": {"侦查": 1},
                 "quantity": 1,
+            },
+            {
+                "name": "手电筒",
+                "kind": "tool",
+                "slot": "",
+                "scope": "universal",
+                "effect": "lights the dark",
             },
         ],
     }
@@ -361,11 +369,15 @@ async def test_world_import_seeds_item_catalog_from_native_items(tmp_path):
 
     assert "catalog" in result  # the import summary names the seeded items
     catalog = await get_item_catalog(services.documents, "chat-items")
-    assert [entry["name"] for entry in catalog] == ["青铜古镜"]
-    template = await catalog_template(services.documents, "chat-items", "青铜古镜")
-    assert template is not None
+    by_name = {entry["name"]: entry for entry in catalog}
+    assert set(by_name) == {"青铜古镜", "手电筒"}
+    template = by_name["青铜古镜"]
     assert template["bonus"] == {"侦查": 1}
     assert template["slot"] == "accessory"
+    # Module-scoped items are stamped with THIS module's id (pack id when available);
+    # universal items stay unbounded so they work in any module.
+    assert template["module_id"]
+    assert by_name["手电筒"].get("module_id", "") == ""
 
 
 async def test_keeper_reimport_replaces_by_source_and_spares_everyone_else():

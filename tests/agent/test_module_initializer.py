@@ -600,7 +600,7 @@ async def test_initialize_seeds_item_catalog_from_analysis_items():
     llm = FakeLLM(script=[assistant_text(_scripted_analysis_json())])
     mi = _make_initializer(llm=llm, store=store)
 
-    await mi.initialize("chat_items")
+    await mi.initialize("chat_items", module_id="text:blackmoor.md")
 
     assert await store.state_get("chat_items", "module_init_status") == "ready"
     documents = DocumentStore(store)
@@ -613,6 +613,10 @@ async def test_initialize_seeds_item_catalog_from_analysis_items():
     assert bell["kind"] == "quest"
     assert bell["effect"] == "+1 STR"
     assert bell["origin"] == "the salt & anchor"
+    # No `scope` declared -> fails closed to module-scoped, stamped with the module id,
+    # so the artifact only works while this module is the room's active one.
+    assert bell["scope"] == "module"
+    assert bell["module_id"] == "text:blackmoor.md"
 
 
 async def test_fallback_analysis_seeds_item_catalog_from_items_section():

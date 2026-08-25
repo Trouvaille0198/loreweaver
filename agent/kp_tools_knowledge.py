@@ -870,11 +870,15 @@ class ModuleTools(_KnowledgeToolsBase):
             if not fulltext and not chunks:
                 return i18n.t("kp_tools.know.init.no_document")
 
+            from agent.module_lifecycle import active_module
+
+            active = await active_module(self._services, chat_key)
             await self._services.module_init.initialize(
                 chat_key,
                 locale=ctx.locale,
                 llm=await self._services.main_llm(chat_key),
                 model=await self._services.room_llm_model(chat_key),
+                module_id=str((active or {}).get("source_id") or ""),
             )
 
             new_status = await store.state_get(chat_key, _status_key(chat_key))
@@ -1073,6 +1077,7 @@ class DocumentTools(_KnowledgeToolsBase):
                     locale=ctx.locale,
                     llm=await self._services.main_llm(chat_key),
                     model=await self._services.room_llm_model(chat_key),
+                    module_id=str(module_identity.get("source_id") or ""),
                 )
                 status = await self._services.store.state_get(chat_key, _status_key(chat_key))
                 if status not in {"ready", "ready_fallback"}:

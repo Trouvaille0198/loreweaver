@@ -771,10 +771,19 @@ class CharcardTools:
             # A native bundle may ship an item CATALOG (`items:`): templates with mechanical
             # effects (kind/slot/bonus) that `.item grant` can later hand to characters and
             # equip for derived bonuses — the same Layer 0 -> Layer 1 seeding the module
-            # initializer performs for `.md` modules.
+            # initializer performs for `.md` modules. Module-scoped items (scope !=
+            # "universal") are stamped with THIS module's id (pack id when available), so a
+            # plot artifact from another campaign contributes nothing in play.
             items_line = ""
             if lorecard is not None and lorecard.items:
-                await ensure_catalog(self._services.documents, ctx.chat_key, list(lorecard.items))
+                module_tag = str(module_identity.get("pack_id") or "") or source_id
+                tagged: list[dict[str, Any]] = []
+                for tpl in lorecard.items:
+                    entry = dict(tpl)
+                    if str(entry.get("scope") or "") != "universal":
+                        entry["module_id"] = module_tag
+                    tagged.append(entry)
+                await ensure_catalog(self._services.documents, ctx.chat_key, tagged)
                 items_line = i18n.t("charcard.tools.world.items_line", count=len(lorecard.items))
 
             result = i18n.t(

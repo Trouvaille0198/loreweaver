@@ -26,10 +26,12 @@ from agent.items import (
     find_instance,
     grant_instance,
     instances_for_owner,
+    item_active,
     render_held_items,
     render_item_views,
     set_equipped,
 )
+from agent.module_lifecycle import active_module
 from core.character_manager import CharacterDataError, has_character
 from gateway.commands.rooms import _is_keeper
 from gateway.commands.types import CommandCtx
@@ -76,7 +78,8 @@ async def _refresh_bonuses(ctx: CommandCtx, char_name: str, owner_uid: str) -> N
         sheet = await ctx.services.characters.get_character(owner_uid, ctx.chat_key, char_name)
         if not has_character(sheet):
             return
-        sheet.equipped_bonuses = aggregate_equipped_bonuses(items)
+        active = await active_module(ctx.services, ctx.chat_key)
+        sheet.equipped_bonuses = aggregate_equipped_bonuses(items, active)
         sheet.equipment = render_held_items(items)
         sheet.items = render_item_views(items)
         await ctx.services.characters.save_character(owner_uid, ctx.chat_key, sheet)
@@ -142,6 +145,9 @@ class ItemCommands:
             template = await catalog_template(ctx.services.documents, ctx.chat_key, item)
             if template is None:
                 return ctx.fail(ctx.i18n.t("commands.item.not_in_catalog", item=item))
+            active = await active_module(ctx.services, ctx.chat_key)
+            if not item_active(active, template):
+                return ctx.fail(ctx.i18n.t("commands.item.module_mismatch", item=item))
             await grant_instance(ctx.services.documents, ctx.chat_key, name, template, qty)
             await _refresh_bonuses(ctx, name, ctx.user_id)
             await _publish(ctx)
@@ -184,6 +190,9 @@ class ItemCommands:
             template = await catalog_template(ctx.services.documents, ctx.chat_key, item)
             if template is None:
                 return ctx.fail(ctx.i18n.t("commands.item.not_in_catalog", item=item))
+            active = await active_module(ctx.services, ctx.chat_key)
+            if not item_active(active, template):
+                return ctx.fail(ctx.i18n.t("commands.item.module_mismatch", item=item))
             await grant_instance(ctx.services.documents, ctx.chat_key, target, template, 1)
             await _refresh_bonuses(ctx, target, owner)
             await _publish(ctx)

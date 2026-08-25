@@ -460,7 +460,9 @@ def test_pregens_parse_normalizes_and_caps():
 
 def test_items_parse_normalizes_and_caps():
     """`items:` ships catalog templates with mechanical effects: name required,
-    integer bonus deltas kept, junk rows warned and skipped."""
+    integer bonus deltas kept, junk rows warned and skipped. `scope` is kept verbatim
+    (universal|module); a missing or invalid scope fails CLOSED to `module` so a
+    module-bound prop can never leak across campaigns."""
     raw = {
         "format": "loreweaver.card",
         "format_version": 1,
@@ -470,6 +472,7 @@ def test_items_parse_normalizes_and_caps():
                 "name": "铜镜",
                 "kind": "gem",
                 "slot": "accessory",
+                "scope": "module",
                 "effect": "+1 to Spot Hidden",
                 "bonus": {"侦查": 1, "坏的": "x"},
                 "quantity": 2,
@@ -477,14 +480,20 @@ def test_items_parse_normalizes_and_caps():
             {"blurb": "no name -> skipped"},
             "not-an-object",
             {"name": "怀表", "effect": "+1 INT", "bonus": "not-a-map"},
+            {"name": "手电", "scope": "universal"},
+            {"name": "怪器", "scope": "banana"},
         ],
     }
     parsed = parse_lorecard_bytes(json.dumps(raw).encode("utf-8"))
-    assert [entry["name"] for entry in parsed.items] == ["铜镜", "怀表"]
+    assert [entry["name"] for entry in parsed.items] == ["铜镜", "怀表", "手电", "怪器"]
     assert parsed.items[0]["kind"] == "gem"
     assert parsed.items[0]["slot"] == "accessory"
     assert parsed.items[0]["bonus"] == {"侦查": 1}
     assert parsed.items[0]["quantity"] == 2
     assert parsed.items[1]["bonus"] == {}
+    assert parsed.items[0]["scope"] == "module"
+    assert parsed.items[2]["scope"] == "universal"
+    assert parsed.items[3]["scope"] == "module"  # invalid scope fails closed
     assert any("items[1]" in warning for warning in parsed.warnings)
     assert any("bonus" in warning for warning in parsed.warnings)
+    assert any("scope" in warning for warning in parsed.warnings)

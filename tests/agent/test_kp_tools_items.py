@@ -8,7 +8,12 @@ Deterministic and offline: `FakeLLM`/`FakeEmbeddings`, fresh in-memory store per
 from __future__ import annotations
 
 from agent.context import AgentCtx
-from agent.items import aggregate_equipped_bonuses, ensure_catalog, instances_for_owner
+from agent.items import (
+    aggregate_equipped_bonuses,
+    ensure_catalog,
+    instances_for_owner,
+    item_active,
+)
 from agent.kp_tools_mechanics import CharacterTools
 from agent.services import build_services
 from core.character_manager import CharacterSheet
@@ -94,6 +99,54 @@ async def test_grant_item_rejects_nonpositive_qty():
     await _seed(services, ctx.chat_key, _tpl("Sword"))
     reply = await CharacterTools(services).grant_item(ctx, "Alice", "Sword", qty=0)
     assert "positive integer" in reply
+
+
+async def test_grant_item_rejects_module_item_outside_its_module():
+    """A module-scoped item cannot be granted while the room's active module is a
+    different one (or none) — a plot artifact must not leak across campaigns."""
+    from agent.module_lifecycle import publish_active_module
+
+    services, ctx = _build()
+    await _make_character(services, ctx.chat_key, "u1", "Alice")
+    await _seed(
+        services,
+        ctx.chat_key,
+        _tpl("The Bronze Mirror", scope="module", module_id="shadows-over-shanghai"),
+        _tpl("Flashlight", scope="universal", module_id=""),
+    )
+    await publish_active_module(
+        services, ctx.chat_key, {"source_id": "pack:other@1.0.0:cards/other.json", "pack_id": "other"}
+    )
+
+    reply = await CharacterTools(services).grant_item(ctx, "Alice", "The Bronze Mirror")
+    assert "different module" in reply
+    assert await _instance_names(services, ctx.chat_key, "Alice") == []
+
+    # The universal item still works in any module.
+    reply = await CharacterTools(services).grant_item(ctx, "Alice", "Flashlight")
+    assert "Flashlight" in reply
+    assert await _instance_names(services, ctx.chat_key, "Alice") == ["Flashlight"]
+
+
+async def test_grant_item_allows_module_item_in_its_module():
+    from agent.module_lifecycle import publish_active_module
+
+    services, ctx = _build()
+    await _make_character(services, ctx.chat_key, "u1", "Alice")
+    await _seed(
+        services,
+        ctx.chat_key,
+        _tpl("The Bronze Mirror", scope="module", module_id="shadows-over-shanghai"),
+    )
+    await publish_active_module(
+        services,
+        ctx.chat_key,
+        {"source_id": "pack:shadows-over-shanghai@0.1.0:cards/x.json", "pack_id": "shadows-over-shanghai"},
+    )
+
+    reply = await CharacterTools(services).grant_item(ctx, "Alice", "The Bronze Mirror")
+    assert "The Bronze Mirror" in reply
+    assert await _instance_names(services, ctx.chat_key, "Alice") == ["The Bronze Mirror"]
 
 
 # ---------------------------------------------------------------------------
@@ -301,3 +354,39 @@ async def test_aggregate_equipped_bonuses_sums_across_equipped_items():
 
     sheet = await services.characters.get_character("u1", ctx.chat_key, "Alice")
     assert sheet.equipped_bonuses == {"attack": 2, "ac": 1}
+
+
+# ---------------------------------------------------------------------------
+# module scoping — pure functions
+# ---------------------------------------------------------------------------
+
+
+def test_item_active_scoping():
+    """Universal items (and unbound legacy items) always contribute; module-scoped
+    items only while the room's active module matches their module_id (pack_id or
+    source_id). No active module -> module items are inert."""
+    active = {"pack_id": "aaa", "source_id": "pack:aaa@1.0.0:cards/x.json"}
+    assert item_active(active, {"scope": "universal", "module_id": "ignored"})
+    assert item_active(None, {"scope": "universal"})
+    assert item_active(None, {"scope": "", "module_id": ""})
+    assert item_active(active, {"scope": "module", "module_id": ""})
+    assert item_active(active, {"scope": "module", "module_id": "aaa"})
+    assert item_active(active, {"scope": "module", "module_id": "pack:aaa@1.0.0:cards/x.json"})
+    assert not item_active(active, {"scope": "module", "module_id": "bbb"})
+    assert not item_active(None, {"scope": "module", "module_id": "aaa"})
+
+
+def test_aggregate_equipped_bonuses_skips_foreign_module_items():
+    from types import SimpleNamespace
+
+    doc = lambda data: SimpleNamespace(data=data)  # noqa: E731
+    active = {"pack_id": "aaa", "source_id": "pack:aaa@1.0.0:cards/x.json"}
+    items = [
+        doc({"equipped_slot": "weapon", "bonus": {"STR": 1}, "scope": "universal"}),
+        doc({"equipped_slot": "weapon", "bonus": {"INT": 1}, "scope": "module", "module_id": "aaa"}),
+        doc({"equipped_slot": "weapon", "bonus": {"DEX": 1}, "scope": "module", "module_id": "bbb"}),
+        doc({"equipped_slot": None, "bonus": {"CON": 1}, "scope": "universal"}),
+    ]
+    assert aggregate_equipped_bonuses(items, active) == {"STR": 1, "INT": 1}
+    # No active module: module-scoped gear is inert, universal still counts.
+    assert aggregate_equipped_bonuses(items, None) == {"STR": 1}

@@ -1580,9 +1580,10 @@ _PACK_MODULE_CARD_SCHEMA = """{
     ],
     "items": [
         {
-            "name": "an item characters can actually obtain (e.g. 'The Bronze Mirror')",
+            "name": "an item characters can actually obtain (e.g. 'The Bronze Mirror', 'Mauser C96')",
             "kind": "weapon|armor|consumable|gem|tool|quest|misc",
             "slot": "the equip slot when worn (e.g. 'weapon', 'armor', 'accessory'; leave empty for a non-equippable item)",
+            "scope": "universal|module",
             "description": "short player-visible intro (what it is, how it looks)",
             "effect": "the mechanical effect (e.g. '+2 attack', 'heals 1d4', '+1 to Spot Hidden'); empty for purely narrative items",
             "lore": "background story — ONLY for notable items, else leave empty",
