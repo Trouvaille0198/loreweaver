@@ -18,7 +18,7 @@ from agent.undo import capture, restore
 from core.dice_engine import seed_dice
 from gateway.commands import CommandRouter
 from gateway.hub import Event, RoomHub
-from agent.history import DEFAULT_HISTORY_KEY, append_message
+from agent.history import DEFAULT_HISTORY_KEY, append_message, load_chain
 from gateway.turn import (
     TURN_EVENT_HISTORY_CAP,
     TURN_EVENT_HISTORY_KEY,
@@ -32,17 +32,18 @@ from gateway.turn import (
 from infra.config import Settings
 from infra.embeddings import FakeEmbeddings
 from infra.i18n import get_i18n
-from infra.llm import FakeLLM
+from infra.llm import ChatResult, FakeLLM, assistant_text, tool_call
 
 
 class RecordingMember:
     transport = "tui"
     locale = "en"
 
-    def __init__(self, member_id: str, name: str) -> None:
+    def __init__(self, member_id: str, name: str, role: str = "player") -> None:
         self.id = member_id
         self.user_key = f"user:{member_id}"
         self.name = name
+        self.role = role
         self.events: list[Event] = []
 
     async def deliver(self, event: Event) -> None:
@@ -201,3 +202,41 @@ async def test_speak_as_npc_emits_its_line_on_success_only() -> None:
     reply = await tools.speak_as_npc(ctx, npc="Nobody", situation="…")
     assert "Nobody" in reply
     assert ctx.consume_npc_lines() == []
+
+
+async def test_tool_round_draft_reaches_keeper_only_as_narrative_draft() -> None:
+    """A tool round's streamed narration is dropped from the live log (dice-first) but
+    kept as a KEEPER-ONLY `narrative_draft` attached to the reply — players never
+    receive it, and the draft is persisted with the reply record."""
+    draft_text = "美咲的刀锋抵上岩本的喉咙，血珠顺着刀刃滑落。"
+    final_text = "骰子落定：突袭失败。岩本反手扣住美咲的手腕。"
+    script = [
+        ChatResult(content=draft_text, tool_calls=[tool_call("roll_dice", expression="1d100")]),
+        assistant_text(final_text),
+    ]
+    services = build_services(Settings(locale="en"), llm=FakeLLM(script=script), embeddings=FakeEmbeddings(8))
+    room = "tui:group:draft-lane"
+    ctx = AgentCtx(chat_key=room, user_id="k1", platform="tui", locale="en", extra={"role": "keeper"})
+    hub = RoomHub()
+    keeper = RecordingMember("k1", "Keeper", role="keeper")
+    player = RecordingMember("p1", "Nora", role="player")
+    await hub.subscribe(room, keeper)
+    await hub.subscribe(room, player)
+    router = CommandRouter(services)
+    toolset = build_kp_toolset(services)
+    seed_dice(7)
+
+    await run_turn(hub, services, ctx, "我突袭他。", command_router=router, toolset=toolset, origin=keeper)
+
+    # The keeper receives the discarded draft keyed to the reply's message id.
+    drafts = [event for event in keeper.events if event.kind == "narrative_draft"]
+    assert drafts
+    assert drafts[-1].data["text"] == draft_text
+    reply_event = next(event for event in keeper.events if event.kind == "narrative" and event.text == final_text)
+    assert drafts[-1].data["id"] == reply_event.origin_id
+    # The player connection never sees it — the hub filters keeper_only events.
+    assert not any(event.kind == "narrative_draft" for event in player.events)
+    # The draft rides the persisted reply record for rejoin replay.
+    chain = await load_chain(services, room, DEFAULT_HISTORY_KEY)
+    assert chain[-1]["_lw_draft"] == draft_text
+    assert chain[-1]["content"] == final_text

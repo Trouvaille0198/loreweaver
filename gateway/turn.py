@@ -254,18 +254,32 @@ async def run_turn(
             # final bubble.
             from net.session import new_id  # gateway->net seam; module-level would cycle
 
-            stream_state = {"id": "", "epoch": 0}
+            stream_state = {"id": "", "epoch": 0, "text": "", "draft": ""}
+
+            async def _close_stream_draft() -> None:
+                """Archive the just-discarded stream text as the keeper-visible draft.
+
+                A tool round's narration is dropped from the live log (dice-first: the
+                model must not narrate a result before the dice settle), but the text is
+                kept and attached to the final reply so a keeper can review what the
+                model originally wrote. The LAST discarded stretch wins.
+                """
+                if stream_state["text"]:
+                    stream_state["draft"] = stream_state["text"]
+                stream_state["text"] = ""
 
             async def _emit_reply_delta(frame: dict) -> None:
                 if frame["epoch"] != stream_state["epoch"]:
                     if stream_state["id"]:
+                        await _close_stream_draft()
                         # Every delta stream ends with a same-id narrative: close the
                         # abandoned tool-round draft with an empty final (clients drop it).
                         await hub.publish(
                             ctx.chat_key,
                             Event.narrative(speaker="kp", text="", fmt="markdown", frame_id=stream_state["id"]),
                         )
-                    stream_state.update(id=new_id(), epoch=frame["epoch"])
+                    stream_state.update(id=new_id(), epoch=frame["epoch"], text="")
+                stream_state["text"] += frame["text"]
                 await hub.publish(
                     ctx.chat_key,
                     Event.narrative_delta(speaker="kp", text=frame["text"], frame_id=stream_state["id"]),
@@ -293,6 +307,7 @@ async def run_turn(
                 """
                 events = _public_tool_events(entry, name, i18n)
                 if events and stream_state["id"]:
+                    await _close_stream_draft()
                     await hub.publish(
                         ctx.chat_key,
                         Event.narrative(speaker="kp", text="", fmt="markdown", frame_id=stream_state["id"]),
@@ -334,6 +349,21 @@ async def run_turn(
                 final = Event.narrative(speaker="kp", text=result.reply, fmt="markdown", frame_id=stream_state["id"])
                 final.origin_id = result.reply_record_id
                 await hub.publish(ctx.chat_key, final)
+                # The discarded tool-round narration rides the reply as a KEEPER-ONLY
+                # payload: players never see it, and the client keys it by the reply's
+                # persisted id so a rejoin replay matches the same bubble.
+                if result.discarded_draft:
+                    await hub.publish(
+                        ctx.chat_key,
+                        Event(
+                            kind="narrative_draft",
+                            data={
+                                "id": result.reply_record_id or stream_state["id"] or "",
+                                "text": result.discarded_draft,
+                            },
+                            keeper_only=True,
+                        ),
+                    )
                 final_published = True
             finally:
                 if stream_state["id"] and not final_published:

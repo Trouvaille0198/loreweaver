@@ -31,6 +31,9 @@ export const FrameType = {
   Error: "error",
   Narrative: "narrative",
   NarrativeDelta: "narrative_delta",
+  // v2.4 additive: the discarded streaming draft attached to a KP reply — delivered
+  // to KEEPER connections only, keyed by the reply's message id.
+  NarrativeDraft: "narrative_draft",
   Dice: "dice",
   Ui: "ui",
   // v1.8 additive: module UI panels (M15).
@@ -317,6 +320,16 @@ export interface NarrativeDeltaFrame {
   id: string
   speaker: NarrativeSpeaker
   name?: string
+  text: string
+}
+
+// KEEPER-ONLY: the streaming text a tool round discarded before the dice settled,
+// attached to the KP reply whose `id` this is. Players never receive this frame —
+// the server filters it at the hub — and clients use it only as a review surface
+// (e.g. a right-click on the bubble), never as narrative.
+export interface NarrativeDraftFrame {
+  type: typeof FrameType.NarrativeDraft
+  id: string
   text: string
 }
 
@@ -1430,6 +1443,7 @@ export type ServerFrame =
   | AudioStateFrame
   | NarrativeFrame
   | NarrativeDeltaFrame
+  | NarrativeDraftFrame
   | PackCardsFrame
   | DiceFrame
   | UiFrame

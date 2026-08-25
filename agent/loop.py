@@ -271,6 +271,7 @@ class _ReplyStreamGate:
         self._seq = 0
         self._pending = ""
         self._held = ""
+        self._discarded = ""
         self._tasks: list[asyncio.Task] = []
 
     def begin_round(self) -> None:
@@ -289,6 +290,10 @@ class _ReplyStreamGate:
         """Round over: a tool round discards its draft (the client clears on the next
         epoch); a final round releases the held remainder through the full strip."""
         if discard:
+            # The narration never reaches the live stream (dice-first: the model must
+            # not narrate a result before the dice settle), but it is ARCHIVED so a
+            # keeper can review what the model originally wrote before the tool round.
+            self._discarded += self._pending + self._held
             self._pending = ""
             self._held = ""
             return
@@ -297,6 +302,11 @@ class _ReplyStreamGate:
         self._held = ""
         self._pending += remainder[:cut]
         self._flush()
+
+    def discarded_text(self) -> str:
+        """The narration this turn's tool rounds discarded before the dice settled —
+        the keeper-visible draft attached to the final reply (see `KPTurnResult`)."""
+        return self._discarded
 
     async def drain(self) -> None:
         for task in self._tasks:
@@ -370,6 +380,10 @@ class KPTurnResult:
     # stamps it on the live `narrative` it publishes (`Event.origin_id`), so a member's
     # join replay can tell that live frame from the persisted line it just replayed.
     reply_record_id: str = ""
+    # The streaming narration this turn's tool rounds discarded before the dice
+    # settled (dice-first: it never reached the live log). Keeper-only review
+    # material, attached to `reply_record_id`.
+    discarded_draft: str = ""
     # Token/cache usage accumulated across this turn's main loop and, when
     # max_rounds is exhausted, its one tools-disabled finalizer. Provider-error
     # early returns stay all-zero; FakeLLM results without usage stay all-zero.
@@ -775,6 +789,7 @@ async def _run_kp_turn_body(
                 reply=reply,
                 tool_trace=tool_trace,
                 rounds=rounds,
+                discarded_draft=gate.discarded_text() if gate is not None else "",
                 ui_frames=hook_ui_frames,
                 panel_events=_capped_panel_events(hook_panel_events, ctx.chat_key),
             )
@@ -904,6 +919,7 @@ async def _run_kp_turn_body(
         content=reply,
         turn=turn_index,
         record_id=reply_record_id_provider() if reply_record_id_provider is not None else None,
+        draft=gate.discarded_text() if gate is not None else "",
     )
     # M18: count the completed turn — chronicle entries stamp against this counter
     # and the fold's no-future watermark derives from it. Best-effort bookkeeping.
@@ -920,6 +936,7 @@ async def _run_kp_turn_body(
         rounds=rounds,
         turn=turn_index,
         reply_record_id=reply_record_id,
+        discarded_draft=gate.discarded_text() if gate is not None else "",
         usage=turn_usage,
         ui_frames=hook_ui_frames,
         panel_events=_capped_panel_events(hook_panel_events, ctx.chat_key),
