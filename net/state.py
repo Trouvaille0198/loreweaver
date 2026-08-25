@@ -60,6 +60,7 @@ async def build_room_state(
             member["initiative"] = initiative_by_name[member["name"]]
 
     state: dict[str, Any] = {"type": "state", "party": party, "initiative": initiative, "online": 0}
+    state["room_system"] = (await services.room_rulepack(ctx)).system
 
     if sheet is not None:
         state["character"] = await _character_payload(services, ctx.chat_key, sheet, ctx.locale)

@@ -38,6 +38,7 @@ it.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -70,6 +71,7 @@ from core.sheets import canonical_values
 from core.yaml_safety import safe_load_no_aliases
 from gateway.imagegen import allow_imagegen_request
 from infra.file_permissions import atomic_write_private
+from infra.imagegen import ImageGenError
 from infra.media_store import ALLOWED_IMAGE_MIMES, MediaStore
 from infra.model_call_trace import lane_scope
 from infra.room_facets import STORAGE_ROOM_STATE, RoomStateFacet
@@ -173,6 +175,35 @@ COMPANION_OPTION_IDS: tuple[str, ...] = ("skills", "rulepacks", "cards")
 # Per-kind and total caps for the media pass: a cover is singular, every other kind illustrates
 # the KEY subjects only, and one generation never renders more than a dozen images.
 _MEDIA_KIND_CAPS: dict[str, int] = {"cover": 1, "scenes": 6, "npcs": 6, "items": 6, "pregens": 6}
+# Render at most a few shots concurrently: image providers rate-limit (HTTP 429) when a full
+# cast's portraits fan out at once, and serializing a dozen images is a 10+ minute slog. Three
+# in flight is a reasonable middle ground.
+_MEDIA_CONCURRENCY = 3
+_MEDIA_RETRIES = 3
+
+
+def _should_retry_imagegen(exc: BaseException) -> bool:
+    """Retry transient image-provider failures (rate-limit / 5xx), not permanent rejections."""
+    if not isinstance(exc, ImageGenError):
+        return True
+    if exc.args and exc.args[0] == "imagegen_http_error":
+        status = str(exc.args[1]) if len(exc.args) > 1 else ""
+        return status in {"429", "500", "502", "503", "504"}
+    return False
+
+
+async def _imagegen_generate_retry(imagegen: Any, prompt: str, *, size: str) -> tuple[bytes, str]:
+    """`imagegen.generate` with bounded backoff retry for transient failures (429/5xx)."""
+    last: BaseException | None = None
+    for attempt in range(_MEDIA_RETRIES):
+        try:
+            return await imagegen.generate(prompt, size=size)
+        except Exception as exc:  # noqa: BLE001 — provider errors are retried or surfaced
+            last = exc
+            if not _should_retry_imagegen(exc):
+                raise
+            await asyncio.sleep(min(2**attempt, 8))
+    raise last  # type: ignore[misc]
 _MEDIA_TOTAL_CAP = 12
 
 # The cards lane ships a small claimable cast, like a published scenario's pregen cards.
@@ -1680,22 +1711,38 @@ async def generate_and_install_pack_module(
         if shots_failure is None and shots_raw:
             imagegen = await services.imagegen_for_room(ctx.chat_key)
             if imagegen is not None:
-                for index, shot in enumerate(_parse_shot_list(shots_raw, media_kinds), 1):
+                shots = _parse_shot_list(shots_raw, media_kinds)
+                total = len(shots)
+                done = 0
+                sem = asyncio.Semaphore(_MEDIA_CONCURRENCY)
+
+                async def _render_one(index: int, shot: Any) -> dict[str, str] | None:
+                    nonlocal done
                     logger.info("[pack-forge] rendering %s #%d (%s)", shot.kind, index, shot.subject)
-                    try:
-                        data, mime = await imagegen.generate(shot.prompt, size=services.settings.imagegen.size)
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning("[pack-forge] imagegen failed for %s: %s", shot.subject, exc)
-                        continue
+                    data: bytes | None = None
+                    mime = ""
+                    async with sem:
+                        try:
+                            data, mime = await _imagegen_generate_retry(
+                                imagegen, shot.prompt, size=services.settings.imagegen.size
+                            )
+                        except Exception as exc:  # noqa: BLE001 — one bad shot never fails the pass
+                            logger.warning("[pack-forge] imagegen failed for %s: %s", shot.subject, exc)
+                    done += 1
+                    await _emit(progress, "media", detail=f"{done}/{total}")
+                    if data is None:
+                        return None
                     asset_name = f"module-{pack_id}-{shot.kind}-{index}{_IMAGE_MIME_EXTS.get(mime, '.png')}"
                     try:
                         _safe_write(assets_dir / asset_name, data)
-                        media_index.append(
-                            {"kind": shot.kind, "subject": shot.subject, "name": asset_name}
-                        )
+                        return {"kind": shot.kind, "subject": shot.subject, "name": asset_name}
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("[pack-forge] asset write failed %s: %s", asset_name, exc)
-                        continue
+                        return None
+
+                # Render at most `_MEDIA_CONCURRENCY` shots in flight, with per-shot retry.
+                rendered = await asyncio.gather(*(_render_one(i, s) for i, s in enumerate(shots, 1)))
+                media_index = [r for r in rendered if r]
                 logger.info("[pack-forge] media pass done: %d images", len(media_index))
             else:
                 logger.warning("[pack-forge] no imagegen provider for this room; media skipped")

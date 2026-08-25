@@ -162,7 +162,14 @@ class TuiServer(SessionCore):
             # `websockets` caps a single message at 1 MiB by default — far below the media
             # limits `docs/protocol.md` promises, and a media PUT arrives as one message.
             tui = self.services.settings.tui
-            max_size = max(tui.media_max_file_bytes, tui.audio_max_file_bytes) + _WS_MEDIA_HEADER_SLACK
+            # Frame ceiling: media bytes ride the wire as base64 (~1.33x inflation), so a single
+            # full-size illustration can exceed the raw file limit. Floor it at 16 MiB so a
+            # content-addressed image transfer never trips the frame size.
+            max_size = max(
+                16 * 1024 * 1024,
+                tui.media_max_file_bytes,
+                tui.audio_max_file_bytes,
+            ) + _WS_MEDIA_HEADER_SLACK
             self._server = await websockets.serve(
                 self.handle,
                 self.host,

@@ -56,6 +56,7 @@ async def test_build_room_state_lists_the_rule_systems_and_how_to_create_in_them
     state = await build_room_state(services, ctx)
 
     by_id = {entry["id"]: entry for entry in state["systems"]}
+    assert state["room_system"] == "coc7"
     assert {"coc7", "dnd5e"} <= set(by_id)
     # The word to SEND, read off the pack's own `commands:` declaration.
     assert by_id["coc7"]["make_char"] == "coc"

@@ -822,6 +822,8 @@ export interface RuleSystemEntry {
 export interface StateFrame {
   type: typeof FrameType.State
   character?: CharacterState
+  // The room's resolved rule system, distinct from the complete systems list.
+  room_system?: string
   party: PartyMember[]
   scene?: SceneState
   clock?: ClockState
