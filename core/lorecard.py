@@ -237,12 +237,14 @@ def _parse_items(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
     """Native item-catalog list → normalized templates the room importer seeds.
 
     Shape: ``[{name, kind?, slot?, scope?, description?, effect?, lore?, origin?,
-    quantity?, bonus?: {canonical: int}}]``. ``name`` is the only required field;
-    a missing name drops the entry with a warning. ``slot`` names the equip slot
-    the item occupies when equipped (empty = not equippable), and ``bonus`` is the
-    equipped mechanical delta map (sheet canonical -> int) that the engine
-    aggregates into the sheet's derived bonuses — this is what makes a designed
-    item grant a real effect, not just a prop.
+    original_holder?, quantity?, bonus?: {canonical: int}}]``. ``name`` is the only
+    required field; a missing name drops the entry with a warning. ``slot`` names the
+    equip slot the item occupies when equipped (empty = not equippable), and ``bonus``
+    is the equipped mechanical delta map (sheet canonical -> int) that the engine
+    aggregates into the sheet's derived bonuses — this is what makes a designed item
+    grant a real effect, not just a prop. ``origin`` is where the item starts (a
+    place); ``original_holder`` is who holds it first (a person or group) — both ride
+    the template so the module page can show where each item begins play.
 
     ``scope`` marks whether the item is ``universal`` (works in ANY module — a
     handgun, a healing salve, a toolkit) or ``module`` (bound to the module it
@@ -301,6 +303,7 @@ def _parse_items(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
                 "lore": _text(item.get("lore")).strip()[:2000],
                 "effect": _text(item.get("effect")).strip()[:500],
                 "origin": _text(item.get("origin")).strip()[:200],
+                "original_holder": _text(item.get("original_holder")).strip()[:100],
                 "quantity": quantity,
                 "bonus": bonus,
                 "secret": bool(item.get("secret", False)),

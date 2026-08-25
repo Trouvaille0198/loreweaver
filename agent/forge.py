@@ -1587,7 +1587,8 @@ _PACK_MODULE_CARD_SCHEMA = """{
             "description": "short player-visible intro (what it is, how it looks)",
             "effect": "the mechanical effect (e.g. '+2 attack', 'heals 1d4', '+1 to Spot Hidden'); empty for purely narrative items",
             "lore": "background story — ONLY for notable items, else leave empty",
-            "origin": "where the item comes from (optional)",
+            "origin": "where the item starts the module (a place, e.g. 'in the Fog Manor cellar')",
+            "original_holder": "who holds it first (a person or group, e.g. 'the ferryman'; leave empty for loose items)",
             "bonus": {"SheetCanonical": 1, "AnotherCanonical": -1},
             "quantity": 1
         }

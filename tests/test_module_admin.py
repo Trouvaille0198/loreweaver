@@ -367,9 +367,12 @@ async def test_pack_detail_includes_designed_items(tmp_path, monkeypatch):
             "name": "The Fog Bell",
             "kind": "quest",
             "slot": "accessory",
+            "scope": "module",
             "effect": "+1 to Listen",
             "bonus": {"Listen": 1},
             "quantity": 1,
+            "origin": "the chapel crypt",
+            "original_holder": "the ferryman",
         },
         {"no_name": "skipped"},
     ]
@@ -383,6 +386,9 @@ async def test_pack_detail_includes_designed_items(tmp_path, monkeypatch):
     assert items[0]["bonus"] == {"Listen": 1}
     assert items[0]["slot"] == "accessory"
     assert items[0]["effect"] == "+1 to Listen"
+    assert items[0]["scope"] == "module"
+    assert items[0]["origin"] == "the chapel crypt"
+    assert items[0]["original_holder"] == "the ferryman"
 
 
 @pytest.mark.asyncio
