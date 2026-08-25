@@ -447,6 +447,44 @@ async def test_qwen_imagegen_posts_expected_json_body():
     assert body["parameters"]["size"] == "512*512"  # DashScope 用星号，非 OpenAI 的 x
 
 
+async def test_qwen_imagegen_posts_i2i_reference_as_data_url():
+    """qwen-image-3.0-pro 支持图生图：带参考图时 content 数组先放 data URL 的
+    `{"image": ...}` 再放 `{"text": ...}`，且 provider 声明可以锚定 scene/portrait/clue。"""
+    seen = {}
+
+    def router(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/a.png"):
+            return httpx.Response(200, content=b"\x89PNG\r\n\x1a\nbytes", headers={"content-type": "image/png"})
+        seen["json"] = json.loads(request.read())
+        return httpx.Response(
+            200,
+            json={"output": {"choices": [{"message": {"content": [{"image": "https://cdn.example.test/a.png"}]}}]}},
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(router))
+    gen = QwenImageGen(
+        ImageGenSettings(
+            provider="qwen",
+            base_url="https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1",
+            api_key="sk-sp-secret",
+            model="qwen-image-3.0-pro",
+        ),
+        client=client,
+    )
+    try:
+        await gen.generate("同一角色的新姿势", size="1024x1024", reference=b"\x89PNG\r\n\x1a\nref-bytes", reference_mime="image/png")
+    finally:
+        await client.aclose()
+
+    assert gen.reference_kinds == frozenset({"scene", "portrait", "clue"})
+    content = seen["json"]["input"]["messages"][0]["content"]
+    assert content[0] == {
+        "image": "data:image/png;base64," + base64.b64encode(b"\x89PNG\r\n\x1a\nref-bytes").decode("ascii")
+    }
+    assert content[1] == {"text": "同一角色的新姿势"}
+    assert seen["json"]["parameters"]["size"] == "1024*1024"
+
+
 async def test_qwen_imagegen_maps_http_failure_to_error_code():
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _request: httpx.Response(500, text="nope")))
     gen = QwenImageGen(

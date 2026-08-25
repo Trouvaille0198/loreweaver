@@ -384,8 +384,10 @@ QWEN_IMAGE_ENDPOINT = "/services/aigc/multimodal-generation/generation"
 class QwenImageGen:
     """通义千问多模态文生图（DashScope 原生协议）HTTP client."""
 
-    # Native surface 不支持参考图锚定（该协议当前只有纯文本 prompt 文生图）。
-    reference_kinds: frozenset[str] = frozenset()
+    # qwen-image-3.0 / qwen-image-3.0-pro 同时支持文生图（T2I）和图生图/图像编辑（I2I）：
+    # `input.messages[0].content` 可放 1-3 个 `{"image": ...}`（公网 URL 或 data:base64）
+    # + 1 个 `{"text": ...}`。参考图来自本地模组/定妆字节，内联为 data URL。
+    reference_kinds: frozenset[str] = frozenset({"scene", "portrait", "clue"})
 
     def __init__(
         self,
@@ -414,13 +416,21 @@ class QwenImageGen:
 
         # DashScope 的 size 用 `宽*高`（星号），OpenAI 兼容的 `1024x1024` 需转换。
         qwen_size = str(size or self._settings.size or "1024x1024").casefold().replace("x", "*")
+        content: list[dict[str, str]] = []
+        if reference:
+            # I2I：参考图以 data URL 内联（本地字节，无公网 URL）。I2I 允许的格式
+            # JPG/JPEG/PNG/BMP/TIFF/WEBP/GIF 覆盖 magic-bytes 检测的全部结果。
+            mime = _detect_image_mime(reference, reference_mime)
+            encoded = base64.b64encode(reference).decode("ascii")
+            content.append({"image": f"data:{mime};base64,{encoded}"})
+        content.append({"text": prompt})
         request_body = {
             "model": self._settings.model,
             "input": {
                 "messages": [
                     {
                         "role": "user",
-                        "content": [{"text": prompt}],
+                        "content": content,
                     }
                 ]
             },
