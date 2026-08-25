@@ -456,3 +456,35 @@ def test_pregens_parse_normalizes_and_caps():
     assert parsed.pregens[1]["notes"] == "医生"
     assert any("pregens[1]" in warning for warning in parsed.warnings)
     assert any("skills" in warning for warning in parsed.warnings)
+
+
+def test_items_parse_normalizes_and_caps():
+    """`items:` ships catalog templates with mechanical effects: name required,
+    integer bonus deltas kept, junk rows warned and skipped."""
+    raw = {
+        "format": "loreweaver.card",
+        "format_version": 1,
+        "name": "items-test",
+        "items": [
+            {
+                "name": "铜镜",
+                "kind": "gem",
+                "slot": "accessory",
+                "effect": "+1 to Spot Hidden",
+                "bonus": {"侦查": 1, "坏的": "x"},
+                "quantity": 2,
+            },
+            {"blurb": "no name -> skipped"},
+            "not-an-object",
+            {"name": "怀表", "effect": "+1 INT", "bonus": "not-a-map"},
+        ],
+    }
+    parsed = parse_lorecard_bytes(json.dumps(raw).encode("utf-8"))
+    assert [entry["name"] for entry in parsed.items] == ["铜镜", "怀表"]
+    assert parsed.items[0]["kind"] == "gem"
+    assert parsed.items[0]["slot"] == "accessory"
+    assert parsed.items[0]["bonus"] == {"侦查": 1}
+    assert parsed.items[0]["quantity"] == 2
+    assert parsed.items[1]["bonus"] == {}
+    assert any("items[1]" in warning for warning in parsed.warnings)
+    assert any("bonus" in warning for warning in parsed.warnings)

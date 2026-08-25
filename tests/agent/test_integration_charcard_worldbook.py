@@ -323,6 +323,51 @@ async def test_world_import_puts_the_character_half_on_the_claimable_roster(tmp_
     assert active.system == "coc7"  # rule-validated sheet, not a raw persona blob
 
 
+async def test_world_import_seeds_item_catalog_from_native_items(tmp_path):
+    """A native bundle's `items:` templates seed the room's item catalog — the same
+    Layer 0 -> Layer 1 seeding the module initializer performs for `.md` modules — so
+    `.item grant` can hand the designed gear to characters and equip it for bonuses."""
+    from agent.items import catalog_template, get_item_catalog
+
+    services = _services()
+    card = {
+        "format": "loreweaver.card",
+        "format_version": 1,
+        "name": "青铜镜谜案",
+        "opening": "深夜，橱窗里的铜镜泛着青光。",
+        "worldbook": [
+            {
+                "keys": ["铜镜"],
+                "content": "一面会应允愿望的铜镜。",
+                "category": "clue",
+                "secret": False,
+            },
+        ],
+        "items": [
+            {
+                "name": "青铜古镜",
+                "kind": "gem",
+                "slot": "accessory",
+                "effect": "+1 to Spot Hidden",
+                "bonus": {"侦查": 1},
+                "quantity": 1,
+            },
+        ],
+    }
+    (tmp_path / "items.json").write_text(json.dumps(card), encoding="utf-8")
+    ctx = AgentCtx(chat_key="chat-items", user_id="kp", locale="en", fs=LocalFs(str(tmp_path)))
+
+    result = await CharcardTools(services).import_world_card(ctx, file_path="items.json")
+
+    assert "catalog" in result  # the import summary names the seeded items
+    catalog = await get_item_catalog(services.documents, "chat-items")
+    assert [entry["name"] for entry in catalog] == ["青铜古镜"]
+    template = await catalog_template(services.documents, "chat-items", "青铜古镜")
+    assert template is not None
+    assert template["bonus"] == {"侦查": 1}
+    assert template["slot"] == "accessory"
+
+
 async def test_keeper_reimport_replaces_by_source_and_spares_everyone_else():
     """The serialized-module contract (cards.md): a keeper re-import REPLACES what the
     same source wrote — edits land, deletions leave, nothing stacks — while manual

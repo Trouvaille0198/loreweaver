@@ -71,6 +71,7 @@ MAX_LORECARD_ENTRIES = 512
 MAX_LORECARD_ENTRY_CONTENT_BYTES = 128 * 1024
 MAX_LORECARD_VARIABLES = 256
 MAX_LORECARD_PREGENS = 8
+MAX_LORECARD_ITEMS = 32
 # Mirrors ``core.condexpr.MAX_EXPR_LEN`` (not imported — see HOOKS_EXTENSION_KEY). A longer
 # condition still rides along, but fails closed downstream, so the author gets a warning here.
 MAX_CONDITION_CHARS = 500
@@ -97,6 +98,7 @@ class Lorecard:
     hooks: tuple[str, ...] = ()
     variable_specs: tuple[dict[str, Any], ...] = ()
     pregens: tuple[dict[str, Any], ...] = ()
+    items: tuple[dict[str, Any], ...] = ()
     system: str = ""
     warnings: tuple[str, ...] = ()
 
@@ -160,6 +162,7 @@ def parse_lorecard_bytes(data: bytes, filename: str = "") -> Lorecard:
     specs = _parse_variables(raw.get("variables"), label, warnings)
     hooks = _parse_hooks(raw.get(HOOKS_KEY), warnings)
     pregens = _parse_pregens(raw.get("pregens"), warnings)
+    items = _parse_items(raw.get("items"), warnings)
 
     card = CharacterCard(
         name=_text(raw.get("name")).strip(),
@@ -179,6 +182,7 @@ def parse_lorecard_bytes(data: bytes, filename: str = "") -> Lorecard:
         hooks=hooks,
         variable_specs=specs,
         pregens=pregens,
+        items=items,
         system=_text(raw.get("system")).strip(),
         warnings=tuple(warnings),
     )
@@ -226,6 +230,66 @@ def _parse_pregens(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
             warnings.append(f"pregens[{index}].skills: ignored (must be a mapping)")  # i18n-exempt: author diagnostic, wrapped in a localized import summary
         avatar = str(item.get("avatar") or "").strip()[:200]
         out.append({"name": name, "blurb": blurb, "notes": notes, "skills": skills, "avatar": avatar})
+    return tuple(out)
+
+
+def _parse_items(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
+    """Native item-catalog list → normalized templates the room importer seeds.
+
+    Shape: ``[{name, kind?, slot?, description?, effect?, lore?, origin?,
+    quantity?, bonus?: {canonical: int}}]``. ``name`` is the only required field;
+    a missing name drops the entry with a warning. ``slot`` names the equip slot
+    the item occupies when equipped (empty = not equippable), and ``bonus`` is the
+    equipped mechanical delta map (sheet canonical -> int) that the engine
+    aggregates into the sheet's derived bonuses — this is what makes a designed
+    item grant a real effect, not just a prop.
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        warnings.append("items: ignored (must be a list of entries)")  # i18n-exempt: author diagnostic, wrapped in a localized import summary
+        return ()
+    out: list[dict[str, Any]] = []
+    for index, item in enumerate(raw):
+        if len(out) >= MAX_LORECARD_ITEMS:
+            warnings.append(f"items: truncated to {MAX_LORECARD_ITEMS} entries")  # i18n-exempt: author diagnostic, wrapped in a localized import summary
+            break
+        if not isinstance(item, dict):
+            warnings.append(f"items[{index}]: ignored (must be an object)")  # i18n-exempt: author diagnostic, wrapped in a localized import summary
+            continue
+        name = _text(item.get("name")).strip()[:60]
+        if not name:
+            warnings.append(f"items[{index}]: ignored (missing name)")  # i18n-exempt: author diagnostic, wrapped in a localized import summary
+            continue
+        bonus: dict[str, int] = {}
+        bonus_raw = item.get("bonus")
+        if isinstance(bonus_raw, dict):
+            for key, value in list(bonus_raw.items())[:32]:
+                try:
+                    bonus[str(key).strip()[:60]] = int(value)
+                except (TypeError, ValueError):
+                    warnings.append(f"items[{index}].bonus.{key}: ignored (not an integer)")  # i18n-exempt: author diagnostic, wrapped in a localized import summary
+        elif bonus_raw is not None:
+            warnings.append(f"items[{index}].bonus: ignored (must be a mapping)")  # i18n-exempt: author diagnostic, wrapped in a localized import summary
+        quantity = item.get("quantity")
+        try:
+            quantity = max(1, int(quantity)) if quantity is not None else 1
+        except (TypeError, ValueError):
+            quantity = 1
+        out.append(
+            {
+                "name": name,
+                "kind": _text(item.get("kind")).strip()[:40],
+                "slot": _text(item.get("slot")).strip()[:40],
+                "description": _text(item.get("description")).strip()[:500],
+                "lore": _text(item.get("lore")).strip()[:2000],
+                "effect": _text(item.get("effect")).strip()[:500],
+                "origin": _text(item.get("origin")).strip()[:200],
+                "quantity": quantity,
+                "bonus": bonus,
+                "secret": bool(item.get("secret", False)),
+            }
+        )
     return tuple(out)
 
 

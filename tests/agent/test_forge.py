@@ -23,10 +23,17 @@ from pathlib import Path
 import pytest
 
 import core.skills as skills_module
-from agent.forge import _MAX_FORGE_CONTENT_BYTES, _confined_target, _slugify, generate_and_install_skill
+from agent.forge import (
+    _MAX_FORGE_CONTENT_BYTES,
+    _confined_target,
+    _should_retry_imagegen,
+    _slugify,
+    generate_and_install_skill,
+)
 from agent.services import build_services
 from infra.config import Settings
 from infra.embeddings import FakeEmbeddings
+from infra.imagegen import ImageGenError
 from infra.llm import FakeLLM, assistant_text
 
 # Wall-clock bound for rejecting an alias-bomb/oversized generated SKILL.md (see the two tests
@@ -295,6 +302,22 @@ def test_confined_target_rejects_a_path_escaping_id_directly(tmp_path: Path) -> 
 def test_confined_target_accepts_a_safe_id(tmp_path: Path) -> None:
     target = _confined_target(tmp_path, "a-safe-id")
     assert target == (tmp_path / "a-safe-id" / "SKILL.md").resolve()
+
+
+def test_should_retry_imagegen_treats_timeout_as_transient() -> None:
+    """A provider timeout is the most transient failure there is — it must be retried, not
+    treated as a permanent rejection that drops the illustration on the first attempt."""
+    assert _should_retry_imagegen(ImageGenError("imagegen_timeout"))
+    # HTTP rate-limit / 5xx remain retryable.
+    for status in ("429", "500", "502", "503", "504"):
+        assert _should_retry_imagegen(ImageGenError("imagegen_http_error", status))
+    # Permanent rejections and bad payloads are not retried.
+    assert not _should_retry_imagegen(ImageGenError("imagegen_http_error", "400"))
+    assert not _should_retry_imagegen(ImageGenError("imagegen_http_error", "403"))
+    assert not _should_retry_imagegen(ImageGenError("imagegen_bad_response"))
+    assert not _should_retry_imagegen(ImageGenError("imagegen_refused"))
+    # A non-provider exception is retried (anything unexpected gets one more chance).
+    assert _should_retry_imagegen(ValueError("boom"))
 
 
 @pytest.mark.parametrize("bad_id", [".", "..", "", "a/b", "a\\b", "foo/../bar", "-leading-hyphen"])
