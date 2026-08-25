@@ -355,6 +355,37 @@ files:
 
 
 @pytest.mark.asyncio
+async def test_pack_detail_includes_designed_items(tmp_path, monkeypatch):
+    """An installed .lwpack detail surfaces the card's designed `items` (the catalog templates
+    `.item grant` hands out), so the module page shows the gear — no room import needed."""
+    services, admin, home = _pack_services(tmp_path)
+    monkeypatch.setattr("gateway.panels.installed_pack_homes", lambda data_dir: {"fog": home})
+    card_path = home / "cards" / "fog.lorecard.json"
+    card = json.loads(card_path.read_text(encoding="utf-8"))
+    card["items"] = [
+        {
+            "name": "The Fog Bell",
+            "kind": "quest",
+            "slot": "accessory",
+            "effect": "+1 to Listen",
+            "bonus": {"Listen": 1},
+            "quantity": 1,
+        },
+        {"no_name": "skipped"},
+    ]
+    card_path.write_text(json.dumps(card), encoding="utf-8")
+
+    reply = await admin._detail("fog-room", tmp_path / "modules", "fog")
+
+    assert reply["ok"] is True
+    items = json.loads(reply["detail"])["items"]
+    assert [i["name"] for i in items] == ["The Fog Bell"]
+    assert items[0]["bonus"] == {"Listen": 1}
+    assert items[0]["slot"] == "accessory"
+    assert items[0]["effect"] == "+1 to Listen"
+
+
+@pytest.mark.asyncio
 async def test_delete_pack_module_removes_home_artifacts_and_room_refs(tmp_path, monkeypatch):
     """`module_delete` removes the pack's orphaned KP skills as well as its home and refs."""
     services, admin, home = _pack_services(tmp_path)

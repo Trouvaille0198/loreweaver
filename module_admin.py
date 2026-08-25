@@ -276,6 +276,7 @@ class ModuleAdminService:
         entries: list[dict[str, Any]] = []
         variables: list[dict[str, Any]] = []
         pregens: list[dict[str, str]] = []
+        items: list[dict[str, Any]] = []
         scenario = ""
         opening = ""
         for _card_entry, card_path in world_cards:
@@ -314,6 +315,23 @@ class ModuleAdminService:
                 for p in (card.get("pregens") or [])
                 if isinstance(p, dict) and p.get("name")
             )
+            # The pack's designed items (the catalog templates `.item grant` hands out).
+            for it in card.get("items") or []:
+                if not isinstance(it, dict) or not str(it.get("name", "")).strip():
+                    continue
+                items.append(
+                    {
+                        "name": str(it.get("name", "")),
+                        "kind": str(it.get("kind") or ""),
+                        "slot": str(it.get("slot") or ""),
+                        "description": str(it.get("description") or ""),
+                        "effect": str(it.get("effect") or ""),
+                        "lore": str(it.get("lore") or ""),
+                        "origin": str(it.get("origin") or ""),
+                        "quantity": it.get("quantity", 1) if isinstance(it.get("quantity"), int) else 1,
+                        "bonus": dict(it.get("bonus") or {}),
+                    }
+                )
             scenario = str(card.get("scenario") or "") or scenario
             opening = str(card.get("opening") or "") or opening
 
@@ -414,6 +432,7 @@ class ModuleAdminService:
                 "worldbook_entries": entries,
                 "variables": variables,
                 "pregens": pregens,
+                "items": items,
                 "rulepacks": rulepacks,
                 "skills": skills,
             },
