@@ -954,6 +954,52 @@ async def test_pack_module_generates_lwpack_and_populates_room(tmp_path: Path) -
         forge_module._USER_MODULE_DIR = original_user_dir
 
 
+async def test_pack_module_media_pass_persists_reference_index(tmp_path: Path) -> None:
+    """Path two with media: rendered illustrations land in the room's media store AND the
+    `module_media_index` provenance is persisted — `.image <kind> <subject>` reuses the
+    room's illustration as a generation reference, exactly like the module-creation path."""
+    reset_imagegen_limiters()
+    shots = json.dumps(
+        [
+            _shot("cover", "Greyreed at dusk"),
+            _shot("scenes", "The ferry crossing"),
+            _shot("scenes", "The drowned chapel"),
+        ]
+    )
+    services = _option_services(
+        tmp_path,
+        [_VALID_PACK_LORECARD, shots],  # world card + media shot list
+        imagegen=True,
+    )
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        result = await generate_and_install_pack_module(
+            services, ctx, "a marsh-town disappearance mystery", media=["cover", "scenes"]
+        )
+
+        assert result.ok, result.error
+        assert len(services.imagegen.calls) == 3
+        records = await MediaStore(services.store, str(tmp_path)).list_room_records(CHAT_KEY)
+        names = {record.name for record in records}
+        assert any(name.startswith("module-") and "-cover-" in name for name in names)
+        assert any(name.startswith("module-") and "-scenes-" in name for name in names)
+
+        index = json.loads(await services.store.state_get(CHAT_KEY, "module_media_index"))
+        by_name = {e["name"]: e for e in index}
+        assert by_name[next(n for n in names if "-scenes-" in n and "-2" in n)]["subject"] == "The ferry crossing"
+        # Every index entry points at a stored record (hash rides along for `.image`).
+        # The room may also hold records the pack-import path registered (pregen avatars), so
+        # index hashes are a SUBSET of stored records, not the whole set.
+        record_hashes = {record.hash for record in records}
+        assert {e["hash"] for e in index} <= record_hashes
+        assert all(e["hash"] for e in index)
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
 def test_pack_module_manifest_preserves_media_subject_titles() -> None:
     """Generated pack assets retain the subject that the detail page uses as their label."""
     from core.yaml_safety import safe_load_no_aliases

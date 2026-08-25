@@ -1757,6 +1757,14 @@ async def generate_and_install_pack_module(
                 total = len(shots)
                 done = 0
                 sem = asyncio.Semaphore(_MEDIA_CONCURRENCY)
+                media_settings = services.settings.tui
+                media_store = MediaStore(
+                    services.store,
+                    services.settings.data_dir,
+                    max_file_bytes=media_settings.media_max_file_bytes,
+                    room_quota_bytes=media_settings.media_room_quota_bytes,
+                    allowed_mimes=ALLOWED_IMAGE_MIMES,
+                )
 
                 async def _render_one(index: int, shot: Any) -> dict[str, str] | None:
                     nonlocal done
@@ -1777,14 +1785,34 @@ async def generate_and_install_pack_module(
                     asset_name = f"module-{pack_id}-{shot.kind}-{index}{_IMAGE_MIME_EXTS.get(mime, '.png')}"
                     try:
                         _safe_write(assets_dir / asset_name, data)
-                        return {"kind": shot.kind, "subject": shot.subject, "name": asset_name}
                     except Exception as exc:  # noqa: BLE001
                         logger.warning("[pack-forge] asset write failed %s: %s", asset_name, exc)
                         return None
+                    # Register in the room's media store so `.image` can reuse this illustration
+                    # as a REFERENCE (content-addressed: the pack-import path re-registers the
+                    # same bytes and dedupes). Best-effort — a quota/mime rejection drops only
+                    # this image from the reference pool, never the forge.
+                    try:
+                        record = await media_store.register_blob(
+                            room=ctx.chat_key,
+                            data=data,
+                            mime=mime,
+                            name=asset_name,
+                            uploader=ctx.uid(),
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("[pack-forge] media register failed %s: %s", asset_name, exc)
+                        return None
+                    return {"kind": shot.kind, "subject": shot.subject, "name": asset_name, "hash": record.hash}
 
                 # Render at most `_MEDIA_CONCURRENCY` shots in flight, with per-shot retry.
                 rendered = await asyncio.gather(*(_render_one(i, s) for i, s in enumerate(shots, 1)))
                 media_index = [r for r in rendered if r]
+                if media_index:
+                    # Persist shot→image provenance so `.image <kind> <subject>` can reuse the
+                    # room's illustration as a generation reference (same contract as the
+                    # module-creation path's `_append_module_media_index`).
+                    await _append_module_media_index(services, ctx.chat_key, media_index)
                 logger.info("[pack-forge] media pass done: %d images", len(media_index))
             else:
                 logger.warning("[pack-forge] no imagegen provider for this room; media skipped")
