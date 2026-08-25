@@ -105,15 +105,26 @@ class Services:
         # there cannot be a room override, so inherit the deployment client.
         if not chat_key:
             return selection
-        raw = await self.store.state_get(chat_key, ROOM_LLM_SELECTION_KEY)
         # Keeper admin frames are addressed by the human room name (for example
         # ``table``), while live TUI turns carry the canonical session key
         # (``tui:group:table``). Read either spelling so an assignment made in
         # the web model screen is also used by authoring, turns, and image lanes.
-        if not raw and chat_key.startswith("tui:group:"):
-            raw = await self.store.state_get(chat_key.removeprefix("tui:group:"), ROOM_LLM_SELECTION_KEY)
-        elif not raw and not chat_key.startswith("tui:group:"):
+        # The canonical spelling MUST win when both rows exist: it is the only
+        # spelling the current engine writes (`_set_room_model` persists via
+        # `session_key_for_room`), so a bare-name row can only be a leftover
+        # written by an older version. Preferring the bare row would shadow a
+        # newer save and make the model screen read back a stale assignment —
+        # the "pick another model, save, and it snaps back" bug.
+        if chat_key.startswith("tui:group:"):
+            raw = await self.store.state_get(chat_key, ROOM_LLM_SELECTION_KEY)
+            if not raw:
+                raw = await self.store.state_get(
+                    chat_key.removeprefix("tui:group:"), ROOM_LLM_SELECTION_KEY
+                )
+        else:
             raw = await self.store.state_get(f"tui:group:{chat_key}", ROOM_LLM_SELECTION_KEY)
+            if not raw:
+                raw = await self.store.state_get(chat_key, ROOM_LLM_SELECTION_KEY)
         if not raw:
             return selection
         try:
