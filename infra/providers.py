@@ -39,6 +39,11 @@ PRESETS: dict[str, str] = {
     # 通义千问 Token Plan 个人版（OpenAI 兼容端点；API Key 以 sk-sp- 开头，与
     # 通用 sk-ws- 不混用）。文档：https://platform.qianwenai.com/docs/token-plan/personal/token-plan-personal-quickstart
     "qwen": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    # Token Plan 的编码计划端点（同一 sk-sp- key 体系；独立命名便于与通用 qwen 区分用途）
+    "qwen-coding-plan": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+    # 千问AI平台按量付费端点（通用 API Key 以 sk-ws- 开头；文档:
+    # https://platform.qianwenai.com/docs/api-reference/preparation/api-key）
+    "qwen-api": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "xai": "https://api.x.ai/v1",
     "supergrok": XAI_API_BASE,
     "mistral": "https://api.mistral.ai/v1",
@@ -269,7 +274,7 @@ def provider_model_kinds(name: str) -> tuple[ModelKind, ...]:
         return ("chat", "image")
     if provider in {"openai", "siliconflow"}:
         return ("chat", "embedding", "image")
-    if provider in {"minimax-cn", "xai", "qwen"}:
+    if provider in {"minimax-cn", "xai", "qwen", "qwen-coding-plan", "qwen-api"}:
         return ("chat", "image")
     if provider in {"together", "fireworks"}:
         return ("chat", "embedding", "image")
