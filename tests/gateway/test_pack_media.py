@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from gateway.commands import CommandRouter
 from gateway.pack_media import sync_pack_media_to_room
 from net.state import _image_names
-from tests.gateway.test_image_command import _keeper_ctx, _services
+from tests.gateway.test_image_command import _assert_started, _keeper_ctx, _services, _settle
 
 
 async def test_pack_media_is_registered_and_exposed_as_image_name(tmp_path):
@@ -34,5 +34,8 @@ async def test_pack_media_is_registered_and_exposed_as_image_name(tmp_path):
     names = await _image_names(services, chat_key)
     assert names == {"npcs": ["老周"]}
 
-    await CommandRouter(services).dispatch(_keeper_ctx(chat_key), ".image portrait 老周")
+    router = CommandRouter(services)
+    result = await router.dispatch(_keeper_ctx(chat_key), ".image portrait 老周")
+    _assert_started(services, result)
+    await _settle(router)
     assert services.imagegen.calls[-1]["reference"] != "0"

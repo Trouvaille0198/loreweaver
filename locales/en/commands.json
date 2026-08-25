@@ -303,5 +303,6 @@
   "commands.clue.denied": "Only the keeper may add or remove clues.",
   "commands.help.clue": "Clue log: .clue list · .clue add <name> · .clue remove <name>",
   "commands.item.not_in_catalog": "❌ \"{item}\" is not in this room's item catalog",
-  "commands.item.module_mismatch": "❌ \"{item}\" belongs to a different module and does not work in this room's current scenario"
+  "commands.item.module_mismatch": "❌ \"{item}\" belongs to a different module and does not work in this room's current scenario",
+  "commands.image.started": "Image generation started — the result will appear in the room when it is done."
 }

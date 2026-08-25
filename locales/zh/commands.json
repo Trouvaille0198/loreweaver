@@ -303,5 +303,6 @@
   "commands.clue.denied": "只有守秘人可以添加或移除线索。",
   "commands.help.clue": "线索日志：.clue list · .clue add <名称> · .clue remove <名称>",
   "commands.item.not_in_catalog": "❌ 「{item}」不在本房间的物品目录中",
-  "commands.item.module_mismatch": "❌ 「{item}」属于其他剧本，在当前剧本中不会生效"
+  "commands.item.module_mismatch": "❌ 「{item}」属于其他剧本，在当前剧本中不会生效",
+  "commands.image.started": "已开始生成图片，完成后会自动发到房间。"
 }

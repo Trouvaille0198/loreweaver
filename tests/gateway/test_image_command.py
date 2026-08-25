@@ -1,5 +1,6 @@
 """`.image` command — Keeper-only room image handout generation."""
 
+import asyncio
 import json
 
 from agent.context import AgentCtx
@@ -44,6 +45,33 @@ def _keeper_ctx(chat_key: str) -> AgentCtx:
     return AgentCtx(chat_key=chat_key, user_id="k1", platform="cli", locale="en")
 
 
+async def _settle(router: CommandRouter) -> None:
+    """Wait for the dispatch's background `.image` task to finish.
+
+    `.image` generation now runs OUTSIDE the room's turn lock as a tracked background
+    task (the command itself returns immediately). FakeImageGen/FakeLLM complete
+    without real IO, so the tracked-task set drains within a few event-loop ticks;
+    poll it instead of assuming timing.
+    """
+    tasks = getattr(router, "_image_background_tasks", None)
+    for _ in range(200):
+        if not tasks:
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("background image task did not settle")
+
+
+def _assert_started(services, text: str) -> None:
+    assert text == services.i18n.with_locale("en").t("commands.image.started"), text
+
+
+async def _last_image_name(services, chat_key: str) -> str:
+    raw = await services.store.state_get(chat_key, "media_history")
+    history = json.loads(raw or "[]")
+    assert history, "no media frame was published"
+    return history[-1]["name"]
+
+
 async def test_image_command_denied_for_player(tmp_path):
     reset_imagegen_limiters()
     services = _services(tmp_path)
@@ -62,10 +90,10 @@ async def test_image_command_keeper_publishes_media_and_history(tmp_path):
 
     result = await router.dispatch(_keeper_ctx(chat_key), ".image scene misty chapel")
 
-    assert "misty-chapel.png" in result
-    assert result == services.i18n.with_locale("en").t(
-        "commands.image.generated", kind="scene", file="scene-misty-chapel.png", hash=result.split("(")[-1][:12]
-    )
+    # The command returns immediately; the minutes-long generation runs in the
+    # background so the room's turn lock is not held for the whole stretch.
+    _assert_started(services, result)
+    await _settle(router)
     raw = await services.store.state_get(chat_key, "media_history")
     history = json.loads(raw or "[]")
     assert history[-1]["mime"] == "image/png"
@@ -73,13 +101,16 @@ async def test_image_command_keeper_publishes_media_and_history(tmp_path):
     # The generation prompt rides along for hover/audit. With no LLM script the
     # expand falls back to the raw prompt ("当前场景 misty chapel").
     assert history[-1].get("prompt") == "当前场景 misty chapel"
-    assert hub.events[-2][1].kind == "media"
-    # The trailing event retires the "Generating…" spinner line.
-    assert hub.events[-1][1].kind == "system"
-    assert hub.events[-1][1].data.get("spinner") is False
-    # The image is room content, NOT attached to any character avatar.
-    assert hub.events[-2][1].data.get("from") == "KP"
-    assert hub.events[-2][1].data.get("prompt") == "当前场景 misty chapel"
+    media_events = [event for _, event, _ in hub.events if event.kind == "media"]
+    assert media_events and media_events[-1].data.get("prompt") == "当前场景 misty chapel"
+    # The media frame is room content, NOT attached to any character avatar.
+    assert media_events[-1].data.get("from") == "KP"
+    # A system event retires the "Generating…" spinner line.
+    spinner_retired = [
+        event for _, event, _ in hub.events
+        if event.kind == "system" and event.data.get("spinner") is False
+    ]
+    assert spinner_retired
 
 
 async def test_image_command_defaults_to_scene_kind(tmp_path):
@@ -90,7 +121,9 @@ async def test_image_command_defaults_to_scene_kind(tmp_path):
 
     result = await router.dispatch(_keeper_ctx(chat_key), ".image misty chapel")
 
-    assert "scene-misty-chapel.png" in result
+    _assert_started(services, result)
+    await _settle(router)
+    assert await _last_image_name(services, chat_key) == "scene-misty-chapel.png"
 
 
 async def test_image_command_empty_prompt_returns_usage(tmp_path):
@@ -111,19 +144,13 @@ async def test_image_command_live_state_intent_uses_llm_to_expand_prompt(tmp_pat
 
     result = await router.dispatch(_keeper_ctx(chat_key), ".image 当前场景")
 
+    _assert_started(services, result)
+    await _settle(router)
     # The LLM was called (an authoring-lane expansion), and the generated image used
     # the LLM's prompt, not the bare intent.
     assert len(llm.calls) == 1
     expected = image_name("scene", "a foggy chapel interior with a lone lantern")
-    assert result == services.i18n.with_locale("en").t(
-        "commands.image.generated",
-        kind="scene",
-        file=expected,
-        hash=result.split("(")[-1][:12],
-    )
-    raw = await services.store.state_get(chat_key, "media_history")
-    history = json.loads(raw or "[]")
-    assert history[-1]["name"] == expected
+    assert await _last_image_name(services, chat_key) == expected
 
 
 async def test_image_command_plain_prompt_does_not_call_llm(tmp_path):
@@ -134,9 +161,11 @@ async def test_image_command_plain_prompt_does_not_call_llm(tmp_path):
 
     result = await router.dispatch(_keeper_ctx("tui:group:img6"), ".image misty chapel")
 
+    _assert_started(services, result)
+    await _settle(router)
     # A plain description is passed through verbatim; the LLM is never consulted.
     assert len(llm.calls) == 0
-    assert "scene-misty-chapel.png" in result
+    assert await _last_image_name(services, "tui:group:img6") == "scene-misty-chapel.png"
 
 
 async def test_image_scene_bare_kind_expands_scene_intent(tmp_path):
@@ -148,10 +177,12 @@ async def test_image_scene_bare_kind_expands_scene_intent(tmp_path):
 
     result = await router.dispatch(_keeper_ctx(chat_key), ".image scene")
 
+    _assert_started(services, result)
+    await _settle(router)
     assert len(llm.calls) == 1
     sent = llm.calls[0][0][-1]["content"]
     assert "当前场景" in sent
-    assert "a-misty-chapel-interior.png" in result
+    assert await _last_image_name(services, chat_key) == "scene-a-misty-chapel-interior.png"
 
 
 async def test_image_portrait_bare_kind_expands_character_intent(tmp_path):
@@ -163,10 +194,12 @@ async def test_image_portrait_bare_kind_expands_character_intent(tmp_path):
 
     result = await router.dispatch(_keeper_ctx(chat_key), ".image portrait")
 
+    _assert_started(services, result)
+    await _settle(router)
     assert len(llm.calls) == 1
     sent = llm.calls[0][0][-1]["content"]
     assert "当前角色" in sent
-    assert "portrait-a-robed-detective-portrait.png" in result
+    assert await _last_image_name(services, chat_key) == "portrait-a-robed-detective-portrait.png"
 
 
 async def test_image_combat_bare_kind_expands_combat_intent(tmp_path):
@@ -178,10 +211,12 @@ async def test_image_combat_bare_kind_expands_combat_intent(tmp_path):
 
     result = await router.dispatch(_keeper_ctx(chat_key), ".image combat")
 
+    _assert_started(services, result)
+    await _settle(router)
     assert len(llm.calls) == 1
     sent = llm.calls[0][0][-1]["content"]
     assert "当前战斗" in sent
-    assert "combat-a-tense-hallway-standoff.png" in result
+    assert await _last_image_name(services, chat_key) == "combat-a-tense-hallway-standoff.png"
 
 
 async def test_image_kind_with_extra_description_folds_into_intent(tmp_path):
@@ -193,11 +228,13 @@ async def test_image_kind_with_extra_description_folds_into_intent(tmp_path):
 
     result = await router.dispatch(_keeper_ctx(chat_key), ".image scene 迷雾中的灯塔")
 
+    _assert_started(services, result)
+    await _settle(router)
     assert len(llm.calls) == 1
     sent = llm.calls[0][0][-1]["content"]
     assert "当前场景" in sent
     assert "迷雾中的灯塔" in sent
-    assert "a-lighthouse-in-the-fog.png" in result
+    assert await _last_image_name(services, chat_key) == "scene-a-lighthouse-in-the-fog.png"
 
 
 async def test_image_scene_includes_knowledge_pool_material_in_prompt(tmp_path):
@@ -232,8 +269,10 @@ async def test_image_scene_includes_knowledge_pool_material_in_prompt(tmp_path):
         chat_key, "module_pool", {"keeper": {}, "player": player_pool}, source="test"
     )
 
-    await router.dispatch(_keeper_ctx(chat_key), ".image scene")
+    result = await router.dispatch(_keeper_ctx(chat_key), ".image scene")
 
+    _assert_started(services, result)
+    await _settle(router)
     assert len(llm.calls) == 1
     sent = llm.calls[0][0][-1]["content"]
     # The LLM was handed the scene's visual description, not just a name.
@@ -256,10 +295,12 @@ async def test_image_last_uses_most_recent_keeper_text(tmp_path):
 
     result = await router.dispatch(_keeper_ctx(chat_key), ".image last")
 
+    _assert_started(services, result)
+    await _settle(router)
     assert len(llm.calls) == 1
     sent = llm.calls[0][0][-1]["content"]
     assert "昏黄的灯下" in sent
-    assert "a-rain-soaked-riverside-door.png" in result
+    assert await _last_image_name(services, chat_key) == "scene-a-rain-soaked-riverside-door.png"
 
 
 async def test_image_last_without_history_returns_usage(tmp_path):
@@ -292,8 +333,10 @@ async def test_image_clue_includes_clues_material_in_prompt(tmp_path):
     docs = DocumentStore(services.store)
     await docs.put_singleton(chat_key, "module_pool", {"keeper": {}, "player": player_pool}, source="test")
 
-    await router.dispatch(_keeper_ctx(chat_key), ".image clue")
+    result = await router.dispatch(_keeper_ctx(chat_key), ".image clue")
 
+    _assert_started(services, result)
+    await _settle(router)
     assert len(llm.calls) == 1
     sent = llm.calls[0][0][-1]["content"]
     # The clue's own description (from the clues pool) reached the LLM.
@@ -322,8 +365,10 @@ async def test_image_clue_focus_filters_material(tmp_path):
     docs = DocumentStore(services.store)
     await docs.put_singleton(chat_key, "module_pool", {"keeper": {}, "player": player_pool}, source="test")
 
-    await router.dispatch(_keeper_ctx(chat_key), ".image clue 玉蟾")
+    result = await router.dispatch(_keeper_ctx(chat_key), ".image clue 玉蟾")
 
+    _assert_started(services, result)
+    await _settle(router)
     assert len(llm.calls) == 1
     sent = llm.calls[0][0][-1]["content"]
     # The clue FOCUS reaches the LLM as part of the intent.
@@ -381,8 +426,10 @@ async def test_image_portrait_reuses_module_illustration_as_reference(tmp_path):
         json.dumps([{"kind": "npcs", "subject": "老周", "hash": record.hash, "name": record.name}]),
     )
 
-    await router.dispatch(_keeper_ctx(chat_key), ".image portrait 老周")
+    result = await router.dispatch(_keeper_ctx(chat_key), ".image portrait 老周")
 
+    _assert_started(services, result)
+    await _settle(router)
     assert len(services.imagegen.calls) == 1
     # The 老周 illustration rode along as the generation reference.
     assert services.imagegen.calls[0]["reference"] != "0"
@@ -416,8 +463,10 @@ async def test_image_scene_reuses_recent_illustration_as_reference(tmp_path):
         json.dumps([{"kind": "scenes", "subject": "码头", "hash": record.hash, "name": record.name}]),
     )
 
-    await router.dispatch(_keeper_ctx(chat_key), ".image scene")
+    result = await router.dispatch(_keeper_ctx(chat_key), ".image scene")
 
+    _assert_started(services, result)
+    await _settle(router)
     assert len(services.imagegen.calls) == 1
     # FakeImageGen anchors every kind, so a bare scene request reuses the most recent
     # scene illustration as reference.
@@ -455,9 +504,104 @@ async def test_image_scene_does_not_reference_when_provider_only_anchors_portrai
         json.dumps([{"kind": "scenes", "subject": "码头", "hash": record.hash, "name": record.name}]),
     )
 
-    await router.dispatch(_keeper_ctx(chat_key), ".image scene")
+    result = await router.dispatch(_keeper_ctx(chat_key), ".image scene")
 
+    _assert_started(services, result)
+    await _settle(router)
     assert len(services.imagegen.calls) == 1
     # A portrait-only provider must NOT send a scene illustration as a reference — the
     # caller gates by `reference_kinds`.
     assert services.imagegen.calls[0]["reference"] == "0"
+
+
+async def test_image_scene_reference_scoped_to_active_module(tmp_path):
+    reset_imagegen_limiters()
+    llm = FakeLLM(responder=lambda _m, _t: ChatResult(content="a misty harbor", tool_calls=[]))
+    services = _services(tmp_path, llm=llm)
+    router = CommandRouter(services)
+    chat_key = "tui:group:img21"
+    from core.documents import DocumentStore
+
+    player_pool = {
+        "scenes": [{"name": "码头", "focus": "探索", "description": "雾中的码头。", "npcs_present": [], "clues": []}],
+        "npcs": [],
+        "clues": [],
+        "background": "",
+        "summary": "",
+    }
+    await DocumentStore(services.store).put_singleton(chat_key, "module_pool", {"keeper": {}, "player": player_pool}, source="test")
+
+    # The index accumulates EVERY module this room ever ran (append-only, never purged
+    # on module switch): a stale module's scene art AND the current module's both live
+    # here. Only the current module's illustration may anchor the reference.
+    store = MediaStore(services.store, str(tmp_path), allowed_mimes=ALLOWED_IMAGE_MIMES)
+    stale_blob = b"\x89PNG\r\n\x1a\n" + b"stale-scene" * 3
+    stale = await store.register_blob(room=chat_key, data=stale_blob, mime="image/png", name="module-stale-scenes-2.png", uploader="keeper")
+    current_blob = b"\x89PNG\r\n\x1a\n" + b"current-scene" * 10
+    current = await store.register_blob(room=chat_key, data=current_blob, mime="image/png", name="module-current-scenes-2.png", uploader="keeper")
+    await services.store.state_set(
+        chat_key,
+        "module_media_index",
+        json.dumps(
+            [
+                {"kind": "scenes", "subject": "旧场景", "hash": stale.hash, "name": stale.name},
+                {"kind": "scenes", "subject": "新场景", "hash": current.hash, "name": current.name},
+            ]
+        ),
+    )
+    await services.store.state_set(chat_key, "active_module", json.dumps({"pack_id": "current", "name": "x"}))
+
+    result = await router.dispatch(_keeper_ctx(chat_key), ".image scene")
+
+    _assert_started(services, result)
+    await _settle(router)
+    assert len(services.imagegen.calls) == 1
+    # The reference bytes are the CURRENT module's illustration (distinct lengths), not
+    # the stale one that happens to come earlier in the append-only index.
+    assert services.imagegen.calls[0]["reference"] == str(len(current_blob))
+
+
+async def test_image_scene_reference_without_active_module_keeps_index_order(tmp_path):
+    reset_imagegen_limiters()
+    llm = FakeLLM(responder=lambda _m, _t: ChatResult(content="a misty harbor", tool_calls=[]))
+    services = _services(tmp_path, llm=llm)
+    router = CommandRouter(services)
+    chat_key = "tui:group:img22"
+    from core.documents import DocumentStore
+
+    player_pool = {
+        "scenes": [{"name": "码头", "focus": "探索", "description": "雾中的码头。", "npcs_present": [], "clues": []}],
+        "npcs": [],
+        "clues": [],
+        "background": "",
+        "summary": "",
+    }
+    await DocumentStore(services.store).put_singleton(chat_key, "module_pool", {"keeper": {}, "player": player_pool}, source="test")
+
+    store = MediaStore(services.store, str(tmp_path), allowed_mimes=ALLOWED_IMAGE_MIMES)
+    first_blob = b"\x89PNG\r\n\x1a\n" + b"first-scene" * 3
+    first = await store.register_blob(room=chat_key, data=first_blob, mime="image/png", name="module-first-scenes-2.png", uploader="keeper")
+    last_blob = b"\x89PNG\r\n\x1a\n" + b"last-scene" * 10
+    last = await store.register_blob(room=chat_key, data=last_blob, mime="image/png", name="module-last-scenes-2.png", uploader="keeper")
+    await services.store.state_set(
+        chat_key,
+        "module_media_index",
+        json.dumps(
+            [
+                {"kind": "scenes", "subject": "首个", "hash": first.hash, "name": first.name},
+                {"kind": "scenes", "subject": "末尾", "hash": last.hash, "name": last.name},
+            ]
+        ),
+    )
+    # No active_module: no pack id to scope by, so the pre-existing "most recent" pick
+    # (the LAST entry in the store's stable hash order) must keep working unchanged.
+    await services.store.state_set(chat_key, "active_module", "")
+
+    result = await router.dispatch(_keeper_ctx(chat_key), ".image scene")
+
+    _assert_started(services, result)
+    await _settle(router)
+    assert len(services.imagegen.calls) == 1
+    records = await store.list_room_records(chat_key)
+    expected = max(records, key=lambda r: r.hash)
+    assert services.imagegen.calls[0]["reference"] == str(expected.size)
