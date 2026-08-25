@@ -185,6 +185,82 @@ IMAGEGEN_DEFAULT_KEY = "runtime_config.imagegen"
 IMAGEGEN_CREDENTIALS_KEY = "runtime_config.imagegen.credentials"
 
 
+def migrate_llm_credentials(store: Store) -> int:
+    """One-shot boot migration: merge the legacy per-provider credential book
+    (``runtime_config.credentials``) into the unified typed book
+    (``runtime_config.llm_profiles``) and drop the legacy key.
+
+    The two books were the same class with different Store keys — the legacy
+    ``credentials`` path keyed by ``provider`` predates the typed ``provider::
+    [kind::]model`` profile book. Merging collapses them to one book: classic
+    entries land under ``model_profile_id(provider, chat_model)`` (OAuth fields
+    preserved); a chat_model-less entry (an OAuth subscription or a bare key)
+    stays keyed by ``provider``, which ``model_profile_parts`` already parses as
+    chat.
+
+    Returns the number of legacy entries merged (0 when there is nothing to do).
+    Idempotent: once the legacy key is gone the function is a no-op.
+    """
+    path = store.path
+    if path == ":memory:" or not os.path.exists(path):
+        return 0
+    try:
+        conn = sqlite3.connect(path)
+        try:
+            row = conn.execute(
+                "SELECT value FROM kv WHERE user_key = '' AND store_key = ?",
+                (CREDENTIALS_KEY,),
+            ).fetchone()
+            legacy_raw = row[0] if row else None
+            if legacy_raw is None:
+                return 0
+            try:
+                legacy = json.loads(legacy_raw)
+            except (TypeError, ValueError):
+                legacy = {}
+            if not isinstance(legacy, dict) or not legacy:
+                conn.execute(
+                    "DELETE FROM kv WHERE user_key = '' AND store_key = ?",
+                    (CREDENTIALS_KEY,),
+                )
+                conn.commit()
+                return 0
+            profiles_row = conn.execute(
+                "SELECT value FROM kv WHERE user_key = '' AND store_key = ?",
+                (LLM_PROFILES_KEY,),
+            ).fetchone()
+            profiles_raw = profiles_row[0] if profiles_row else None
+            try:
+                profiles = json.loads(profiles_raw) if profiles_raw else {}
+            except (TypeError, ValueError):
+                profiles = {}
+            if not isinstance(profiles, dict):
+                profiles = {}
+            count = 0
+            for provider, entry in legacy.items():
+                if not isinstance(entry, dict):
+                    continue
+                model = str(entry.get("chat_model") or "").strip()
+                profile_id = model_profile_id(provider, model) if model else str(provider).casefold()
+                merged = {**dict(profiles.get(profile_id, {})), **dict(entry)}
+                profiles[profile_id] = merged
+                count += 1
+            conn.execute(
+                "INSERT OR REPLACE INTO kv (user_key, store_key, value) VALUES (?, ?, ?)",
+                ("", LLM_PROFILES_KEY, json.dumps(profiles)),
+            )
+            conn.execute(
+                "DELETE FROM kv WHERE user_key = '' AND store_key = ?",
+                (CREDENTIALS_KEY,),
+            )
+            conn.commit()
+            return count
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return 0
+
+
 def apply_overrides(base: Settings, overrides: dict) -> Settings:
     """Return a copy of ``base`` with the given llm ``overrides`` overlaid.
 

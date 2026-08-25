@@ -22,6 +22,7 @@ from core.resolution import ResolutionError
 from gateway.commands.cast import CastCommands
 from gateway.commands.checks import ChecksCommands, _resolution_notice
 from gateway.commands.forge import ForgeCommands
+from gateway.commands.item import ItemCommands
 from gateway.commands.llm import LlmCommands
 from gateway.commands.media import MediaCommands
 from gateway.commands.panels import PanelsCommands
@@ -59,6 +60,7 @@ def _is_zh(locale: str) -> bool:
 class CommandRouter(
     ChecksCommands,
     SheetCommands,
+    ItemCommands,
     RulesCommands,
     RoomsCommands,
     CastCommands,
@@ -294,6 +296,14 @@ class CommandRouter(
             CommandSpec("opposed", self.cmd_opposed, ["opposed", "rav", "rcv"], ["rav", "rcv"], None, "commands.help.opposed"),
 
             CommandSpec("sheet", self.cmd_sheet, ["sheet", "st"], ["st"], {"name": "sheet"}, "commands.help.sheet"),
+            CommandSpec(
+                "item",
+                self.cmd_item,
+                ["item", "inv"],
+                ["item", "背包", "物品"],
+                {"name": "item"},
+                "commands.help.item",
+            ),
             CommandSpec(
                 "npc",
                 self.cmd_cast,

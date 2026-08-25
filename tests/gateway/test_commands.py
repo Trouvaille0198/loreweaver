@@ -26,7 +26,7 @@ from infra.embeddings import FakeEmbeddings
 from infra.llm import FakeLLM, assistant_text
 from infra.llm_retry import unwrap_llm
 from infra.providers import MutableLLM
-from infra.runtime_config import CREDENTIALS_KEY, DEFAULT_KEY
+from infra.runtime_config import DEFAULT_KEY, LLM_PROFILES_KEY
 
 
 def _services():
@@ -380,7 +380,7 @@ async def test_model_set_supergrok_clears_previous_provider_credentials():
     }
     await services.runtime_config.replace(**previous)
     services.llm.apply(previous)
-    await services.llm_credentials.save_subscription(
+    await services.llm_profiles.save_subscription(
         "supergrok",
         SubscriptionToken("access-secret", "refresh-secret", time.time() + 3600),
     )
@@ -410,7 +410,7 @@ async def test_model_set_chatgpt_uses_only_its_saved_proxy_credentials():
     }
     await services.runtime_config.replace(**previous)
     services.llm.apply(previous)
-    await services.llm_credentials.remember(
+    await services.llm_profiles.remember(
         "chatgpt",
         api_key="sk-chatgpt-proxy",
         base_url="https://chatgpt-proxy.example/v1",
@@ -559,11 +559,11 @@ async def test_model_logout_chatgpt_proxy_preserves_static_credentials():
     services = build_services(settings, embeddings=FakeEmbeddings(64))
     router = CommandRouter(services)
     ctx = AgentCtx(chat_key="cli:dm:m", user_id="u1", locale="en")
-    await services.llm_credentials.save_subscription(
+    await services.llm_profiles.save_subscription(
         "chatgpt",
         SubscriptionToken("access-oauth", "refresh-oauth", time.time() + 3600),
     )
-    await services.llm_credentials.remember(
+    await services.llm_profiles.remember(
         "chatgpt",
         api_key="sk-proxy-secret",
         base_url="https://chatgpt-proxy.example/v1",
@@ -572,8 +572,8 @@ async def test_model_logout_chatgpt_proxy_preserves_static_credentials():
     logout = await router.dispatch(ctx, ".model logout chatgpt")
 
     assert logout is not None and "chatgpt" in logout
-    assert await services.llm_credentials.load_subscription("chatgpt") is None
-    credential = await services.llm_credentials.get("chatgpt")
+    assert await services.llm_profiles.load_subscription("chatgpt") is None
+    credential = await services.llm_profiles.get("chatgpt")
     assert credential["api_key"] == "sk-proxy-secret"
     assert credential["base_url"] == "https://chatgpt-proxy.example/v1"
     assert services.settings.llm.api_key == "sk-proxy-secret"
@@ -596,17 +596,17 @@ async def test_model_logout_credential_write_failure_preserves_oauth_and_proxy_c
     services = build_services(settings, embeddings=FakeEmbeddings(64))
     router = CommandRouter(services)
     ctx = AgentCtx(chat_key="cli:dm:m", user_id="u1", locale="en")
-    await services.llm_credentials.save_subscription(
+    await services.llm_profiles.save_subscription(
         "chatgpt",
         SubscriptionToken("access-oauth", "refresh-oauth", time.time() + 3600),
     )
-    await services.llm_credentials.remember(
+    await services.llm_profiles.remember(
         "chatgpt",
         api_key="sk-proxy-secret",
         base_url="https://chatgpt-proxy.example/v1",
     )
     async def fail_credential_write(user_key="", store_key="", value=None):
-        if store_key == CREDENTIALS_KEY:
+        if store_key == LLM_PROFILES_KEY:
             raise OSError("credential store unavailable after delete")
         return await services.store.__class__.set(
             services.store, user_key=user_key, store_key=store_key, value=value
@@ -616,13 +616,13 @@ async def test_model_logout_credential_write_failure_preserves_oauth_and_proxy_c
     reply = await router.dispatch(ctx, ".model logout chatgpt")
 
     _assert_model_mutation_failed(reply, "chatgpt")
-    credential = await services.llm_credentials.get("chatgpt")
+    credential = await services.llm_profiles.get("chatgpt")
     assert credential["access_token"] == "access-oauth"
     assert credential["refresh_token"] == "refresh-oauth"
     assert credential["api_key"] == "sk-proxy-secret"
     assert credential["base_url"] == "https://chatgpt-proxy.example/v1"
     persisted_book = json.loads(
-        await services.store.get(user_key="", store_key=CREDENTIALS_KEY) or "{}"
+        await services.store.get(user_key="", store_key=LLM_PROFILES_KEY) or "{}"
     )
     assert persisted_book["chatgpt"] == credential
     assert services.settings.llm.api_key == "sk-proxy-secret"
@@ -683,7 +683,7 @@ async def test_model_set_same_subscription_keeps_custom_model():
     services = _mutable_services()
     router = CommandRouter(services)
     ctx = AgentCtx(chat_key="cli:dm:m", user_id="u1", locale="en")
-    await services.llm_credentials.save_subscription(
+    await services.llm_profiles.save_subscription(
         "supergrok",
         SubscriptionToken("access-secret", "refresh-secret", time.time() + 3600),
     )
@@ -707,7 +707,7 @@ async def test_model_logout_invalidates_active_clients_and_reverts_to_base_provi
     services = build_services(settings, embeddings=FakeEmbeddings(64))
     router = CommandRouter(services)
     ctx = AgentCtx(chat_key="cli:dm:m", user_id="u1", locale="en")
-    await services.llm_credentials.save_subscription(
+    await services.llm_profiles.save_subscription(
         "supergrok",
         SubscriptionToken("access-secret", "refresh-secret", time.time() + 3600),
     )
@@ -720,14 +720,14 @@ async def test_model_logout_invalidates_active_clients_and_reverts_to_base_provi
     rejected_key = await router.dispatch(ctx, ".model key sk-must-not-be-saved")
     assert rejected_key is not None and "login" in rejected_key.casefold()
     assert (await services.runtime_config.get())["api_key"] == ""
-    assert "api_key" not in await services.llm_credentials.get("supergrok")
+    assert "api_key" not in await services.llm_profiles.get("supergrok")
 
     logout = await router.dispatch(ctx, ".model logout supergrok")
     shown = await router.dispatch(ctx, ".model")
 
     assert logout is not None and "supergrok" in logout
     assert shown is not None and "provider openai" in shown.casefold()
-    assert await services.llm_credentials.load_subscription("supergrok") is None
+    assert await services.llm_profiles.load_subscription("supergrok") is None
     assert await services.runtime_config.get() == {}
     assert services.settings.llm.provider == "openai"
     assert services.imagegen is None
@@ -743,7 +743,7 @@ async def test_model_logout_runtime_clear_failure_keeps_grant_but_live_is_reset(
     services = _mutable_services()
     router = CommandRouter(services)
     ctx = AgentCtx(chat_key="cli:dm:m", user_id="u1", locale="en")
-    await services.llm_credentials.save_subscription(
+    await services.llm_profiles.save_subscription(
         "supergrok",
         SubscriptionToken("access-secret", "refresh-secret", time.time() + 3600),
     )
@@ -762,7 +762,7 @@ async def test_model_logout_runtime_clear_failure_keeps_grant_but_live_is_reset(
     reply = await router.dispatch(ctx, ".model logout supergrok")
 
     _assert_model_mutation_failed(reply, "supergrok")
-    assert await services.llm_credentials.load_subscription("supergrok") is not None
+    assert await services.llm_profiles.load_subscription("supergrok") is not None
     assert await services.runtime_config.load() == runtime_before
     assert services.settings.llm.provider == "openai"
     assert services.settings.llm.chat_model == "gpt-4o"
@@ -777,14 +777,14 @@ async def test_model_logout_credential_failure_keeps_completed_live_and_runtime_
     services = _mutable_services()
     router = CommandRouter(services)
     ctx = AgentCtx(chat_key="cli:dm:m", user_id="u1", locale="en")
-    await services.llm_credentials.save_subscription(
+    await services.llm_profiles.save_subscription(
         "supergrok",
         SubscriptionToken("access-secret", "refresh-secret", time.time() + 3600),
     )
     await router.dispatch(ctx, ".model set supergrok grok-custom")
 
     async def fail_credential_write(user_key="", store_key="", value=None):
-        if store_key == CREDENTIALS_KEY:
+        if store_key == LLM_PROFILES_KEY:
             raise OSError("credential store unavailable after delete")
         return await services.store.__class__.set(
             services.store, user_key=user_key, store_key=store_key, value=value
@@ -794,9 +794,9 @@ async def test_model_logout_credential_failure_keeps_completed_live_and_runtime_
     reply = await router.dispatch(ctx, ".model logout supergrok")
 
     _assert_model_mutation_failed(reply, "supergrok")
-    assert await services.llm_credentials.load_subscription("supergrok") is not None
+    assert await services.llm_profiles.load_subscription("supergrok") is not None
     persisted_book = json.loads(
-        await services.store.get(user_key="", store_key=CREDENTIALS_KEY) or "{}"
+        await services.store.get(user_key="", store_key=LLM_PROFILES_KEY) or "{}"
     )
     assert persisted_book["supergrok"]["access_token"] == "access-secret"
     assert await services.runtime_config.load() == {}
@@ -814,7 +814,7 @@ async def test_model_logout_restart_keeps_base_provider_and_empty_override(tmp_p
     services = build_services(Settings(llm=baseline), embeddings=FakeEmbeddings(64), db_path=db)
     router = CommandRouter(services)
     ctx = AgentCtx(chat_key="cli:dm:m", user_id="u1", locale="en")
-    await services.llm_credentials.save_subscription(
+    await services.llm_profiles.save_subscription(
         "supergrok",
         SubscriptionToken("access-secret", "refresh-secret", time.time() + 3600),
     )
@@ -864,7 +864,7 @@ async def test_model_logout_does_not_crash_when_base_is_the_oauth_provider(tmp_p
     assert shown is not None and "subscription not logged in" in shown.casefold()
     assert services.settings.llm.provider == "supergrok"
     assert await services.runtime_config.get() == {}
-    assert await services.llm_credentials.load_subscription("supergrok") is None
+    assert await services.llm_profiles.load_subscription("supergrok") is None
     with pytest.raises(OAuthError, match="subscription_login_required"):
         await old_inner.chat([{"role": "user", "content": "hello"}])
     services.store.close()
@@ -898,7 +898,7 @@ async def test_model_relogin_hot_rebuilds_active_supergrok_clients(monkeypatch):
     services = build_services(settings, embeddings=FakeEmbeddings(64))
     router = CommandRouter(services)
     ctx = AgentCtx(chat_key="cli:dm:m", user_id="u1", locale="en")
-    await services.llm_credentials.save_subscription(
+    await services.llm_profiles.save_subscription(
         "supergrok",
         SubscriptionToken("access-one", "refresh-one", time.time() + 3600),
     )
@@ -970,7 +970,7 @@ async def test_model_relogin_refresh_failure_keeps_new_grant_and_rebuilt_clients
     services = build_services(settings, embeddings=FakeEmbeddings(64))
     router = CommandRouter(services)
     ctx = AgentCtx(chat_key="cli:dm:m", user_id="u1", locale="en")
-    await services.llm_credentials.save_subscription(
+    await services.llm_profiles.save_subscription(
         "supergrok",
         SubscriptionToken("access-old", "refresh-old", time.time() + 3600),
     )
@@ -1000,12 +1000,12 @@ async def test_model_relogin_refresh_failure_keeps_new_grant_and_rebuilt_clients
     assert session["done"] is True
     assert session["error"] == "subscription_poll_failed"
     assert session.get("token_ok") is not True
-    installed = await services.llm_credentials.load_subscription("supergrok")
+    installed = await services.llm_profiles.load_subscription("supergrok")
     assert installed is not None
     assert installed.access_token == "access-new"
     assert installed.refresh_token == "refresh-new"
     persisted_book = json.loads(
-        await services.store.get(user_key="", store_key=CREDENTIALS_KEY) or "{}"
+        await services.store.get(user_key="", store_key=LLM_PROFILES_KEY) or "{}"
     )
     assert persisted_book["supergrok"]["access_token"] == "access-new"
     assert await services.runtime_config.load() == runtime_before
@@ -1060,7 +1060,7 @@ async def test_model_first_proxy_login_persistence_failure_keeps_new_oauth_state
         "base_url": "https://chatgpt-proxy.example/v1",
     }
     await services.runtime_config.replace(**proxy_snapshot)
-    await services.llm_credentials.replace_static(
+    await services.llm_profiles.replace_static(
         "chatgpt",
         api_key="sk-proxy-secret",
         base_url="https://chatgpt-proxy.example/v1",
@@ -1082,17 +1082,17 @@ async def test_model_first_proxy_login_persistence_failure_keeps_new_oauth_state
     assert started is not None and "PROXY" in started
     assert session["error"] == "subscription_poll_failed"
     assert session.get("token_ok") is not True
-    installed = await services.llm_credentials.load_subscription("chatgpt")
+    installed = await services.llm_profiles.load_subscription("chatgpt")
     assert installed is not None
     assert installed.access_token == "access-new"
     assert installed.refresh_token == "refresh-new"
-    credential = await services.llm_credentials.get("chatgpt")
+    credential = await services.llm_profiles.get("chatgpt")
     assert credential["access_token"] == "access-new"
     assert credential["refresh_token"] == "refresh-new"
     assert "api_key" not in credential
     assert "base_url" not in credential
     persisted_book = json.loads(
-        await services.store.get(user_key="", store_key=CREDENTIALS_KEY) or "{}"
+        await services.store.get(user_key="", store_key=LLM_PROFILES_KEY) or "{}"
     )
     assert persisted_book["chatgpt"] == credential
     assert await services.runtime_config.load() == proxy_snapshot
@@ -1110,7 +1110,7 @@ async def test_model_set_supergrok_does_not_implicitly_enable_imagegen():
     services = _mutable_services()
     router = CommandRouter(services)
     ctx = AgentCtx(chat_key="cli:dm:m", user_id="u1", locale="en")
-    await services.llm_credentials.save_subscription(
+    await services.llm_profiles.save_subscription(
         "supergrok",
         SubscriptionToken("access-secret", "refresh-secret", time.time() + 3600),
     )
@@ -1130,7 +1130,7 @@ async def test_model_key_is_remembered_for_the_current_provider():
     reply = await router.dispatch(ctx, ".model key sk-provider-specific")
 
     assert reply is not None
-    assert (await services.llm_credentials.get("openai"))["api_key"] == "sk-provider-specific"
+    assert (await services.llm_profiles.get("openai"))["api_key"] == "sk-provider-specific"
 
 
 async def test_model_key_build_failure_leaves_runtime_credential_and_live_unchanged():
@@ -1156,7 +1156,7 @@ async def test_model_key_build_failure_leaves_runtime_credential_and_live_unchan
     assert services.llm.inner is old_inner
     assert services.settings.llm.api_key == ""
     assert await services.runtime_config.get() == {}
-    assert await services.llm_credentials.get("openai") == {}
+    assert await services.llm_profiles.get("openai") == {}
 
 
 async def test_model_key_credential_failure_keeps_applied_live_key(monkeypatch):
@@ -1166,7 +1166,7 @@ async def test_model_key_credential_failure_keeps_applied_live_key(monkeypatch):
     old_inner = services.llm.inner
 
     async def fail_credential_write(user_key="", store_key="", value=None):
-        if store_key == CREDENTIALS_KEY:
+        if store_key == LLM_PROFILES_KEY:
             raise OSError("credential store unavailable after write")
         return await services.store.__class__.set(
             services.store, user_key=user_key, store_key=store_key, value=value
@@ -1179,9 +1179,9 @@ async def test_model_key_credential_failure_keeps_applied_live_key(monkeypatch):
     assert services.llm.inner is not old_inner
     assert services.settings.llm.api_key == "sk-not-saved"
     assert await services.runtime_config.get() == {}
-    assert await services.llm_credentials.get("openai") == {}
+    assert await services.llm_profiles.get("openai") == {}
     assert json.loads(
-        await services.store.get(user_key="", store_key=CREDENTIALS_KEY) or "{}"
+        await services.store.get(user_key="", store_key=LLM_PROFILES_KEY) or "{}"
     ) == {}
 
 
@@ -1189,7 +1189,7 @@ async def test_model_key_runtime_failure_keeps_live_and_saved_credential(monkeyp
     services = _mutable_services()
     router = CommandRouter(services)
     ctx = AgentCtx(chat_key="cli:dm:m", user_id="u1", locale="en")
-    await services.llm_credentials.replace_static(
+    await services.llm_profiles.replace_static(
         "openai",
         api_key="sk-previous",
         base_url="https://previous.example/v1",
@@ -1210,7 +1210,7 @@ async def test_model_key_runtime_failure_keeps_live_and_saved_credential(monkeyp
     assert services.llm.inner is not old_inner
     assert services.settings.llm.api_key == "sk-not-committed"
     assert await services.runtime_config.load() == {}
-    assert await services.llm_credentials.get("openai") == {
+    assert await services.llm_profiles.get("openai") == {
         "api_key": "sk-not-committed",
     }
 
@@ -1372,7 +1372,7 @@ async def test_model_login_logout_and_set_with_mock_flow(monkeypatch):
                 raise ValueError("subscription_login_required")
         return FakeLLM(script=[])
 
-    services.llm = MutableLLM(settings, builder=builder, credentials=services.llm_credentials)
+    services.llm = MutableLLM(settings, builder=builder, credentials=services.llm_profiles)
     router = CommandRouter(services)
     ctx = AgentCtx(chat_key="cli:dm:m", user_id="u1", locale="en")
 
@@ -1387,7 +1387,7 @@ async def test_model_login_logout_and_set_with_mock_flow(monkeypatch):
     import asyncio
 
     for _ in range(100):
-        sub = await services.llm_credentials.load_subscription("supergrok")
+        sub = await services.llm_profiles.load_subscription("supergrok")
         if sub is not None:
             break
         await asyncio.sleep(0.02)
@@ -1404,7 +1404,7 @@ async def test_model_login_logout_and_set_with_mock_flow(monkeypatch):
     logout = await router.dispatch(ctx, ".model logout supergrok")
     assert logout is not None
     assert "supergrok" in logout
-    assert await services.llm_credentials.load_subscription("supergrok") is None
+    assert await services.llm_profiles.load_subscription("supergrok") is None
 
 
 async def test_model_set_denied_for_non_admin():

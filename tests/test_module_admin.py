@@ -118,6 +118,59 @@ async def test_module_detail_includes_only_this_modules_forge_media(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_module_detail_pool_includes_designed_items(tmp_path):
+    """The module detail's knowledge-pool view carries the room's `item_catalog` items
+    (phase 2), so the module page shows the items the script designed."""
+    store = Store(":memory:")
+    tui = SimpleNamespace(
+        media_max_file_bytes=8 * 1024 * 1024,
+        audio_max_file_bytes=16 * 1024 * 1024,
+        media_room_quota_bytes=64 * 1024 * 1024,
+        audio_room_quota_bytes=64 * 1024 * 1024,
+    )
+    services = SimpleNamespace(
+        settings=SimpleNamespace(data_dir=tmp_path, tui=tui),
+        store=store,
+        documents=DocumentStore(store),
+    )
+    admin = ModuleAdminService(SimpleNamespace(services=services, keystore=None, fs=None, hub=None))
+    room = "harbor"
+    chat_key = chat_key_for_room(room)
+
+    root = tmp_path / "modules"
+    root.mkdir()
+    (root / "tide.md").write_text("# Tide\n", encoding="utf-8")
+    await store.state_set(chat_key, "module_source", "tide.md")
+    await services.documents.put_singleton(
+        chat_key, "module_pool", {"keeper": {"summary": "Tide mystery"}, "player": {}}
+    )
+    # The module's designed items live in the room's item catalog.
+    await services.documents.put_singleton(
+        chat_key,
+        "item_catalog",
+        {
+            "items": [
+                {
+                    "name": "The Sunken Bell",
+                    "kind": "quest",
+                    "effect": "+1 STR",
+                    "lore": "Hums near the lighthouse.",
+                    "origin": "the salt & anchor",
+                }
+            ]
+        },
+    )
+
+    detail = json.loads((await admin._detail(room, root, "tide.md"))["detail"])
+    pool = detail["pool"]
+    assert pool is not None
+    items = pool["keeper"]["items"]
+    assert items[0]["name"] == "The Sunken Bell"
+    assert items[0]["kind"] == "quest"
+    assert items[0]["origin"] == "the salt & anchor"
+
+
+@pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_module_list_includes_in_flight_generation(tmp_path):
     """A generation running in this room shows as a placeholder source in the module library (the

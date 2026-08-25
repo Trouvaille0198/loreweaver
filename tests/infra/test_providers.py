@@ -246,6 +246,33 @@ def test_mutable_llm_reports_when_offline_fallback_is_live():
     assert llm.using_fallback is True
 
 
+def test_mutable_llm_apply_empty_resets_to_explicit_base_not_startup_override():
+    """`apply({})` must reset to the caller-supplied deployment baseline (`base`),
+    NOT the startup snapshot that already carries a runtime override — otherwise
+    deleting the live-default profile reverts to the stale override."""
+    from infra.runtime_config import apply_overrides
+
+    baseline = Settings(llm=LLMSettings(provider="openai", chat_model="gpt-4o"))
+    overridden = apply_overrides(
+        baseline,
+        {"provider": "deepseek", "chat_model": "deepseek-v4-flash", "api_key": "sk-deep"},
+    )
+    captured: list[Settings] = []
+
+    def builder(settings: Settings) -> object:
+        captured.append(settings)
+        return object()
+
+    llm = MutableLLM(overridden, builder=builder, base=baseline)
+    # The live settings carry the override…
+    assert llm.settings.llm.provider == "deepseek"
+
+    llm.apply({})  # delete-then-reset → back to the deployment baseline
+    assert llm.settings.llm.provider == "openai"
+    assert llm.settings.llm.chat_model == "gpt-4o"
+    assert captured[-1].llm.provider == "openai"
+
+
 def test_mutable_llm_uses_saved_web_credentials_for_selected_provider():
     captured: list[Settings] = []
 
@@ -272,17 +299,17 @@ def test_mutable_llm_uses_saved_web_credentials_for_selected_provider():
     assert captured[0].llm.base_url == "https://saved.example/v1"
 
 
-def test_mutable_llm_falls_back_to_typed_profile_book_when_credentials_book_is_empty():
-    """The Model screen saves keys under the typed profile book (`provider::model`),
-    not the legacy per-provider credential book. A restart must find them there too,
-    or a valid setup silently degrades to the offline fallback."""
+def test_mutable_llm_finds_saved_key_in_unified_book_typed_profile():
+    """The unified book keys credentials `provider::model` (typed) plus bare
+    `provider`. A restart must find the chat key stored under the typed profile
+    even when the bare provider entry is empty, or a valid Model-screen setup
+    silently degrades to the offline fallback."""
     captured: list[Settings] = []
 
-    class EmptyCredentials:
+    class Credentials:
         def get_sync(self, provider: str) -> dict[str, str]:
             return {}
 
-    class Profiles:
         def load_sync(self) -> dict[str, dict[str, str]]:
             return {
                 "deepseek::deepseek-v4-flash": {
@@ -308,8 +335,7 @@ def test_mutable_llm_falls_back_to_typed_profile_book_when_credentials_book_is_e
     llm = MutableLLM(
         Settings(llm=LLMSettings(provider="deepseek", api_key="")),
         builder=builder,
-        credentials=EmptyCredentials(),
-        profiles=Profiles(),
+        credentials=Credentials(),
         fallback_llm=fallback,
     )
 
@@ -318,12 +344,15 @@ def test_mutable_llm_falls_back_to_typed_profile_book_when_credentials_book_is_e
     assert captured[0].llm.base_url == "https://api.deepseek.com/v1"
 
 
-def test_mutable_llm_stays_on_fallback_when_profiles_book_has_no_chat_key():
+def test_mutable_llm_stays_on_fallback_when_unified_book_has_no_chat_key():
     """A provider present only as an image profile must not satisfy the chat lookup —
     otherwise a restart would build the wrong client with the wrong key."""
     captured: list[Settings] = []
 
-    class Profiles:
+    class Credentials:
+        def get_sync(self, provider: str) -> dict[str, str]:
+            return {}
+
         def load_sync(self) -> dict[str, dict[str, str]]:
             return {
                 "minimax-cn::image::image-01": {
@@ -343,8 +372,7 @@ def test_mutable_llm_stays_on_fallback_when_profiles_book_has_no_chat_key():
     llm = MutableLLM(
         Settings(llm=LLMSettings(provider="deepseek", api_key="")),
         builder=builder,
-        credentials=None,
-        profiles=Profiles(),
+        credentials=Credentials(),
         fallback_llm=fallback,
     )
 

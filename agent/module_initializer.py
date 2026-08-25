@@ -43,6 +43,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from agent.items import ensure_catalog
 from core.battle_report import BattleReportManager
 from core.documents import DocumentStore
 from infra.config import Settings
@@ -87,7 +88,7 @@ async def _emit(progress: ProgressCb, stage: str, detail: str = "") -> None:
 # Fields every analysis dict (LLM-produced or fallback) is normalized to
 # carry, per the M1 spec's data shape: scenes/npcs/clues/timeline/background/
 # threats/truths/opening_facts/summary.
-_LIST_FIELDS = ("scenes", "npcs", "clues", "timeline", "threats", "truths", "opening_facts")
+_LIST_FIELDS = ("scenes", "npcs", "clues", "items", "timeline", "threats", "truths", "opening_facts")
 _STR_FIELDS = ("background", "summary")
 
 # Cheap safety cap on how much module text gets sent to the LLM in one prompt
@@ -136,6 +137,18 @@ _ANALYSIS_JSON_SCHEMA = """{
             "leads_to": "what it points to (e.g. the next scene, a truth, an NPC)"
         }
     ],
+    "items": [
+        {
+            "name": "item name (e.g. 'The Sunken Bell')",
+            "kind": "weapon/armor/consumable/gem/tool/quest/misc - pick the single best fit",
+            "description": "short player-visible intro (what it is, how it looks)",
+            "lore": "background story - ONLY for notable/powerful items, else leave empty",
+            "effect": "the mechanical effect (e.g. '+2 attack', 'heals 1d4', '+1 to Spot Hidden') - leave empty for purely narrative items",
+            "origin": "the scene or NPC where it is found - be specific (a scene name, an NPC name)",
+            "original_holder": "who held it before, if the module states it",
+            "clue": "the narrative significance it reveals, if any (links to a clue/truth name)"
+        }
+    ],
     "timeline": [
         {"time": "point in time", "event": "what happens", "involved": ["NPCs involved"]}
     ],
@@ -165,6 +178,19 @@ _ANALYSIS_JSON_SCHEMA = """{
     ],
     "summary": "a one-sentence summary of the module (under 30 words)"
 }"""
+
+
+# Model-facing guidance for the `items` category, appended after the JSON schema so
+# the model sees the discipline without polluting the machine-format contract. It is
+# model instruction, not user-visible text — i18n-exempt like the schema itself.
+_ANALYSIS_ITEMS_GUIDANCE = """
+Only list items that MATTER to the module - things investigators can acquire that
+carry mechanical or plot significance. Pure scene dressing (a chair, a vase) is not
+an item. Never assign an item to a specific character: who ends up holding it is
+decided in play, not by the script. Make 'origin'/'original_holder' concrete. Only
+notable/powerful items get a 'lore'; ordinary items make do with 'description'. An
+item's 'clue' links to a clue/truth when it carries plot significance - the item is
+NOT a clue; it is a thing with an effect."""  # i18n-exempt: model-facing analysis instruction
 
 
 def _extract_json_object(content: str, i18n: I18n) -> dict:
@@ -283,6 +309,10 @@ class ModuleInitializer:
             )
             await _emit(progress, "build")
             keeper_pool, player_pool = self._build_knowledge_pools(outcome.analysis)
+            # The script's items seed the room's item catalog (Layer 0 -> Layer 1):
+            # designed templates (kind/effect/origin/lore), no holders — instances are
+            # created only when play actually obtains them via the grant verbs.
+            await ensure_catalog(self.documents, chat_key, outcome.analysis.get("items") or [])
 
             if outcome.used_fallback:
                 status = "ready_fallback"
@@ -408,7 +438,7 @@ class ModuleInitializer:
             "module.analysis_prompt",
             doc_name=doc_name or prompt_i18n.t("module.default_document_name"),
             full_text=truncated,
-            schema=_ANALYSIS_JSON_SCHEMA,
+            schema=_ANALYSIS_JSON_SCHEMA + _ANALYSIS_ITEMS_GUIDANCE,
         )
 
     def _fallback_full_analysis(self, text: str) -> dict:
@@ -467,6 +497,22 @@ class ModuleInitializer:
                 }
             )
 
+        item_section = self._markdown_section(text, ("物品", "item"))
+        items = []
+        for entry in self._markdown_list_entries(item_section):
+            name, description = self._split_label(entry, "物品")
+            items.append(
+                {
+                    "name": name,
+                    "description": description,
+                    "kind": "",
+                    "effect": "",
+                    "origin": "",
+                    "original_holder": "",
+                    "clue": "",
+                }
+            )
+
         truths = []
         if truth_section:
             subsections = self._markdown_subsections(truth_section)
@@ -508,6 +554,7 @@ class ModuleInitializer:
             "scenes": scenes,
             "npcs": npcs,
             "clues": clues,
+            "items": items,
             "timeline": timeline,
             "background": text[:500] if len(text) > 500 else text,
             "threats": threats,

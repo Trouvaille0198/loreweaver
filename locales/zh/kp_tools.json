@@ -280,5 +280,18 @@
   "kp_tools.subsystem.spend.insufficient": "❌ 无法消耗 {points} 点{label}；当前仅剩 {available} 点",
   "kp_tools.subsystem.spend.invalid_points": "❌ {label}消耗点数必须是正整数",
   "kp_tools.subsystem.spend.no_check": "❌ 该角色没有可调整的已记录技能检定",
-  "kp_tools.subsystem.spend.no_session": "❌ 当前没有包含可调整检定的活动团录"
+  "kp_tools.subsystem.spend.no_session": "❌ 当前没有包含可调整检定的活动团录",
+  "kp_tools.item.bad_args": "❌ 需要角色名和物品名",
+  "kp_tools.item.bad_qty": "❌ 数量必须是正整数",
+  "kp_tools.item.character_not_found": "❌ 本房间没有角色「{name}」",
+  "kp_tools.item.failed": "❌ 物品操作失败: {error}",
+  "kp_tools.item.granted": "✅ 已给 {character} {item}",
+  "kp_tools.item.not_found": "❌ {name} 身上没有「{item}」",
+  "kp_tools.item.removed": "✅ 已从 {character} 移除 {item}",
+  "kp_tools.item.same_character": "❌ 来源和目标不能是同一角色",
+  "kp_tools.item.transferred": "✅ 已将 {item} 从 {source} 转给 {target}",
+  "kp_tools.item.used": "✅ {character} 已使用 {item}",
+  "kp_tools.item.not_in_catalog": "❌ 「{item}」不在本房间的物品目录中",
+  "kp_tools.item.equipped": "✅ {character} 已装备 {item}（{slot}）",
+  "kp_tools.item.unequipped": "✅ {character} 已卸下 {item}"
 }

@@ -61,6 +61,26 @@ def has_character(sheet: CharacterSheet | None) -> bool:
     return bool(sheet) and bool(sheet.name) and sheet.name != UNSET_CHARACTER_NAME
 
 
+def equipment_label(item: str, qty: int) -> str:
+    """One `equipment` list entry for `item` granted `qty` times (bundles as
+    `name ×N` when N > 1). Phase 1's free-text list has no per-entry counts, so a
+    multi-grant is stored as one readable entry; removal matches the bundle."""
+    return item if qty <= 1 else f"{item} ×{qty}"
+
+
+def equipment_remove(sheet: CharacterSheet, item: str) -> bool:
+    """Remove one `equipment` entry matching `item` (exact, or a `item ×N` bundle).
+    Returns whether an entry was actually removed."""
+    eq = list(getattr(sheet, "equipment", []))
+    for index, entry in enumerate(eq):
+        entry = str(entry)
+        if entry == item or entry.startswith(f"{item} ×"):
+            eq.pop(index)
+            sheet.equipment = eq
+            return True
+    return False
+
+
 class CharacterNameTakenError(Exception):
     """A sheet write would land on a character owned by a DIFFERENT user.
 
@@ -221,6 +241,16 @@ class CharacterSheet:
         self.secondary_attributes: dict[str, Any] = {}
         self.skills: dict[str, Any] = {}
         self.equipment: list[Any] = []
+        # Phase 2: structured item views (name/kind/effect/lore/origin/equipped_slot/
+        # quantity, secret filtered) synced by the item lane, so clients can render item
+        # detail (not just the `equipment` name list). Mirrors `equipment` but carries
+        # the fields the page needs for an item-detail section.
+        self.items: list[dict[str, Any]] = []
+        # Phase 2: equipped items' mechanical bonuses, canonical -> delta, aggregated
+        # from the item documents by the item lane whenever gear changes. Persisted so
+        # every read (checks, dice, sheet) sees the same bonuses without re-aggregating
+        # from the document store on each call.
+        self.equipped_bonuses: dict[str, int] = {}
         self.background = ""
         self.notes = ""
         self.avatar: dict[str, Any] | None = None
@@ -261,6 +291,8 @@ class CharacterSheet:
             "hp_max": getattr(self, "hp_max", None),
             "skills": self.skills,
             "equipment": getattr(self, "equipment", []),
+            "items": list(getattr(self, "items", [])),
+            "equipped_bonuses": dict(getattr(self, "equipped_bonuses", {})),
             "background": getattr(self, "background", ""),
             "notes": getattr(self, "notes", ""),
             "avatar": getattr(self, "avatar", None),
@@ -276,6 +308,12 @@ class CharacterSheet:
         character.secondary_attributes = data.get("secondary_attributes", {})
         character.skills = data.get("skills", {})
         character.equipment = data.get("equipment", [])
+        items = data.get("items", [])
+        if isinstance(items, list):
+            character.items = [i for i in items if isinstance(i, dict)]
+        equipped_bonuses = data.get("equipped_bonuses", {})
+        if isinstance(equipped_bonuses, dict):
+            character.equipped_bonuses = {str(k): int(v) for k, v in equipped_bonuses.items()}
         character.background = data.get("background", "")
         character.notes = data.get("notes", "")
         avatar = data.get("avatar")
@@ -384,6 +422,35 @@ class CharacterManager:
         owner = doc.data.get("owner")
         return owner if isinstance(owner, str) else ""
 
+    async def get_character_owner(self, chat_key: str, char_name: str) -> str:
+        """The uid owning the room's sheet named `char_name` (`""` when absent/
+        unowned). Public wrapper over `_sheet_owner` for the cross-owner (table-level)
+        item lane, which must address any member's sheet by name."""
+        return await self._sheet_owner(chat_key, char_name)
+
+    async def mutate_character(
+        self, chat_key: str, char_name: str, mutate, *, force: bool = False
+    ) -> bool:
+        """Load the room's named character (whichever user owns it), apply `mutate(sheet)`
+        in place, and persist — returning whether the sheet existed.
+
+        The item/equipment lane's cross-owner verb (an AI Keeper or a table-level command
+        granting gear to ANY character, not just the acting player) needs to mutate a
+        sheet owned by another uid without tripping `CharacterNameTakenError`. Loading
+        under the recorded owner and saving under the same owner keeps the ownership check
+        honest while letting the caller act on any member. `force=True` also re-homes a
+        sheet that carries no owner (an unclaimed pregen).
+        """
+        owner = await self._sheet_owner(chat_key, char_name)
+        if not owner:
+            return False
+        sheet = await self.get_character(owner, chat_key, char_name)
+        if not has_character(sheet):
+            return False
+        mutate(sheet)
+        await self.save_character(owner, chat_key, sheet, force=force)
+        return True
+
     async def save_character(
         self, user_id: str, chat_key: str, character: CharacterSheet, *, force: bool = False
     ) -> None:
@@ -460,6 +527,9 @@ class CharacterManager:
         equipment = getattr(character, "equipment", [])
         if isinstance(equipment, list) and equipment:
             status_summary["equipment"] = list(equipment)
+        items = getattr(character, "items", [])
+        if isinstance(items, list) and items:
+            status_summary["items"] = list(items)
         background = getattr(character, "background", "")
         if isinstance(background, str) and background.strip():
             status_summary["background"] = background

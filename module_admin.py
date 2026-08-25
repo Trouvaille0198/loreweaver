@@ -575,6 +575,13 @@ class ModuleAdminService:
         media_records: list[dict[str, Any]] = []
         if current == name:
             pool = await self.services.documents.get_view(chat_key, "module_pool", MODULE_POOL_ID, KEEPER_VIEWER)
+            # Phase 2: the module's designed items ride the module detail alongside the
+            # knowledge pool (they live in the room's `item_catalog`), so the module page
+            # shows what items the script designed — category/effect/lore/origin, no holders.
+            if isinstance(pool, dict) and isinstance(pool.get("keeper"), dict):
+                catalog = await self.services.documents.get_singleton(chat_key, "item_catalog")
+                if catalog is not None and isinstance(catalog.data.get("items"), list):
+                    pool["keeper"]["items"] = catalog.data["items"]
             # Forge-generated illustrations carry the `module-<id>-` provenance prefix; they are
             # room-scoped like the pool, so they surface exactly where the pool does.
             module_id = name[:-3] if name.endswith(".md") else name

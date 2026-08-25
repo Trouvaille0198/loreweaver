@@ -6,6 +6,7 @@ driven with a stub builder so no provider client is ever constructed."""
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -15,11 +16,13 @@ from infra.imagegen import apply_imagegen_overrides
 from infra.llm import FakeLLM
 from infra.providers import MutableLLM
 from infra.runtime_config import (
+    CREDENTIALS_KEY,
     LLM_PROFILES_KEY,
     CredentialBook,
     ImageGenRuntimeConfig,
     RuntimeConfig,
     apply_overrides,
+    migrate_llm_credentials,
 )
 from infra.store import Store
 
@@ -265,3 +268,50 @@ def test_mutable_llm_failed_reconfigure_keeps_live_settings_and_client():
     assert llm.inner is original_inner
     assert settings.llm.provider == "openai"
     assert settings.llm.chat_model == "gpt-4o"
+
+
+def test_migrate_llm_credentials_merges_legacy_into_unified_book(tmp_path):
+    """The one-shot boot migration folds a legacy `runtime_config.credentials`
+    book into the unified `runtime_config.llm_profiles` book and drops the legacy
+    key — a chat_model-ed entry lands under `provider::model`, an OAuth bare
+    entry stays keyed by provider, existing typed profiles are untouched."""
+    store = Store(tmp_path / "cfg.db")
+    asyncio.run(
+        store.set(
+            user_key="",
+            store_key=CREDENTIALS_KEY,
+            value=json.dumps(
+                {
+                    "deepseek": {
+                        "api_key": "sk-deep",
+                        "chat_model": "deepseek-chat",
+                        "base_url": "https://api.deepseek.com/v1",
+                    },
+                    "supergrok": {
+                        "access_token": "at",
+                        "refresh_token": "rt",
+                        "expires_at": "123",
+                        "account_id": "acct",
+                    },
+                }
+            ),
+        )
+    )
+    asyncio.run(
+        store.set(
+            user_key="",
+            store_key=LLM_PROFILES_KEY,
+            value=json.dumps({"openai::gpt-4o": {"api_key": "sk-open", "chat_model": "gpt-4o", "kind": "chat"}}),
+        )
+    )
+
+    assert migrate_llm_credentials(store) == 2
+
+    merged = json.loads(asyncio.run(store.get(user_key="", store_key=LLM_PROFILES_KEY)))
+    assert merged["deepseek::deepseek-chat"]["api_key"] == "sk-deep"
+    assert merged["deepseek::deepseek-chat"]["chat_model"] == "deepseek-chat"
+    assert merged["supergrok"]["access_token"] == "at"  # bare provider key preserved
+    assert merged["openai::gpt-4o"]["api_key"] == "sk-open"  # untouched typed profile
+    # The legacy key is gone and the migration is idempotent.
+    assert asyncio.run(store.get(user_key="", store_key=CREDENTIALS_KEY)) is None
+    assert migrate_llm_credentials(store) == 0

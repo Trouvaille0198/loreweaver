@@ -289,6 +289,10 @@ def _parse_entry(raw: Any, index: int, label: str, warnings: list[str]) -> dict[
         "content": content,
         "keys": _text_list(raw.get("keys")),
         "secondary_keys": secondary_keys,
+        # Optional illustration asset filename (forge binds generated scene/NPC/item
+        # portraits onto the worldbook entry they depict). Carried verbatim into the
+        # room's lore document via `core.worldbook.LoreEntry.image`.
+        "image": _text(raw.get("image")).strip(),
         # V2's gate flag, stated explicitly rather than left to the importer's default —
         # the same thing the studio's SillyTavern export writes.
         "selective": bool(secondary_keys),

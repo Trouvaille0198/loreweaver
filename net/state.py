@@ -338,6 +338,7 @@ async def _party(
             "secondary_attributes",
             "fields",
             "equipment",
+            "items",
             "background",
             "status_effects",
         ):

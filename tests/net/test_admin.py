@@ -651,7 +651,7 @@ async def test_admin_set_model_replaces_provider_scoped_credentials():
     }
     await services.runtime_config.replace(**previous)
     services.llm.apply(previous)
-    await services.llm_credentials.save_subscription(
+    await services.llm_profiles.save_subscription(
         "supergrok",
         SubscriptionToken("access-secret", "refresh-secret", time.time() + 3600),
     )
@@ -674,7 +674,7 @@ async def test_admin_set_model_replaces_provider_scoped_credentials():
     assert services.settings.llm.api_key == ""
     assert services.settings.llm.base_url == ""
 
-    await services.llm_credentials.remember(
+    await services.llm_profiles.remember(
         "chatgpt",
         api_key="sk-chatgpt-proxy",
         base_url="https://chatgpt-proxy.example/v1",
@@ -714,10 +714,11 @@ async def test_admin_set_model_saves_supplied_key_under_selected_provider(tmp_pa
 
     assert result["type"] == "admin_config"
     assert result["provider"] == "deepseek"
-    credentials = await services.llm_credentials.all()
+    credentials = await services.llm_profiles.all()
     assert credentials["deepseek"] == {
         "api_key": "sk-deepseek-test",
         "base_url": "https://api.deepseek.com/v1",
+        "chat_model": "deepseek-v4-flash",
     }
     assert "openai" not in credentials
 
@@ -1908,12 +1909,12 @@ async def test_set_model_remembers_each_providers_key_and_reuses_it_on_switch_ba
         assert first["provider"] == "deepseek"
         assert "deepseek" in first["saved_providers"]
         assert (await services.runtime_config.get())["api_key"] == "sk-deep"
-        assert (await services.llm_credentials.get("deepseek"))["api_key"] == "sk-deep"
+        assert (await services.llm_profiles.get("deepseek"))["api_key"] == "sk-deep"
 
         # a different provider with its own key.
         await _send(ws, {"type": "admin_set_model", "provider": "openai", "api_key": "sk-open"})
         assert (await services.runtime_config.get())["api_key"] == "sk-open"
-        assert (await services.llm_credentials.get("openai"))["api_key"] == "sk-open"
+        assert (await services.llm_profiles.get("openai"))["api_key"] == "sk-open"
 
         # switch BACK to deepseek WITHOUT a key → the saved deepseek key is reused.
         back = await _send(ws, {"type": "admin_set_model", "provider": "deepseek"})
@@ -1924,6 +1925,32 @@ async def test_set_model_remembers_each_providers_key_and_reuses_it_on_switch_ba
         await ws.close()
     finally:
         await server.close()
+
+
+async def test_set_model_preserves_the_legacy_profile_model_name():
+    """Selecting a legacy credential profile as the default must not clear its model name."""
+    services = _services()
+    await services.llm_profiles.replace_static(
+        "deepseek",
+        api_key="sk-deep",
+        chat_model="deepseek-chat",
+    )
+
+    reply = await AdminService(services, Keystore()).dispatch(
+        "keeper",
+        "arkham",
+        {
+            "type": "admin_set_model",
+            "provider": "deepseek",
+            "chat_model": "deepseek-chat",
+        },
+        get_i18n("en"),
+    )
+
+    assert reply["type"] == "admin_config"
+    profile = next(profile for profile in reply["llms"] if profile["provider"] == "deepseek")
+    assert profile["chat_model"] == "deepseek-chat"
+    assert (await services.llm_profiles.get("deepseek"))["chat_model"] == "deepseek-chat"
 
 
 async def test_preset_llm_endpoint_roundtrip_keeps_the_existing_key():
@@ -1977,9 +2004,10 @@ async def test_preset_llm_endpoint_roundtrip_keeps_the_existing_key():
         )
         assert saved["type"] == "admin_config"
         assert services.settings.llm.api_key == "sk-preset"
-        assert await services.llm_credentials.get("deepseek") == {
+        assert await services.llm_profiles.get("deepseek") == {
             "api_key": "sk-preset",
             "base_url": effective_url,
+            "chat_model": "deepseek-chat",
         }
 
         await ws.close()
@@ -2036,7 +2064,7 @@ async def test_new_model_endpoint_never_receives_or_remembers_the_old_key():
         assert changed["type"] == "admin_config"
         assert services.settings.llm.base_url == "https://new.example/v1"
         assert services.settings.llm.api_key == ""
-        assert await services.llm_credentials.get("openai") == {"base_url": "https://new.example/v1"}
+        assert await services.llm_profiles.get("openai") == {"base_url": "https://new.example/v1"}
 
         # A later save with omitted fields must not resurrect the old saved key.
         await _send(ws, {"type": "admin_set_model", "provider": "openai"})
@@ -2053,7 +2081,7 @@ async def test_new_model_endpoint_never_receives_or_remembers_the_old_key():
                 "api_key": "sk-third-endpoint",
             },
         )
-        assert await services.llm_credentials.get("openai") == {
+        assert await services.llm_profiles.get("openai") == {
             "api_key": "sk-third-endpoint",
             "base_url": "https://third.example/v1",
         }
@@ -2064,7 +2092,7 @@ async def test_new_model_endpoint_never_receives_or_remembers_the_old_key():
             ws,
             {"type": "admin_set_model", "provider": "openai", "api_key": ""},
         )
-        assert await services.llm_credentials.get("openai") == {"base_url": "https://third.example/v1"}
+        assert await services.llm_profiles.get("openai") == {"base_url": "https://third.example/v1"}
 
         await ws.close()
     finally:
@@ -2103,7 +2131,7 @@ async def test_model_runtime_persistence_failure_reports_error_without_compensat
 async def test_model_credential_persistence_failure_keeps_applied_runtime():
     services = _services()
     with patch.object(
-        services.llm_credentials,
+        services.llm_profiles,
         "replace_static",
         new=AsyncMock(side_effect=OSError("database is read-only")),
     ):
@@ -2128,7 +2156,7 @@ async def test_model_credential_persistence_failure_keeps_applied_runtime():
         "api_key": "sk-new",
         "base_url": "",
     }
-    assert await services.llm_credentials.get("deepseek") == {}
+    assert await services.llm_profiles.get("deepseek") == {}
 
 
 async def test_admin_set_llm_lane_configures_and_clears_web_override():
@@ -2219,7 +2247,7 @@ async def test_admin_set_imagegen_configures_runtime_and_masks_key():
         # Switching to the OAuth-backed image provider replaces the whole
         # provider-scoped snapshot. Neither the previous OpenAI key/base_url nor
         # malicious values supplied on this frame may reach SuperGrok.
-        await services.llm_credentials.save_subscription(
+        await services.llm_profiles.save_subscription(
             "supergrok",
             SubscriptionToken("access-secret", "refresh-secret", time.time() + 3600),
         )
@@ -2291,6 +2319,35 @@ async def test_new_image_endpoint_never_reuses_or_remembers_the_old_key():
         )
         assert services.settings.imagegen.api_key == ""
 
+        await ws.close()
+    finally:
+        await server.close()
+
+
+async def test_admin_set_imagegen_reuses_the_chat_credential_key():
+    """A provider's imagegen often shares its CHAT key (qwen chat + qwen image, one
+    api_key). The imagegen config must back-fill that key from the generic chat
+    credential book, or it lands with api_key='' and imagegen is silently skipped."""
+    services = _services()
+    await services.llm_profiles.replace_static(
+        "qwen", api_key="sk-qwen-chat", base_url="https://qwen.example/v1"
+    )
+    keystore = Keystore()
+    keeper_key = keystore.add(room="arkham", name="Keeper", role="keeper")
+    server = TuiServer(services, keystore, port=0)
+    url = await _start(server)
+    try:
+        ws, *_ = await _connect_and_join(url, keeper_key, "Keeper")
+        updated = await _send(
+            ws,
+            {"type": "admin_set_imagegen", "provider": "qwen", "model": "qwen-image-3.0-pro"},
+        )
+        assert updated["type"] == "admin_config"
+        assert updated["imagegen"]["configured"] is True
+        assert updated["imagegen"]["api_key_masked"].endswith("chat")
+        # The chat key was back-filled, so build_imagegen can build a real client.
+        assert (await services.imagegen_runtime_config.get())["api_key"] == "sk-qwen-chat"
+        assert services.imagegen is not None
         await ws.close()
     finally:
         await server.close()
@@ -2679,7 +2736,12 @@ async def test_admin_generate_module_prompt_returns_only_prompt_text_and_request
         {
             "type": "admin_generate",
             "kind": "module_prompt",
-            "description": json.dumps({"idea": "A haunted railway station", "mode": "rewrite"}),
+            "description": json.dumps({
+                "idea": "A haunted railway station",
+                "mode": "rewrite",
+                "rule_strategy": "use:coc7",
+                "room_system": "coc7",
+            }),
             "locale": "en",
             "request_id": "prompt-2",
         },
@@ -2688,6 +2750,8 @@ async def test_admin_generate_module_prompt_returns_only_prompt_text_and_request
     assert rewrite["detail"] == "A haunted railway station hides a dispute over a missing timetable."
     assert rewrite["request_id"] == "prompt-2"
     assert "A haunted railway station" in services.llm.calls[1][0][1]["content"]
+    assert "d100" in services.llm.calls[1][0][1]["content"]
+    assert "STR" in services.llm.calls[1][0][1]["content"]
 
 
 async def test_admin_generate_module_honors_media_and_companion_options(tmp_path):
@@ -2800,11 +2864,10 @@ async def test_deleting_a_room_over_the_wire_drops_its_turn_lock_after_the_frame
         await server.close()
 
 
-async def test_admin_set_llm_profile_also_writes_legacy_credential_book(tmp_path):
-    """`admin_set_llm` saves chat profiles under the typed profile book AND mirrors
-    the key into the legacy per-provider credential book, so a restart builds the
-    global default client from either book (the MutableLLM startup path reads the
-    legacy book first, then falls back to the typed profiles)."""
+async def test_admin_set_llm_profile_writes_only_the_unified_book(tmp_path):
+    """`admin_set_llm` saves a chat profile once in the unified book — under the
+    typed `provider::model` key — and must NOT also create a bare `provider`
+    duplicate (the pre-unification mirror is gone)."""
     services = _services(str(tmp_path))
     admin = AdminService(services, Keystore())
 
@@ -2822,9 +2885,8 @@ async def test_admin_set_llm_profile_also_writes_legacy_credential_book(tmp_path
     assert saved["type"] == "admin_config"
 
     assert (await services.llm_profiles.get("deepseek::deepseek-chat"))["api_key"] == "sk-profile-secret"
-    legacy = await services.llm_credentials.get("deepseek")
-    assert legacy["api_key"] == "sk-profile-secret"
-    assert legacy["chat_model"] == "deepseek-chat"
+    # No bare-provider duplicate in the unified book.
+    assert await services.llm_profiles.get("deepseek") == {}
 
 
 async def test_admin_set_llm_profile_does_not_leak_key_into_legacy_book_for_non_chat_kinds(tmp_path):
@@ -2848,14 +2910,18 @@ async def test_admin_set_llm_profile_does_not_leak_key_into_legacy_book_for_non_
     assert saved["type"] == "admin_config"
 
     assert (await services.llm_profiles.get("minimax-cn::image::image-01"))["api_key"] == "sk-image-secret"
-    assert await services.llm_credentials.get("minimax-cn") == {}
+    assert await services.llm_profiles.get("minimax-cn") == {}
 
 
-async def test_admin_delete_llm_profile_cleans_its_legacy_credential_mirror(tmp_path):
-    """Deleting a chat profile must also drop the legacy credential mirror written
-    for it, or `_llm_profiles` resurrects the deleted entry from the legacy book."""
+async def test_admin_delete_llm_profile_clears_rooms_referencing_it(tmp_path):
+    """Deleting a profile must clear every room whose model selection still
+    references it, so no room is left holding a dangling reference that would
+    silently fall back to the global default."""
+    from agent.services import ROOM_LLM_SELECTION_KEY
+
     services = _services(str(tmp_path))
     admin = AdminService(services, Keystore())
+    i18n = get_i18n("en")
 
     await admin.dispatch(
         "keeper",
@@ -2866,19 +2932,28 @@ async def test_admin_delete_llm_profile_cleans_its_legacy_credential_mirror(tmp_
             "chat_model": "deepseek-chat",
             "api_key": "sk-profile-secret",
         },
-        get_i18n("en"),
+        i18n,
     )
+    # A room assigns the deepseek chat profile to its main lane.
+    await services.store.state_set(
+        "arkham",
+        ROOM_LLM_SELECTION_KEY,
+        json.dumps({"main": "deepseek::deepseek-chat"}),
+    )
+    selection = await services.room_model_selection("arkham")
+    assert selection["main"] == "deepseek::deepseek-chat"
 
     deleted = await admin.dispatch(
         "keeper",
         "arkham",
         {"type": "admin_delete_llm", "id": "deepseek::deepseek-chat"},
-        get_i18n("en"),
+        i18n,
     )
     assert deleted["type"] == "admin_config"
-    assert deleted["llms"] == []
     assert await services.llm_profiles.get("deepseek::deepseek-chat") == {}
-    assert await services.llm_credentials.get("deepseek") == {}
+    # The referencing room's lane was cleared, not left dangling.
+    selection = await services.room_model_selection("arkham")
+    assert selection["main"] == ""
 
 
 async def test_admin_export_llm_config_round_trips_every_book(tmp_path):
@@ -2917,9 +2992,10 @@ async def test_admin_export_llm_config_round_trips_every_book(tmp_path):
     assert exported["ok"] is True
     config = exported["config"]
     assert config["format"] == "loreweaver-llm-config"
+    assert config["version"] == 2
     assert config["llm_profiles"]["deepseek::deepseek-chat"]["api_key"] == "sk-profile-secret"
     assert config["llm_profiles"]["minimax-cn::image::image-01"]["api_key"] == "sk-image-secret"
-    assert config["llm_credentials"]["deepseek"]["api_key"] == "sk-profile-secret"
+    assert "llm_credentials" not in config
     # The live effective selection is merged into `runtime` even without a
     # persisted override, so the export round-trips the running model.
     assert config["runtime"]["provider"] == "openai"
@@ -2931,17 +3007,63 @@ async def test_admin_export_llm_config_round_trips_every_book(tmp_path):
         "arkham",
         {
             "type": "admin_import_llm",
-            "config": {**config, "llm_profiles": {}, "llm_credentials": {}, "runtime": {}},
+            "config": {**config, "llm_profiles": {}, "runtime": {}},
         },
         i18n,
     )
     assert await services.llm_profiles.all() == {}
-    assert await services.llm_credentials.all() == {}
 
     imported = await admin.dispatch("keeper", "arkham", {"type": "admin_import_llm", "config": config}, i18n)
     assert imported["type"] == "admin_config"
     assert (await services.llm_profiles.get("deepseek::deepseek-chat"))["api_key"] == "sk-profile-secret"
-    assert (await services.llm_credentials.get("deepseek"))["api_key"] == "sk-profile-secret"
+
+
+async def test_admin_export_import_round_trips_imagegen_selection(tmp_path):
+    """The LLM config export/import must carry the LIVE image-generation runtime
+    selection (which provider/model produces images) — not just the credential
+    boxes — so an import restores imagegen without the operator re-picking it."""
+    services = _services(str(tmp_path))
+    admin = AdminService(services, Keystore())
+    i18n = get_i18n("en")
+
+    await admin.dispatch(
+        "keeper",
+        "arkham",
+        {
+            "type": "admin_set_imagegen",
+            "provider": "qwen",
+            "model": "qwen-image-3.0-pro",
+            "api_key": "sk-image-runtime",
+        },
+        i18n,
+    )
+
+    exported = await admin.dispatch("keeper", "arkham", {"type": "admin_export_llm"}, i18n)
+    config = exported["config"]
+    assert config["imagegen_runtime"]["provider"] == "qwen"
+    assert config["imagegen_runtime"]["model"] == "qwen-image-3.0-pro"
+    assert config["imagegen_runtime"]["api_key"] == "sk-image-runtime"
+
+    # Wipe the runtime selection, then import back — imagegen must be restored.
+    await admin.dispatch(
+        "keeper",
+        "arkham",
+        {
+            "type": "admin_import_llm",
+            "config": {**config, "llm_profiles": {}, "runtime": {}, "imagegen_runtime": {}},
+        },
+        i18n,
+    )
+    assert await services.imagegen_runtime_config.get() == {}
+
+    imported = await admin.dispatch("keeper", "arkham", {"type": "admin_import_llm", "config": config}, i18n)
+    assert imported["type"] == "admin_config"
+    restored = await services.imagegen_runtime_config.get()
+    assert restored["provider"] == "qwen"
+    assert restored["model"] == "qwen-image-3.0-pro"
+    assert restored["api_key"] == "sk-image-runtime"
+    # The restored selection builds a live imagegen client.
+    assert services.imagegen is not None
 
 
 async def test_admin_import_llm_config_rejects_malformed_documents(tmp_path):
@@ -2998,7 +3120,43 @@ async def test_admin_import_llm_config_rejects_malformed_documents(tmp_path):
 
     # Nothing was written by the failed imports.
     assert await services.llm_profiles.all() == {}
-    assert await services.llm_credentials.all() == {}
+    assert await services.llm_profiles.all() == {}
+
+
+async def test_admin_import_llm_config_accepts_v1_and_merges_legacy(tmp_path):
+    """Importing a v1 export (two books) folds its legacy provider-keyed
+    `llm_credentials` entries into the unified `llm_profiles` book."""
+    services = _services(str(tmp_path))
+    admin = AdminService(services, Keystore())
+    i18n = get_i18n("en")
+
+    v1 = {
+        "format": "loreweaver-llm-config",
+        "version": 1,
+        "llm_profiles": {
+            "openai::gpt-4o": {"api_key": "sk-open", "chat_model": "gpt-4o", "kind": "chat"},
+        },
+        "llm_credentials": {
+            "deepseek": {
+                "api_key": "sk-deep",
+                "chat_model": "deepseek-chat",
+                "base_url": "https://api.deepseek.com/v1",
+            },
+        },
+        "runtime": {"provider": "openai", "chat_model": "gpt-4o"},
+        "imagegen_credentials": {},
+        "imagegen_runtime": {},
+    }
+    imported = await admin.dispatch(
+        "keeper",
+        "arkham",
+        {"type": "admin_import_llm", "config": v1},
+        i18n,
+    )
+    assert imported["type"] == "admin_config"
+    assert (await services.llm_profiles.get("openai::gpt-4o"))["api_key"] == "sk-open"
+    # The v1 legacy entry was folded into the unified book under its typed id.
+    assert (await services.llm_profiles.get("deepseek::deepseek-chat"))["api_key"] == "sk-deep"
 
 
 async def test_admin_llm_profiles_and_room_assignments_are_separate(tmp_path):

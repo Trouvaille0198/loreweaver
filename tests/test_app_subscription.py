@@ -10,8 +10,8 @@ from gateway.commands import CommandRouter
 from infra.config import LLMSettings, Settings
 from infra.embeddings import FakeEmbeddings
 from infra.i18n import get_i18n
-from infra.llm_retry import unwrap_llm
 from infra.llm import OpenAILLM
+from infra.llm_retry import unwrap_llm
 from infra.oauth_flows import SubscriptionToken
 from infra.providers import MutableLLM
 from net.admin import AdminService
@@ -112,7 +112,7 @@ async def test_app_demo_hot_switches_to_subscription_and_restores_on_restart(tmp
     assert services.llm.using_fallback is True
     assert _uses_demo_llm(services)
 
-    await services.llm_credentials.save_subscription(
+    await services.llm_profiles.save_subscription(
         "supergrok",
         SubscriptionToken("access-token", "refresh-token", time.time() + 3600),
     )

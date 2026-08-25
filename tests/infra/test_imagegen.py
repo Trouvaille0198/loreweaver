@@ -295,7 +295,7 @@ async def test_supergrok_preset_build_uses_llm_subscription():
     settings = Settings(
         imagegen=ImageGenSettings(provider="supergrok", base_url="https://stale-proxy.example/v1")
     )
-    gen = build_imagegen(settings, llm_credentials=book)
+    gen = build_imagegen(settings, credentials=book)
     assert gen is not None
     assert isinstance(gen, OpenAICompatImageGen)
     assert gen._settings.model == XAI_DEFAULT_IMAGE_MODEL
