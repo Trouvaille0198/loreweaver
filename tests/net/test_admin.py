@@ -2632,6 +2632,64 @@ async def test_admin_generate_authors_and_installs_skill_rule_and_module(tmp_pat
         rulepacks_module.reload_rulepacks()
 
 
+async def test_admin_generate_module_prompt_returns_only_prompt_text_and_request_id():
+    """The prompt helper uses the authoring LLM without entering the module install pipeline."""
+    settings = Settings(
+        locale="en", llm=LLMSettings(provider="openai", chat_model="gpt-4o")
+    )
+    services = build_services(
+        settings,
+        llm=FakeLLM(
+            script=[
+                assistant_text("A clockmaker's vanished apprentice leaves clues in stopped clocks."),
+                assistant_text("A haunted railway station hides a dispute over a missing timetable."),
+            ]
+        ),
+        embeddings=FakeEmbeddings(64),
+    )
+    admin = AdminService(services, Keystore())
+
+    suggestion = await admin.dispatch(
+        "keeper",
+        "arkham",
+        {
+            "type": "admin_generate",
+            "kind": "module_prompt",
+            "description": json.dumps({"idea": "", "mode": "suggest"}),
+            "locale": "en",
+            "request_id": "prompt-1",
+        },
+        get_i18n("en"),
+    )
+    assert suggestion == {
+        "type": "admin_generated",
+        "kind": "module_prompt",
+        "ok": True,
+        "id": "",
+        "name": "",
+        "error": "",
+        "detail": "A clockmaker's vanished apprentice leaves clues in stopped clocks.",
+        "request_id": "prompt-1",
+    }
+    assert "module_system_prompt" not in services.llm.calls[0][0][0]["content"]
+
+    rewrite = await admin.dispatch(
+        "keeper",
+        "arkham",
+        {
+            "type": "admin_generate",
+            "kind": "module_prompt",
+            "description": json.dumps({"idea": "A haunted railway station", "mode": "rewrite"}),
+            "locale": "en",
+            "request_id": "prompt-2",
+        },
+        get_i18n("en"),
+    )
+    assert rewrite["detail"] == "A haunted railway station hides a dispute over a missing timetable."
+    assert rewrite["request_id"] == "prompt-2"
+    assert "A haunted railway station" in services.llm.calls[1][0][1]["content"]
+
+
 async def test_admin_generate_module_honors_media_and_companion_options(tmp_path):
     """Protocol 2.5: `options` on `admin_generate` (kind="module") reaches the forge's media and
     companion passes; unknown ids are ignored, and a malformed `options` shape is dropped rather

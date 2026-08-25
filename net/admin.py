@@ -29,6 +29,7 @@ from agent.forge import (
     generate_and_install_pack_module,
     generate_and_install_rulepack,
     generate_and_install_skill,
+    generate_module_prompt,
 )
 from agent.services import ROOM_LLM_SELECTION_KEY, Services
 from core.rulepacks import available_systems, built_in_rulepack_ids
@@ -1610,7 +1611,7 @@ def _rules_frame() -> dict[str, Any]:
 
 # -- self-extension forge (Layer B.3) ----------------------------------------
 
-_FORGE_KINDS: frozenset[str] = frozenset({"skill", "rule", "module", "pack"})
+_FORGE_KINDS: frozenset[str] = frozenset({"skill", "rule", "module", "pack", "module_prompt"})
 
 
 async def _generate(
@@ -1631,12 +1632,33 @@ async def _generate(
     if kind not in _FORGE_KINDS:
         return _error("bad_request", i18n)
     description = str(frame.get("description") or "").strip()
-    if not description:
-        return _error("bad_request", i18n)
-
     requested_locale = str(frame.get("locale") or "").strip()
     generation_i18n = i18n.with_locale(requested_locale) if requested_locale in {"en", "zh"} else i18n
     room_chat_key = chat_key_for_room(caller_room)
+    request_id = str(frame.get("request_id") or "").strip()
+    if kind == "module_prompt":
+        try:
+            prompt_request = json.loads(description)
+        except (json.JSONDecodeError, TypeError):
+            return _error("bad_request", i18n)
+        if not isinstance(prompt_request, dict):
+            return _error("bad_request", i18n)
+        idea = prompt_request.get("idea")
+        mode = prompt_request.get("mode")
+        if not isinstance(idea, str) or mode not in {"suggest", "rewrite"}:
+            return _error("bad_request", i18n)
+        if mode == "rewrite" and not idea.strip():
+            return _error("bad_request", i18n)
+        result = await generate_module_prompt(
+            services,
+            idea.strip(),
+            mode=mode,
+            locale=generation_i18n.locale,
+            chat_key=room_chat_key,
+        )
+        return _generated_frame(kind, result, request_id=request_id)
+    if not description:
+        return _error("bad_request", i18n)
     if kind == "skill":
         result = await generate_and_install_skill(services, description, chat_key=room_chat_key)
         return _generated_frame(kind, result)
@@ -1756,8 +1778,13 @@ def _option_value(options: Any, key: str) -> str | None:
     return value.strip()
 
 
-def _generated_frame(kind: str, result: ForgeResult) -> dict[str, Any]:
-    return {
+def _generated_frame(
+    kind: str,
+    result: ForgeResult,
+    *,
+    request_id: str = "",
+) -> dict[str, Any]:
+    frame = {
         "type": "admin_generated",
         "kind": kind,
         "ok": result.ok,
@@ -1769,6 +1796,9 @@ def _generated_frame(kind: str, result: ForgeResult) -> dict[str, Any]:
         # means a valid module was authored + written). Empty for skill/rule (no per-room step).
         "detail": result.detail,
     }
+    if request_id:
+        frame["request_id"] = request_id
+    return frame
 
 
 def _error(code: str, i18n: I18n) -> dict[str, Any]:
