@@ -816,89 +816,29 @@ def _build_module_prompt_messages(
 
 
 def _module_prompt_rule_requirement(i18n: Any, rule_strategy: str, room_system: str) -> str:
-    """Turn the forge selector into a concrete, model-facing room rule constraint."""
+    """Turn the forge selector into a terse, model-facing rule constraint: NAME the system
+    (CoC / DnD / WoD or the room's own), one short line — the keeper asked for the rule in one
+    breath, not a full spec dump (no roll/target/outcome/parameter enumeration)."""
     strategy = rule_strategy.strip()
-    selected_system = strategy.split(":", 1)[1] if ":" in strategy else room_system.strip()
-    fallback_details = {
-        "coc7": i18n.t("agent.forge.module_prompt_rule_coc7"),
-        "dnd5e": i18n.t("agent.forge.module_prompt_rule_dnd5e"),
-        "wod": i18n.t("agent.forge.module_prompt_rule_wod"),
-    }.get(
-        selected_system,
-        i18n.t(
-            "agent.forge.module_prompt_rule_generic",
-            system=selected_system or i18n.t("agent.forge.module_prompt_room_system"),
-        ),
-    )
-    system_details = _module_prompt_loaded_rule_details(i18n, selected_system) or fallback_details
+    selected_system = (strategy.split(":", 1)[1] if ":" in strategy else room_system.strip()).strip()
+    if not selected_system:
+        selected_system = room_system.strip()
+    # Friendly one-line system names — the keeper wants the rule in one breath ("CoC/DnD 就行").
+    display = {
+        "coc7": "CoC 7e",
+        "coc": "CoC",
+        "dnd5e": "DnD 5e",
+        "dnd": "DnD",
+        "wod": "WoD",
+    }.get(selected_system.casefold(), selected_system or i18n.t("agent.forge.module_prompt_room_system"))
+    system = display
     if strategy == "standalone":
         return i18n.t("agent.forge.module_prompt_rule_standalone")
-    if strategy.startswith("use:"):
-        return i18n.t("agent.forge.module_prompt_rule_use", system=selected_system, details=system_details)
     if strategy.startswith("patch:"):
-        return i18n.t("agent.forge.module_prompt_rule_patch", system=selected_system, details=system_details)
-    return i18n.t(
-        "agent.forge.module_prompt_rule_follow",
-        system=selected_system or i18n.t("agent.forge.module_prompt_room_system"),
-        details=system_details,
-    )
-
-
-def _module_prompt_loaded_rule_details(i18n: Any, system: str) -> str:
-    """Describe the selected parsed RulePack without exposing its raw YAML to the model."""
-    if not system:
-        return ""
-    try:
-        pack = rulepacks.load_rulepack(system)
-    except (ValueError, OSError):
-        return ""
-
-    locale = getattr(i18n, "locale", "en")
-    resolver = pack.resolver
-    if resolver is None:
-        roll = i18n.t("agent.forge.module_prompt_rule_missing")
-        target = i18n.t("agent.forge.module_prompt_rule_missing")
-        outcomes = i18n.t("agent.forge.module_prompt_rule_missing")
-        difficulties = i18n.t("agent.forge.module_prompt_rule_missing")
-        parameters = i18n.t("agent.forge.module_prompt_rule_missing")
-        default_check = i18n.t("agent.forge.module_prompt_rule_missing")
-    else:
-        roll = resolver.roll
-        target = f"{resolver.target_kind} {resolver.compare}"
-        default_check = resolver.check.default_skill or (
-            str(resolver.check.default_target)
-            if resolver.check.default_target is not None
-            else i18n.t("agent.forge.module_prompt_rule_missing")
-        )
-        outcomes = ", ".join(
-            pack.rank_label(entry.rank.id, locale) for entry in resolver.ladders.get("", ())
-        ) or i18n.t("agent.forge.module_prompt_rule_missing")
-        difficulties = ", ".join(entry.id for entry in resolver.difficulties) or i18n.t(
-            "agent.forge.module_prompt_rule_none"
-        )
-        parameters = ", ".join(
-            f"{entry.id} ({entry.minimum}-{entry.maximum}, {entry.default=})" for entry in resolver.params
-        ) or i18n.t("agent.forge.module_prompt_rule_none")
-
-    raw_fields = pack.st_show.get("top") or list(pack.defaults)[:12]
-    fields = ", ".join(pack.display_name(str(field), locale) for field in raw_fields[:12]) or i18n.t(
-        "agent.forge.module_prompt_rule_none"
-    )
-    mechanics = ", ".join(spec.label(locale) for spec in pack.subsystems.values()) or i18n.t(
-        "agent.forge.module_prompt_rule_none"
-    )
-    return i18n.t(
-        "agent.forge.module_prompt_rule_loaded",
-        system=pack.system,
-        roll=roll,
-        target=target,
-        default_check=default_check,
-        fields=fields,
-        outcomes=outcomes,
-        difficulties=difficulties,
-        parameters=parameters,
-        mechanics=mechanics,
-    )
+        return i18n.t("agent.forge.module_prompt_rule_patch", system=system)
+    if strategy.startswith("use:"):
+        return i18n.t("agent.forge.module_prompt_rule_use", system=system)
+    return i18n.t("agent.forge.module_prompt_rule_follow", system=system)
 
 
 async def generate_module_prompt(
