@@ -59,6 +59,8 @@ async def load_chain(services: Services, chat_key: str, key: str) -> list[dict]:
         }
         if record.get("name"):
             message["_lw_name"] = record["name"]
+        if record.get("draft"):
+            message["_lw_draft"] = record["draft"]
         messages.append(message)
     return messages
 
@@ -73,6 +75,7 @@ async def append_message(
     turn: int,
     record_id: str | None = None,
     name: str = "",
+    draft: str = "",
 ) -> str:
     """Append ONE message (`user` or `assistant`) after the current leaf; return its id.
 
@@ -98,6 +101,7 @@ async def append_message(
                 "role": role,
                 "name": name,
                 "content": content,
+                "draft": draft,
             }
         ],
     )

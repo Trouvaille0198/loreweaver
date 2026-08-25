@@ -1893,3 +1893,53 @@ async def test_upload_policy_is_broadcast_and_greets_late_joiners():
         await player.close()
     finally:
         await server.close()
+
+
+async def test_replay_delivers_discarded_draft_to_keeper_only():
+    """A join replay re-delivers a KP reply's discarded streaming draft ONLY to keeper
+    connections — a player's replay never carries it (server-side information
+    isolation, iron rule #3)."""
+    services = _services()
+    room = "draft-replay"
+    chat_key = SessionSource(platform="tui", chat_type="group", chat_id=room).chat_key()
+    await append_message(services, chat_key, DEFAULT_HISTORY_KEY, role="user", content="我突袭他。", turn=1)
+    reply_id = await append_message(
+        services, chat_key, DEFAULT_HISTORY_KEY,
+        role="assistant", content="骰子落定：突袭失败。", turn=1,
+        draft="美咲的刀锋抵上岩本的喉咙。",
+    )
+    keystore = Keystore()
+    keeper_key = keystore.add(room=room, name="Keeper", role="keeper")
+    player_key = keystore.add(room=room, name="Nora", role="player")
+    server = TuiServer(services, keystore, port=0)
+    url = await _start(server)
+    try:
+        # Keeper replay: the draft frame rides right behind the assistant narrative.
+        async with websockets.connect(url) as ws:
+            await _join(ws, keeper_key, "Keeper")
+            draft = None
+            for _ in range(20):
+                frame = await _recv(ws)
+                if frame.get("type") == "narrative_draft":
+                    draft = frame
+                    break
+            assert draft is not None, "keeper replay must deliver the discarded draft"
+            assert draft["id"] == reply_id
+            assert "美咲的刀锋" in draft["text"]
+        # Player replay: the draft never crosses the wire. Drain the join + replay
+        # burst (bounded); a quiet wire after it is exactly the assertion.
+        async with websockets.connect(url) as ws:
+            await _join(ws, player_key, "Nora")
+            saw_reply = False
+            for _ in range(20):
+                try:
+                    frame = await _recv(ws)
+                except asyncio.TimeoutError:
+                    break
+                if frame.get("type") == "narrative_draft":
+                    assert False, "player replay must never receive a narrative_draft"
+                if frame.get("type") == "narrative" and frame.get("id") == reply_id:
+                    saw_reply = True
+            assert saw_reply, "player replay should at least see the reply itself"
+    finally:
+        await server.close()

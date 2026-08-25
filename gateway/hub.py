@@ -50,6 +50,9 @@ class Event:
     fmt: str = "plain"  # "markdown" | "plain"
     data: dict[str, Any] = field(default_factory=dict)  # dice fields / state snapshot / presence list / {level}
     private: bool = False
+    # Deliver ONLY to members whose role is "keeper" (e.g. the discarded streaming
+    # draft attached to a KP reply). Non-keeper members never even see the event.
+    keeper_only: bool = False
     # The persisted record this LIVE event corresponds to — a history message id for a
     # player echo / KP reply, a replay-lane record id for a roll or an NPC line. Never
     # rendered. It is how a member's join replay tells "this held live event is the one I
@@ -325,6 +328,7 @@ class RoomHub:
             if member is not exclude
             and (only_user is None or member.user_key == only_user)
             and (exclude_user is None or member.user_key != exclude_user)
+            and (not event.keeper_only or getattr(member, "role", "") == "keeper")
         ]
         results = await asyncio.gather(
             *(member.deliver(event) for member in targets),

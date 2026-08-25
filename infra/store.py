@@ -126,6 +126,10 @@ class Store:
         history_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(chat_history)")}
         if "name" not in history_columns:
             conn.execute("ALTER TABLE chat_history ADD COLUMN name TEXT NOT NULL DEFAULT ''")
+        # Keeper-only discarded streaming draft attached to a KP reply (see
+        # `gateway.turn`): the pre-tool narration the model streamed before it rolled.
+        if "draft" not in history_columns:
+            conn.execute("ALTER TABLE chat_history ADD COLUMN draft TEXT NOT NULL DEFAULT ''")
         # M20 D: turn-boundary snapshots of the half of a room that is NOT append-only —
         # `room_state` (including the history leaf pointer) and `documents`. A ring, sized
         # by the chronicle's no-future lag window, because undo is capped there too: past
@@ -578,8 +582,8 @@ class Store:
                 "SELECT COALESCE(MAX(seq), 0) FROM chat_history WHERE room = ? AND key = ?", (room, key)
             ).fetchone()[0]
             conn.executemany(
-                "INSERT OR IGNORE INTO chat_history (room, key, id, parent_id, turn, role, name, content, seq)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT OR IGNORE INTO chat_history (room, key, id, parent_id, turn, role, name, content, draft, seq)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 [
                     (
                         room,
@@ -590,6 +594,7 @@ class Store:
                         str(record.get("role", "")),
                         str(record.get("name", "")),
                         str(record.get("content", "")),
+                        str(record.get("draft", "")),
                         seq + offset,
                     )
                     for offset, record in enumerate(rows, start=1)
@@ -608,7 +613,7 @@ class Store:
         async with self._lock:
             conn = self._ensure_conn()
             rows = conn.execute(
-                "SELECT id, parent_id, turn, role, name, content FROM chat_history WHERE room = ? AND key = ?",
+                "SELECT id, parent_id, turn, role, name, content, draft FROM chat_history WHERE room = ? AND key = ?",
                 (room, key),
             ).fetchall()
         by_id = {row[0]: row for row in rows}
@@ -617,7 +622,7 @@ class Store:
         seen: set[str] = set()
         while cursor and cursor in by_id and cursor not in seen:
             seen.add(cursor)
-            record_id, parent_id, turn, role, name, content = by_id[cursor]
+            record_id, parent_id, turn, role, name, content, draft = by_id[cursor]
             chain.append(
                 {
                     "id": record_id,
@@ -626,6 +631,7 @@ class Store:
                     "role": role,
                     "name": name,
                     "content": content,
+                    "draft": draft,
                 }
             )
             cursor = parent_id
@@ -639,12 +645,12 @@ class Store:
         async with self._lock:
             conn = self._ensure_conn()
             row = conn.execute(
-                "SELECT id, parent_id, turn, role, name, content FROM chat_history WHERE room = ? AND key = ? AND id = ?",
+                "SELECT id, parent_id, turn, role, name, content, draft FROM chat_history WHERE room = ? AND key = ? AND id = ?",
                 (room, key, record_id),
             ).fetchone()
         if row is None:
             return None
-        found_id, parent_id, turn, role, name, content = row
+        found_id, parent_id, turn, role, name, content, draft = row
         return {
             "id": found_id,
             "parent_id": parent_id,
@@ -652,6 +658,7 @@ class Store:
             "role": role,
             "name": name,
             "content": content,
+            "draft": draft,
         }
 
     async def history_delete_room(self, room: str) -> int:

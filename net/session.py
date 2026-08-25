@@ -242,6 +242,14 @@ def render_frame(event: Event) -> dict[str, Any] | None:
         if event.name:
             delta["name"] = event.name
         return delta
+    if event.kind == "narrative_draft":
+        return {
+            "type": "narrative_draft",
+            # Keyed by the reply's message id: the client attaches the draft to that
+            # bubble. `origin_id` (the replay stamp) and the live `data.id` agree.
+            "id": event.origin_id or str(event.data.get("id") or new_id()),
+            "text": str(event.data.get("text") or ""),
+        }
     if event.kind == "dice":
         return {"type": "dice", **event.data}
     if event.kind == "ui":
@@ -589,6 +597,16 @@ class SessionCore:
                     await self._deliver_replay(
                         member, Event.narrative(speaker="kp", text=text, fmt="markdown"), replayed, anchor
                     )
+                    # The discarded streaming draft rides the reply — KEEPER-ONLY: a
+                    # player rejoin never learns the pre-tool narration existed.
+                    draft = str(entry.get("_lw_draft") or "").strip()
+                    if draft and getattr(member, "role", "") == "keeper":
+                        await self._deliver_replay(
+                            member,
+                            Event(kind="narrative_draft", data={"id": anchor, "text": draft}),
+                            replayed,
+                            anchor,
+                        )
                 # …then everything that happened right after this message, live: the
                 # KP's rolls after the player's line, a companion's exchange, a typed roll
                 # after the reply. The legacy room_state blob has no ids: nothing anchors.
