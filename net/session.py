@@ -1026,9 +1026,13 @@ class SessionCore:
         except MediaError as exc:
             if exc.code != "media_not_found":
                 raise
-            from gateway.panels import resolve_pack_asset
+            from gateway.panels import resolve_installed_pack_asset, resolve_pack_asset
 
             resolved = await resolve_pack_asset(self.services, member.session_key, sha256)
+            if resolved is None:
+                # Module-library context: a keeper viewing an installed pack's detail needs its
+                # illustrations even before the pack is enabled in this room.
+                resolved = await resolve_installed_pack_asset(self.services, sha256)
             if resolved is None:
                 raise
             asset_data, mime, name = resolved

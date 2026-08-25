@@ -374,10 +374,10 @@ class ModuleAdminService:
                 if token in stem:
                     kind = token
                     break
-            try:
-                data = p.read_bytes()
-            except OSError:
-                continue
+            # NO inline `data` payload: it was truncated at 512KB base64, which cut every qwen
+            # image (~1.4MB) down to a partial picture. Clients fetch the FULL bytes through the
+            # content-addressed asset channel (`assetFetch(hash)`), which the server resolves from
+            # installed packs even before the pack is enabled in the room.
             media.append(
                 {
                     "name": p.name,
@@ -386,7 +386,6 @@ class ModuleAdminService:
                     "size": asset_path.size,
                     "kind": kind,
                     **({"subject": asset_path.title} if asset_path.title else {}),
-                    "data": base64.b64encode(data[:512 * 1024]).decode("ascii"),
                 }
             )
         return _module_reply(
@@ -1073,7 +1072,13 @@ async def delete_installed_pack(
 
 
 def _pack_skill_ids(home: Path) -> list[str]:
-    """The skill ids a pack ships (its ``contents.skills`` directory names), or ``[]``."""
+    """The skill ids a pack ships (its ``contents.skills`` directory names), or ``[]``.
+
+    Mirrors the installer's id derivation (`core.pack` extracts each skill under
+    ``skills/<PurePosixPath(skill_dir).name>/``): the LAST path component is the
+    skill id, not its parent. Taking ``parent.name`` here returned ``"skills"``
+    for every declared skill, so deleting a pack never removed its skills.
+    """
     manifest_path = home / core_pack.MANIFEST_NAME
     if not manifest_path.is_file():
         return []
@@ -1091,9 +1096,9 @@ def _pack_skill_ids(home: Path) -> list[str]:
 
     ids: list[str] = []
     for path in (manifest.contents or {}).get("skills", []):
-        parent = PurePosixPath(path).parent
-        if str(parent) not in ("", "."):
-            ids.append(parent.name)
+        skill_id = PurePosixPath(path).name
+        if skill_id and skill_id not in ids:
+            ids.append(skill_id)
     return ids
 
 

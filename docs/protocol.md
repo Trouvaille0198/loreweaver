@@ -245,13 +245,14 @@ connections receive `error too_many_connections` before `join` is read.
   simply ignore it:
   `{type:"panel_event", panel:string, payload:any}`
 - `state` — a panel snapshot, sent on `join` and after every turn:
-  `{type:"state", character?:{name,system,resources:[Resource],attributes:{},skills?:{},secondary_attributes?:{},fields?:{},equipment?:[],background?:string,notes?:string,status_effects:[],avatar?:{hash,mime,size,name?}}, party:[{name,online:boolean,active:boolean,initiative?:int,resources?:[Resource],ai?:boolean,avatar?:{hash,mime,size,name?},system?:string,attributes?:{},skills?:{},secondary_attributes?:{},fields?:{},equipment?:[],background?:string,status_effects?:string[]}], scene?:{name,focus?}, clock?:{time,round?}, initiative:[{name,value:int,current:boolean}], online:int, usage?:{context_tokens:int,context_window:int,input_tokens:int,output_tokens:int,cache_hit_tokens:int,cache_miss_tokens:int}, variables?:[{id:string,label:string,kind:"number"|"bool"|"text"|"enum",value:number|boolean|string,min?:int,max?:int,hidden?:boolean}], pregens?:[{name:string,claimed_by:string}], systems?:[{id:string,make_char?:string}], reset?:boolean}`
+  `{type:"state", room_system?:string, character?:{name,system,resources:[Resource],attributes:{},skills?:{},secondary_attributes?:{},fields?:{},equipment?:[],background?:string,notes?:string,status_effects:[],avatar?:{hash,mime,size,name?}}, party:[{name,online:boolean,active:boolean,initiative?:int,resources?:[Resource],ai?:boolean,avatar?:{hash,mime,size,name?},system?:string,attributes?:{},skills?:{},secondary_attributes?:{},fields?:{},equipment?:[],background?:string,status_effects?:string[]}], scene?:{name,focus?}, clock?:{time,round?}, initiative:[{name,value:int,current:boolean}], online:int, usage?:{context_tokens:int,context_window:int,input_tokens:int,output_tokens:int,cache_hit_tokens:int,cache_miss_tokens:int}, variables?:[{id:string,label:string,kind:"number"|"bool"|"text"|"enum",value:number|boolean|string,min?:int,max?:int,hidden?:boolean}], pregens?:[{name:string,claimed_by:string}], systems?:[{id:string,make_char?:string}], reset?:boolean}`
   `Resource = {id:string, label:string, value:number, max?:number}` — the rule
   system's vital meters (HP, sanity, mana, …) as generic data: a client renders
   the list as meters without knowing any system's field names. Entries arrive in
   render order. `label` is already resolved to THIS viewer's locale: a rulepack may
   declare `sheet.resources[].label` as a locale map, so one pack's bars read
   correctly at an `en` and a `zh` connection of the SAME room.
+  `room_system` is the room's resolved rule system: the active character's system, then the room's module pin, then the deployment default. It is separate from `systems`, which remains the complete discoverable system list.
   `character.attributes` (v2.3) is the sheet's CHARACTERISTICS only — the keys the
   rule system's `sheet.attributes` declares, in the pack's own order (`STR CON SIZ …`
   for CoC 7e, `STR DEX CON …` for D&D 5e, a community pack's own for its system);

@@ -280,7 +280,7 @@ contents:
     - path: cards/fog.lorecard.json
       kind: world
   skills:
-    - skills/fog-skill/SKILL.md
+    - skills/fog-skill
 trust:
   cards: 1
   world_cards: 1
@@ -351,6 +351,28 @@ async def test_delete_pack_module_keeps_skill_declared_by_another_pack(tmp_path,
     assert reply["ok"] is True
     assert not home.exists()
     assert skill_home.is_dir(), "skill retained while another pack declares it"
+
+
+@pytest.mark.asyncio
+async def test_delete_pack_module_removes_single_segment_skill_dirs(tmp_path, monkeypatch):
+    """A pack whose manifest lists skills as `skills/<id>` (single segment — the
+    forge's shape) must still have those skills removed on delete.
+
+    Regression: `_pack_skill_ids` derived ids from the path's PARENT, so the
+    single-segment form yielded `"skills"` for every declared skill and deletion
+    never removed them. The installer derives ids from the LAST component.
+    """
+    services, admin, home = _pack_services(tmp_path)
+    monkeypatch.setattr("gateway.panels.installed_pack_homes", lambda data_dir: {home.name.split("@")[0]: home})
+    skill_home = tmp_path / "skills" / "fog-skill"
+    skill_home.mkdir(parents=True)
+    (skill_home / "SKILL.md").write_text("---\nname: Fog Skill\n---\nBody\n", encoding="utf-8")
+
+    reply = await admin._delete("fog-room", tmp_path / "modules", {"name": "fog", "source_kind": "pack"})
+
+    assert reply["ok"] is True
+    assert not home.exists()
+    assert not skill_home.exists(), "single-segment skill removed with its pack"
 
 
 @pytest.mark.asyncio

@@ -447,6 +447,33 @@ async def resolve_pack_asset(services: Services, chat_key: str, sha256: str) -> 
     return None
 
 
+async def resolve_installed_pack_asset(services: Services, sha256: str) -> tuple[bytes, str, str] | None:
+    """Content-addressed read of an asset from ANY installed pack (module-library context), so a
+    keeper viewing a module detail can load its illustrations even before the pack is enabled in
+    the room. Same digest re-check as :func:`resolve_pack_asset` — an on-disk tamper of a pack
+    home serves nothing rather than something else."""
+    import hashlib
+
+    wanted = sha256.lower()
+    if not wanted:
+        return None
+    for _pack_id, home in installed_pack_homes(Path(services.settings.data_dir)).items():
+        manifest = _load_manifest(home)
+        if manifest is None:
+            continue
+        for asset in manifest.assets:
+            if asset.sha256 != wanted:
+                continue
+            try:
+                data = (home / asset.path).read_bytes()
+            except OSError:
+                continue
+            if hashlib.sha256(data).hexdigest() != wanted:
+                continue
+            return data, asset.mime or "application/octet-stream", Path(asset.path).name
+    return None
+
+
 async def publish_ui_manifests(hub: RoomHub, services: Services, chat_key: str) -> None:
     """Push a fresh per-viewer manifest to every connected member (after `.panels` changes)."""
 
