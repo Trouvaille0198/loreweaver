@@ -30,7 +30,14 @@ from agent.context import AgentCtx
 from agent.npc import list_companions
 from agent.services import Services
 from core.character_manager import CharacterSheet, character_resources, has_character, resource_label_map
-from core.documents import KEEPER_VIEWER, MODULE_POOL_ID, MVU_ID, PLAYER_VIEWER, SCENE_ID
+from core.documents import (
+    CLUE_LOG_ID,
+    KEEPER_VIEWER,
+    MODULE_POOL_ID,
+    MVU_ID,
+    PLAYER_VIEWER,
+    SCENE_ID,
+)
 from core.modvars import MODVARS_DOC_ID, MODVARS_DOC_TYPE, wire_entries
 from infra.usage_stats import USAGE_STATS_KEY
 
@@ -68,6 +75,10 @@ async def build_room_state(
     scene = await _scene(services, ctx.chat_key)
     if scene is not None:
         state["scene"] = scene
+
+    clues = await _clues(services, ctx.chat_key)
+    if clues:
+        state["clues"] = clues
 
     clock = await _clock(services, ctx.chat_key)
     combat_round = await _combat_round(services, ctx.chat_key)
@@ -413,6 +424,18 @@ async def _initiative(services: Services, chat_key: str) -> list[dict[str, Any]]
         for index, entry in enumerate(entries)
         if isinstance(entry, dict)
     ]
+
+
+async def _clues(services: Services, chat_key: str) -> list[dict[str, Any]] | None:
+    """The room's discovered-clue log (player projection). Every entry in the log
+    is a clue the table has already found, so the player view is the whole list —
+    an unrevealed secret clue never exists here at all."""
+    try:
+        view = await services.documents.get_view(chat_key, "clue_log", CLUE_LOG_ID, PLAYER_VIEWER)
+    except Exception:
+        view = None
+    clues = (view or {}).get("clues")
+    return clues if isinstance(clues, list) and clues else None
 
 
 async def _scene(services: Services, chat_key: str) -> dict[str, Any] | None:

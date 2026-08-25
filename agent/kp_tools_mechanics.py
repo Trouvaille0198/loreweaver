@@ -35,6 +35,8 @@ from __future__ import annotations
 
 import json
 
+from agent.clue_log import find_worldbook_clue as _find_clue
+from agent.clue_log import reveal_clue as _log_clue
 from agent.context import AgentCtx
 from agent.items import (
     aggregate_equipped_bonuses,
@@ -723,6 +725,31 @@ Rules:
             return i18n.t("kp_tools.character.data_error")
         except Exception as exc:
             return i18n.t("kp_tools.item.failed", error=str(exc))
+
+    @tool
+    async def reveal_clue(self, ctx: AgentCtx, name: str) -> str:
+        """Record a worldbook CLUE as discovered by the party — the structural half of
+        clue tracking (the discovered-clue log players see).
+
+Args:
+    name: the clue's title or one of its trigger keys (e.g. "录音带" or "田中")
+
+Rules:
+- Call ONLY when the party has GENUINELY obtained this clue in play — read the letter, found the tape, examined the scene. Never pre-reveal.
+- The entry is snapshotted now; players' clue list shows it from here on.
+- Secret clues (the hidden truth) stay out of the log until you reveal them — this is the moment the party earns the knowledge."""
+        i18n = self.services.i18n.with_locale(ctx.locale)
+        try:
+            entry = await _find_clue(self.services.worldbook, ctx.chat_key, name)
+            if entry is None:
+                return i18n.t("kp_tools.clue.not_found", name=name)
+            added = await _log_clue(self.services.documents, ctx.chat_key, **entry)
+            if not added:
+                return i18n.t("kp_tools.clue.already_added", name=entry["title"])
+            return i18n.t("kp_tools.clue.revealed", name=entry["title"])
+        except Exception as exc:
+            return i18n.t("kp_tools.clue.failed", error=str(exc))
+
 
 class DiceTools:
     """AI-KP tools for dice rolls, graded checks, HP management and dice pools."""

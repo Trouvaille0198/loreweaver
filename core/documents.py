@@ -251,6 +251,40 @@ def _project_note(doc: Document, viewer: Viewer) -> dict[str, Any] | None:
 _ITEM_PUBLIC_FIELDS = ("name", "kind", "slot", "description", "effect", "owner", "quantity", "equipped_slot")
 
 
+def _project_clue_log(doc: Document, viewer: Viewer) -> dict[str, Any] | None:
+    """The room's discovered-clue log. Every entry in the log is a clue the table
+    has actually found (a Keeper/AI registration snapshots the worldbook entry at
+    discovery time), so the same list is safe for keepers and players alike — an
+    unrevealed secret clue never exists in this log at all."""
+    clues = doc.data.get("clues")
+    if not isinstance(clues, list):
+        return {"clues": []}
+    return {
+        "clues": [
+            {
+                "title": entry.get("title", ""),
+                "keys": list(entry.get("keys") or []),
+                "content": entry.get("content", ""),
+                "image": entry.get("image", ""),
+                "found_turn": entry.get("found_turn", 0),
+            }
+            for entry in clues
+            if isinstance(entry, dict) and entry.get("title")
+        ]
+    }
+
+
+def _validate_clue_log(doc: Document, services: Any) -> list[str]:
+    clues = doc.data.get("clues")
+    if not isinstance(clues, list):
+        return ["clue log 'clues' must be a list"]  # i18n-exempt: document-validator diagnostic
+    violations = []
+    for index, entry in enumerate(clues):
+        if not isinstance(entry, dict) or not isinstance(entry.get("title"), str) or not entry["title"]:
+            violations.append(f"clue log entry {index} requires a title")  # i18n-exempt: document-validator diagnostic
+    return violations
+
+
 def _project_item(doc: Document, viewer: Viewer) -> dict[str, Any] | None:
     """Keeper sees the whole instance; every other viewer sees a table-level public
     subset of non-`secret` items. A `secret` item is invisible outside the keeper."""
@@ -308,6 +342,7 @@ MVU_ID = "mvu"
 MODULE_POOL_ID = "module"
 SCENE_ID = "scene"
 ITEM_CATALOG_ID = "item_catalog"
+CLUE_LOG_ID = "clue_log"
 
 for _name, _project_fn, _singleton in (
     ("lore", _project_lore, None),
@@ -343,6 +378,15 @@ register_document_type(
         project=_project_item_catalog,
         validate_write=_validate_item_catalog,
         singleton_id=ITEM_CATALOG_ID,
+    )
+)
+register_document_type(
+    DocumentType(
+        name="clue_log",
+        schema_version=1,
+        project=_project_clue_log,
+        validate_write=_validate_clue_log,
+        singleton_id=CLUE_LOG_ID,
     )
 )
 

@@ -21,6 +21,7 @@ from core.character_manager import (
 from core.resolution import ResolutionError
 from gateway.commands.cast import CastCommands
 from gateway.commands.checks import ChecksCommands, _resolution_notice
+from gateway.commands.clues import ClueCommands
 from gateway.commands.forge import ForgeCommands
 from gateway.commands.item import ItemCommands
 from gateway.commands.llm import LlmCommands
@@ -61,6 +62,7 @@ class CommandRouter(
     ChecksCommands,
     SheetCommands,
     ItemCommands,
+    ClueCommands,
     RulesCommands,
     RoomsCommands,
     CastCommands,
@@ -303,6 +305,14 @@ class CommandRouter(
                 ["item", "背包", "物品"],
                 {"name": "item"},
                 "commands.help.item",
+            ),
+            CommandSpec(
+                "clue",
+                self.cmd_clue,
+                ["clue"],
+                ["clue", "线索"],
+                None,
+                "commands.help.clue",
             ),
             CommandSpec(
                 "npc",

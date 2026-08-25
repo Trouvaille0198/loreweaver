@@ -294,5 +294,9 @@
   "kp_tools.item.not_in_catalog": "❌ \"{item}\" is not in this room's item catalog",
   "kp_tools.item.module_mismatch": "❌ \"{item}\" belongs to a different module and does not work in this room's current scenario",
   "kp_tools.item.equipped": "✅ {character} equipped {item} ({slot})",
-  "kp_tools.item.unequipped": "✅ {character} unequipped {item}"
+  "kp_tools.item.unequipped": "✅ {character} unequipped {item}",
+  "kp_tools.clue.not_found": "❌ No worldbook clue matches \"{name}\".",
+  "kp_tools.clue.already_added": "\"{name}\" is already in the clue log.",
+  "kp_tools.clue.revealed": "✅ Clue recorded: \"{name}\" — players can now see it.",
+  "kp_tools.clue.failed": "Could not record the clue: {error}"
 }
