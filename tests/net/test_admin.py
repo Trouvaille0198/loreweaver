@@ -2750,8 +2750,11 @@ async def test_admin_generate_module_prompt_returns_only_prompt_text_and_request
     assert rewrite["detail"] == "A haunted railway station hides a dispute over a missing timetable."
     assert rewrite["request_id"] == "prompt-2"
     assert "A haunted railway station" in services.llm.calls[1][0][1]["content"]
-    assert "d100" in services.llm.calls[1][0][1]["content"]
-    assert "STR" in services.llm.calls[1][0][1]["content"]
+    # The rule requirement is now terse: the system is named (CoC) in one breath, NOT a full
+    # roll/target/outcome/parameter spec dump (no d100/STR enumeration).
+    assert "CoC" in services.llm.calls[1][0][1]["content"]
+    assert "d100" not in services.llm.calls[1][0][1]["content"]
+    assert "STR" not in services.llm.calls[1][0][1]["content"]
 
 
 async def test_admin_generate_module_honors_media_and_companion_options(tmp_path):
