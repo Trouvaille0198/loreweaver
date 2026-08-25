@@ -294,5 +294,9 @@
   "kp_tools.item.not_in_catalog": "❌ 「{item}」不在本房间的物品目录中",
   "kp_tools.item.module_mismatch": "❌ 「{item}」属于其他剧本，在当前剧本中不会生效",
   "kp_tools.item.equipped": "✅ {character} 已装备 {item}（{slot}）",
-  "kp_tools.item.unequipped": "✅ {character} 已卸下 {item}"
+  "kp_tools.item.unequipped": "✅ {character} 已卸下 {item}",
+  "kp_tools.clue.not_found": "❌ 世界书里没有匹配「{name}」的线索。",
+  "kp_tools.clue.already_added": "「{name}」已在线索日志中。",
+  "kp_tools.clue.revealed": "✅ 已记录线索：「{name}」——玩家现在可以看到它。",
+  "kp_tools.clue.failed": "无法记录线索：{error}"
 }

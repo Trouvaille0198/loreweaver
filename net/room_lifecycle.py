@@ -23,6 +23,7 @@ from infra.room_facets import FacetRegistry, RoomStateFacet
 # commit that adds its declaration.
 FACET_MODULES: tuple[str, ...] = (
     "agent.chronicle",
+    "agent.clue_log",
     "agent.forge",
     "agent.history",
     "agent.hook_runtime",

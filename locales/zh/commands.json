@@ -292,6 +292,16 @@
   "commands.item.denied": "只有守密人才能把物品给其他角色。",
   "commands.item.equipped": "✅ {name} 已装备 {item}（{slot}）",
   "commands.item.unequipped": "✅ {name} 已卸下 {item}",
+  "commands.clue.usage": "用法：.clue [list] | .clue add <名称/关键词>（守秘人）| .clue remove <名称>（守秘人）",
+  "commands.clue.empty": "还没有已发现的线索。",
+  "commands.clue.header": "已发现线索（{count} 条）：",
+  "commands.clue.entry": "• {title} — {content}",
+  "commands.clue.not_found": "❌ 世界书里没有匹配「{name}」的线索。",
+  "commands.clue.already_added": "「{name}」已在线索日志中。",
+  "commands.clue.added": "✅ 已记录线索：「{name}」——玩家现在可以看到它。",
+  "commands.clue.removed": "已移除线索：「{name}」。",
+  "commands.clue.denied": "只有守秘人可以添加或移除线索。",
+  "commands.help.clue": "线索日志：.clue list · .clue add <名称> · .clue remove <名称>",
   "commands.item.not_in_catalog": "❌ 「{item}」不在本房间的物品目录中",
   "commands.item.module_mismatch": "❌ 「{item}」属于其他剧本，在当前剧本中不会生效"
 }

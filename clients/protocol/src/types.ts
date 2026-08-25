@@ -852,6 +852,16 @@ export interface StateFrame {
   initiative: InitiativeEntry[]
   online: number
   usage?: UsageState
+  // v2.5 additive: the room's discovered-clue log (player projection) — every
+  // entry is a clue the table has already found, in discovery order. Absent when
+  // the room has none. An unrevealed secret clue never appears here.
+  clues?: {
+    title: string
+    keys?: string[]
+    content?: string
+    image?: string
+    found_turn?: number
+  }[]
   // v1.6 additive: player-visible module variables in definition order (render as
   // received, do not sort). Absent — not an empty array — when the room has none;
   // an older server that never sends it still type-checks fine.

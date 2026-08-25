@@ -292,6 +292,16 @@
   "commands.item.denied": "Only the keeper may give items to other characters.",
   "commands.item.equipped": "✅ {name} equipped {item} ({slot})",
   "commands.item.unequipped": "✅ {name} unequipped {item}",
+  "commands.clue.usage": "Usage: .clue [list] | .clue add <name|key> (keeper) | .clue remove <name> (keeper)",
+  "commands.clue.empty": "No clues discovered yet.",
+  "commands.clue.header": "Discovered clues ({count}):",
+  "commands.clue.entry": "• {title} — {content}",
+  "commands.clue.not_found": "❌ No worldbook clue matches \"{name}\".",
+  "commands.clue.already_added": "\"{name}\" is already in the clue log.",
+  "commands.clue.added": "✅ Clue recorded: \"{name}\" — players can now see it.",
+  "commands.clue.removed": "Clue removed: \"{name}\".",
+  "commands.clue.denied": "Only the keeper may add or remove clues.",
+  "commands.help.clue": "Clue log: .clue list · .clue add <name> · .clue remove <name>",
   "commands.item.not_in_catalog": "❌ \"{item}\" is not in this room's item catalog",
   "commands.item.module_mismatch": "❌ \"{item}\" belongs to a different module and does not work in this room's current scenario"
 }
