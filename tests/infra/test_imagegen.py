@@ -11,6 +11,7 @@ from infra.imagegen import (
     ImageGenError,
     MiniMaxImageGen,
     OpenAICompatImageGen,
+    QwenImageGen,
     SiliconFlowImageGen,
     build_imagegen,
 )
@@ -303,6 +304,20 @@ async def test_supergrok_preset_build_uses_llm_subscription():
     assert IMAGEGEN_PRESETS["supergrok"]["model"] == XAI_DEFAULT_IMAGE_MODEL
 
 
+def test_build_imagegen_selects_qwen_dashscope_adapter_from_preset():
+    """qwen 的 imagegen preset 指向 Token Plan 多模态端点，构建时选择 QwenImageGen
+    （DashScope 原生协议），而不是 OpenAI 兼容适配器。"""
+    settings = Settings(
+        imagegen=ImageGenSettings(provider="qwen", api_key="sk-sp-secret", model="qwen-image-3.0-pro")
+    )
+    gen = build_imagegen(settings)
+
+    assert isinstance(gen, QwenImageGen)
+    assert IMAGEGEN_PRESETS["qwen"]["base_url"] == (
+        "https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1"
+    )
+
+
 async def test_openai_compat_imagegen_maps_bad_response_to_error_code():
     client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _request: httpx.Response(200, json={"data": [{}]})))
     gen = OpenAICompatImageGen(
@@ -337,3 +352,111 @@ def test_build_imagegen_returns_none_when_incomplete():
     # An explicit empty block, not the developer's .env: "incomplete" is what is under test.
     assert build_imagegen(Settings(imagegen=ImageGenSettings())) is None
     assert build_imagegen(Settings(imagegen=ImageGenSettings(provider="openai", model="img"))) is None
+
+
+async def test_qwen_imagegen_posts_dashscope_shape_and_downloads_image_url():
+    """Token Plan 文生图走 DashScope 原生多模态接口（不是 OpenAI /images/generations）：
+    请求体为 `input.messages[*].content[*].text` + `parameters.size`（宽*高），图片以 URL
+    返回在 `output.choices[*].message.content[*].image`，需要二次下载。"""
+    image_bytes = b"\x89PNG\r\n\x1a\nqwen-image"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/services/aigc/multimodal-generation/generation"):
+            return httpx.Response(
+                200,
+                json={
+                    "output": {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": [
+                                        {"image": "https://cdn.example.test/img.png"},
+                                        {"text": "done"},
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                },
+            )
+        if request.url.path.endswith("/img.png"):
+            return httpx.Response(200, content=image_bytes, headers={"content-type": "image/png"})
+        return httpx.Response(404)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    gen = QwenImageGen(
+        ImageGenSettings(
+            provider="qwen",
+            base_url="https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1",
+            api_key="sk-sp-secret",
+            model="qwen-image-3.0-pro",
+        ),
+        client=client,
+    )
+    try:
+        data, mime = await gen.generate("一只猫", size="1024x768")
+    finally:
+        await client.aclose()
+
+    assert data == image_bytes
+    assert mime == "image/png"
+
+
+async def test_qwen_imagegen_posts_expected_json_body():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["auth"] = request.headers.get("authorization")
+        seen["json"] = json.loads(request.read())
+        return httpx.Response(
+            200,
+            json={"output": {"choices": [{"message": {"content": [{"image": "https://cdn.example.test/a.png"}]}}]}},
+        )
+
+    async def image_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"\x89PNG\r\n\x1a\nbytes", headers={"content-type": "image/png"})
+
+    def router(request: httpx.Request) -> httpx.Response:
+        return image_handler(request) if request.url.path.endswith("/a.png") else handler(request)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(router))
+    gen = QwenImageGen(
+        ImageGenSettings(
+            provider="qwen",
+            base_url="https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1",
+            api_key="sk-sp-secret",
+            model="qwen-image-3.0-pro",
+        ),
+        client=client,
+    )
+    try:
+        await gen.generate("a cat", size="512x512")
+    finally:
+        await client.aclose()
+
+    assert seen["url"] == (
+        "https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1"
+        "/services/aigc/multimodal-generation/generation"
+    )
+    assert seen["auth"] == "Bearer sk-sp-secret"
+    body = seen["json"]
+    assert body["model"] == "qwen-image-3.0-pro"
+    assert body["input"]["messages"][0]["role"] == "user"
+    assert body["input"]["messages"][0]["content"][0]["text"] == "a cat"
+    assert body["parameters"]["size"] == "512*512"  # DashScope 用星号，非 OpenAI 的 x
+
+
+async def test_qwen_imagegen_maps_http_failure_to_error_code():
+    client = httpx.AsyncClient(transport=httpx.MockTransport(lambda _request: httpx.Response(500, text="nope")))
+    gen = QwenImageGen(
+        ImageGenSettings(provider="qwen", base_url="https://example.test/api/v1", api_key="secret", model="img"),
+        client=client,
+    )
+    try:
+        with pytest.raises(ImageGenError) as exc:
+            await gen.generate("bad")
+    finally:
+        await client.aclose()
+
+    assert exc.value.code == "imagegen_http_error"

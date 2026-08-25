@@ -529,15 +529,18 @@ async def inject_document_context_prompt(
 
 
 async def inject_interaction_style_prompt(ctx: Any, i18n: I18n) -> str:
-    """Narrative voice, the dice contract, companion cueing, and freshness.
+    """Narrative voice, action attribution, the dice contract, companion cueing, and freshness.
 
     Each block earns its place with a measured failure mode (formulaic voice,
-    roll abuse, hand-voiced companions, repeated closings) — generic GM advice
+    misattributed actions, roll abuse, hand-voiced companions, repeated
+    closings) — generic GM advice
     and per-scene micromanagement stay out; the model's own judgment covers
     those. Pure framing text, so it never fails and is always non-empty.
     """
     parts = [
         i18n.t("prompt.style.narrative"),
+        "",
+        i18n.t("prompt.style.attribution"),
         "",
         i18n.t("prompt.style.roll_policy"),
         "",

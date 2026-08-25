@@ -224,7 +224,8 @@ def _parse_pregens(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
                     warnings.append(f"pregens[{index}].skills.{key}: ignored (not an integer)")  # i18n-exempt: author diagnostic, wrapped in a localized import summary
         elif skills_raw is not None:
             warnings.append(f"pregens[{index}].skills: ignored (must be a mapping)")  # i18n-exempt: author diagnostic, wrapped in a localized import summary
-        out.append({"name": name, "blurb": blurb, "notes": notes, "skills": skills})
+        avatar = str(item.get("avatar") or "").strip()[:200]
+        out.append({"name": name, "blurb": blurb, "notes": notes, "skills": skills, "avatar": avatar})
     return tuple(out)
 
 

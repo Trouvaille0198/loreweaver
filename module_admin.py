@@ -306,7 +306,11 @@ class ModuleAdminService:
                 )
             variables.extend([dict(v) for v in (card.get("variables") or []) if isinstance(v, dict)])
             pregens.extend(
-                {"name": str(p.get("name", "")), "concept": str(p.get("concept") or p.get("blurb") or "")}
+                {
+                    "name": str(p.get("name", "")),
+                    "concept": str(p.get("concept") or p.get("blurb") or ""),
+                    "avatar": str(p.get("avatar") or ""),
+                }
                 for p in (card.get("pregens") or [])
                 if isinstance(p, dict) and p.get("name")
             )
@@ -366,7 +370,7 @@ class ModuleAdminService:
             # Figure kind from the provenance name (`module-<id>-<kind>-<n>.jpg`): cover/scenes/npcs/items.
             kind = "asset"
             stem = p.stem
-            for token in ("cover", "scenes", "npcs", "items", "item"):
+            for token in ("cover", "scenes", "npcs", "items", "item", "pregens"):
                 if token in stem:
                     kind = token
                     break
@@ -381,6 +385,7 @@ class ModuleAdminService:
                     "mime": asset_path.mime,
                     "size": asset_path.size,
                     "kind": kind,
+                    **({"subject": asset_path.title} if asset_path.title else {}),
                     "data": base64.b64encode(data[:512 * 1024]).decode("ascii"),
                 }
             )
@@ -504,6 +509,30 @@ class ModuleAdminService:
                     "importing": False,
                     }
                 )
+        # A generation currently running in this room shows as a placeholder source so the keeper
+        # sees it in the library while it authors/renders — and after a refresh, because the
+        # in-flight stage is persisted by `net.admin._progress` and cleared on completion.
+        generating = await self.services.store.state_get(chat_key, "generation_progress")
+        if generating:
+            try:
+                gen = json.loads(generating)
+                modules.insert(
+                    0,
+                    {
+                        "name": "__generating__",
+                        "title": "",
+                        "size": 0,
+                        "modified": 0,
+                        "source_kind": "generating",
+                        "generating": True,
+                        "stage": str(gen.get("stage") or ""),
+                        "detail": str(gen.get("detail") or ""),
+                        "current": False,
+                        "importing": False,
+                    },
+                )
+            except (TypeError, ValueError):
+                pass
         status = str(await self.services.store.state_get(chat_key, "module_init_status") or "")
         visible_current = current
         if not visible_current and active.get("kind") == "world_card":
@@ -559,11 +588,34 @@ class ModuleAdminService:
                 room_quota_bytes=max(tui.media_room_quota_bytes, tui.audio_room_quota_bytes),
                 allowed_mimes=ALLOWED_MEDIA_MIMES,
             )
-            media_records = [
-                {"name": record.name, "hash": record.hash, "mime": record.mime, "size": record.size}
-                for record in await store.list_room_records(chat_key)
-                if record.name.startswith(prefix)
-            ]
+            subject_by_name: dict[str, str] = {}
+            raw_media_index = await self.services.store.state_get(chat_key, "module_media_index")
+            if raw_media_index:
+                try:
+                    media_index = json.loads(raw_media_index)
+                    if isinstance(media_index, list):
+                        subject_by_name = {
+                            str(entry.get("name")): str(entry.get("subject"))
+                            for entry in media_index
+                            if isinstance(entry, dict)
+                            and str(entry.get("name") or "").strip()
+                            and str(entry.get("subject") or "").strip()
+                        }
+                except (json.JSONDecodeError, TypeError):
+                    subject_by_name = {}
+            media_records = []
+            for record in await store.list_room_records(chat_key):
+                if not record.name.startswith(prefix):
+                    continue
+                media_records.append(
+                    {
+                        "name": record.name,
+                        "hash": record.hash,
+                        "mime": record.mime,
+                        "size": record.size,
+                        **({"subject": subject_by_name[record.name]} if record.name in subject_by_name else {}),
+                    }
+                )
         stat = path.stat()
         return _module_reply(
             "module_detail",
@@ -777,7 +829,10 @@ class ModuleAdminService:
         name = str(payload.get("name") or "").strip()
         source_kind = str(payload.get("source_kind") or "").strip().casefold()
         # An installed .lwpack content pack is deleted by its pack id (not a module file).
-        if source_kind == "pack" or "/" not in name:
+        # A Markdown text source is deleted by filename; only `source_kind == "pack"` routes
+        # here. Testing `/` in the name is wrong: text filenames never contain `/`, so that
+        # predicate routed every text delete into pack deletion and reported `source_not_found`.
+        if source_kind == "pack":
             ok, resolved, error = await delete_installed_pack(
                 self.services, name.partition("/")[0], caller_room=caller_room
             )

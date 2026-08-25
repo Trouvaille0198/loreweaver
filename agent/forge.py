@@ -44,8 +44,10 @@ import logging
 import re
 import time
 import unicodedata
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -57,11 +59,14 @@ from agent.kp_tools_charcard import CharcardTools
 from agent.kp_tools_knowledge import DocumentTools
 from agent.module_initializer import ProgressCb, _emit
 from agent.services import Services
+from core.character_manager import CharacterSheet
 from core.character_rules import validate_sheet
+from core.condexpr import CondExprError, compile_expression
 from core.documents import KEEPER_VIEWER, MODULE_POOL_ID
 from core.lorecard import parse_lorecard_bytes
 from core.pack import build_pack
 from core.pregen_roster import pregen_add
+from core.sheets import canonical_values
 from core.yaml_safety import safe_load_no_aliases
 from gateway.imagegen import allow_imagegen_request
 from infra.file_permissions import atomic_write_private
@@ -162,12 +167,12 @@ MODULE_MEDIA_INDEX_KEY = "module_media_index"
 # Keeper-selectable extra content for a generated module (the `media`/`companion` options). Two
 # closed vocabularies, ordered so a normalized selection is deterministic; unknown ids are
 # ignored by `_normalize_option_ids`, never an error. Audio is deliberately absent (keeper veto).
-MEDIA_OPTION_IDS: tuple[str, ...] = ("cover", "scenes", "npcs", "items")
+MEDIA_OPTION_IDS: tuple[str, ...] = ("cover", "scenes", "npcs", "items", "pregens")
 COMPANION_OPTION_IDS: tuple[str, ...] = ("skills", "rulepacks", "cards")
 
 # Per-kind and total caps for the media pass: a cover is singular, every other kind illustrates
 # the KEY subjects only, and one generation never renders more than a dozen images.
-_MEDIA_KIND_CAPS: dict[str, int] = {"cover": 1, "scenes": 6, "npcs": 6, "items": 6}
+_MEDIA_KIND_CAPS: dict[str, int] = {"cover": 1, "scenes": 6, "npcs": 6, "items": 6, "pregens": 6}
 _MEDIA_TOTAL_CAP = 12
 
 # The cards lane ships a small claimable cast, like a published scenario's pregen cards.
@@ -1039,10 +1044,14 @@ def _parse_shot_list(raw: str, kinds: list[str]) -> list[_Shot]:
     return shots
 
 
-def _build_module_media_messages(services: Services, content: str, kinds: list[str], i18n) -> list[dict]:
+def _build_module_media_messages(
+    services: Services, content: str, kinds: list[str], i18n, pregen_names: list[str] | None = None
+) -> list[dict]:
     """The two-message shot-list prompt, mirroring `_build_module_messages`: the localized
     shot-designer framing as the system message, and the kinds-with-caps request plus the module
-    document as the user message."""
+    document as the user message. ``pregen_names`` (the world card's CLAIMABLE INVESTIGATORS)
+    are appended so `pregens` shots name the ACTUAL cast — otherwise the shot designer invents its
+    own names and the portraits cannot bind back to the investigators."""
     system_prompt = "\n\n".join(
         (
             i18n.t("agent.forge.module_media_system_prompt"),
@@ -1050,9 +1059,14 @@ def _build_module_media_messages(services: Services, content: str, kinds: list[s
         )
     )
     kinds_text = ", ".join(f"{kind} ≤ {_MEDIA_KIND_CAPS[kind]}" for kind in kinds)
+    user_prompt = i18n.t("agent.forge.module_media_request", kinds=kinds_text, module=content)
+    if pregen_names:
+        user_prompt += "\n\n" + i18n.t(
+            "agent.forge.module_media_pregen_list", names="\n".join(f"- {name}" for name in pregen_names)
+        )
     return [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": i18n.t("agent.forge.module_media_request", kinds=kinds_text, module=content)},
+        {"role": "user", "content": user_prompt},
     ]
 
 
@@ -1332,7 +1346,8 @@ _PACK_MODULE_DEFAULT_AUTHOR = "AI Forge"
 # byte-identical regardless of locale so `core.lorecard.parse_lorecard_bytes` can consume the
 # result unchanged (the same discipline as `_ANALYSIS_JSON_SCHEMA` in `module_initializer`).
 _PACK_MODULE_CARD_SCHEMA = """{
-    "name": "module title",
+    "name": "module title (in the module's own language)",
+    "name_en": "a short ENGLISH title of the module, for stable ids and discovery",
     "description": "one-sentence pitch",
     "scenario": "the situation at turn zero (players' starting point)",
     "opening": "the module's opening text the keeper can quote at the table",
@@ -1340,10 +1355,10 @@ _PACK_MODULE_CARD_SCHEMA = """{
     "tags": ["free-form keywords"],
     "worldbook": [
         {
-            "content": "a lore entry the keeper uses to run the module (setting, NPC, clue, truth)",
+            "content": "a lore entry the keeper uses to run the module (setting, NPC, clue, truth, or a keeper-only secret: an ending plan, an NPC knowledge boundary)",
             "keys": ["trigger keywords that pull this entry into the keeper's context"],
             "secret": true,
-            "category": "lore|npc|clue|truth"
+            "category": "lore|npc|clue|truth|secret"
         }
     ],
     "variables": [
@@ -1359,9 +1374,139 @@ _PACK_MODULE_CARD_SCHEMA = """{
         }
     ],
     "pregens": [
-        {"name": "a claimable investigator", "concept": "one-line character concept"}
+        {
+            "name": "a claimable investigator",
+            "concept": "one-line character concept",
+            "skills": {"Spot Hidden": 60, "Fast Talk": 45, "Library Use": 50}
+        }
     ]
 }"""
+
+
+def _spent_above_base(skills: Mapping[str, int], base_skills: Mapping[str, int]) -> int:
+    """Points a skill map spends above the fresh-sheet base values."""
+    return sum(value - base_skills.get(key, 0) for key, value in skills.items())
+
+
+def _nominal_skill_budget(pack: Any) -> int | None:
+    """The skill-point budget evaluated over the pack's DEFAULT sheet values.
+
+    Budget formulas reference canonical attribute values (CoC: ``智力 * 2`` + the
+    occupation family), which for a pregen are only known at import time, when the
+    sheet's attributes are rolled. Forge normalizes against the pack's declared
+    DEFAULTS instead — a deterministic, system-agnostic ceiling (CoC: 300 with all
+    stats at 50) that keeps an LLM-authored cast budget-sane without knowing the
+    dice. ``None`` when the pack declares no budget or no default sheet.
+    """
+    creation = pack.creation_constraints or {}
+    budgets = creation.get("budgets") or {}
+    parts: Any = None
+    for rule in budgets.values():
+        if isinstance(rule, dict) and isinstance(rule.get("parts"), list) and rule["parts"]:
+            parts = rule["parts"]
+            break
+    if not isinstance(parts, list):
+        return None
+
+    sheet = CharacterSheet(name="", system=pack.system)  # seeds the pack's default attributes
+    namespace = canonical_values(sheet, pack)
+
+    def resolve(path: str) -> int:
+        try:
+            value = namespace.get(path, pack.defaults.get(path, 0))
+            return int(value) if value is not None else 0
+        except (TypeError, ValueError):
+            return 0
+
+    total = 0
+    for part in parts:
+        if isinstance(part, dict) and isinstance(part.get("max"), list):
+            best = 0
+            for formula in part["max"]:
+                try:
+                    best = max(best, int(compile_expression(formula)(resolve)))
+                except (CondExprError, TypeError, ValueError):
+                    continue
+            total += best
+        elif isinstance(part, str):
+            try:
+                total += int(compile_expression(part)(resolve))
+            except (CondExprError, TypeError, ValueError):
+                continue
+    return total
+
+
+def _normalize_pregen_skills(card: dict, pack: Any) -> int:
+    """Deterministically shape the LLM's ``pregens[].skills`` into rule-legal values.
+
+    The model authors skill numbers from taste; numeric constraints are engine work
+    (iron rule #1). For every pregen: keep only keys the pack resolves as skills
+    (aliases become canonical), floor each at its base value, clamp to the pack's
+    creation max, and — when the pack declares a skill-point budget — scale the
+    points spent above base down to the nominal budget (pack defaults), preserving
+    the author's relative profile. Returns how many pregens were adjusted.
+    """
+    spec = pack.sheet_spec
+    if spec is None:
+        return 0
+    base_skills: dict[str, int] = {}
+    for key, value in (spec.skills or {}).items():
+        try:
+            base_skills[str(key)] = int(value)
+        except (TypeError, ValueError):
+            continue
+    if not base_skills:
+        return 0
+    creation = pack.creation_constraints or {}
+    skills_rule = creation.get("skills")
+    skill_max = 90
+    if isinstance(skills_rule, dict) and isinstance(skills_rule.get("default"), dict):
+        skill_max = int(skills_rule["default"].get("max", 90) or 90)
+    budget = _nominal_skill_budget(pack)
+
+    pregens = card.get("pregens")
+    if not isinstance(pregens, list):
+        return 0
+    adjusted = 0
+    for pregen in pregens:
+        if not isinstance(pregen, dict):
+            continue
+        raw = pregen.get("skills")
+        if not isinstance(raw, dict) or not raw:
+            continue
+        cleaned: dict[str, int] = {}
+        for key, value in raw.items():
+            canonical = pack.resolve_skill(str(key))
+            if canonical is None:
+                continue
+            try:
+                number = int(value)
+            except (TypeError, ValueError):
+                continue
+            base = base_skills.get(canonical, 0)
+            cleaned[canonical] = max(base, min(skill_max, number))
+        if not cleaned:
+            # Nothing resolved (junk keys): drop the field so no garbage reaches the sheet.
+            pregen.pop("skills", None)
+            continue
+        if budget is not None and _spent_above_base(cleaned, base_skills) > budget:
+            spent = _spent_above_base(cleaned, base_skills)
+            scale = budget / spent
+            for key in list(cleaned):
+                base = base_skills.get(key, 0)
+                cleaned[key] = base + int((cleaned[key] - base) * scale)
+            # Floor-scaling drifts under the budget; trim the largest remaining
+            # overage one point at a time until the spend is within budget.
+            guard = 0
+            while _spent_above_base(cleaned, base_skills) > budget and guard < 4096:
+                guard += 1
+                key = max(cleaned, key=lambda k: (cleaned[k] - base_skills.get(k, 0), cleaned[k]))
+                if cleaned[key] <= base_skills.get(key, 0):
+                    break
+                cleaned[key] -= 1
+        pregen["skills"] = cleaned
+        adjusted += 1
+    return adjusted
 
 
 def _missing_pack_module_labels(card: dict, locale: str | None) -> list[int]:
@@ -1466,8 +1611,33 @@ async def generate_and_install_pack_module(
                 lorecard.card.name, len(lorecard.card.character_book), len(lorecard.variable_specs), len(lorecard.pregens))
     await _emit(progress, "world_card")
 
+    # Deterministic skills sanity pass: the model authors `pregens[].skills` from taste; numeric
+    # constraints (base floors, creation caps, the skill-point budget) are engine work — iron
+    # rule #1. Normalize against the pack the module will actually land on.
+    skills_pack = None
+    if system:
+        try:
+            skills_pack = rulepacks.load_rulepack(system)
+        except Exception:
+            skills_pack = None
+    if skills_pack is None:
+        try:
+            skills_pack = await services.room_rulepack(ctx)
+        except Exception:
+            skills_pack = None
+    skills_adjusted = _normalize_pregen_skills(card_text, skills_pack) if skills_pack is not None else 0
+    if skills_adjusted:
+        logger.info("[pack-forge] normalized %d pregen skill profile(s)", skills_adjusted)
+
     name = lorecard.card.name or description
-    module_id = _slugify(lorecard.card.name) or _slugify(description)
+    # A CJK `name` has no ASCII to slug, so the model also supplies `name_en` — a short English
+    # title the id can be built from (a Chinese-only fallback used to degrade to whatever ASCII
+    # happened to survive the keeper's description, e.g. a module whose id became "coc").
+    module_id = (
+        _slugify(card_text.get("name_en") or "")
+        or _slugify(lorecard.card.name)
+        or _slugify(description)
+    )
     if not module_id:
         digest = hashlib.sha256(json.dumps(card_text).encode("utf-8")).hexdigest()[:8]
         module_id = f"module-{digest}"
@@ -1493,9 +1663,16 @@ async def generate_and_install_pack_module(
         logger.info("[pack-forge] media pass: %s", media_kinds)
         await _emit(progress, "media")
         try:
+            pregen_names = [
+                str(p.get("name"))
+                for p in (card_text.get("pregens") or [])
+                if isinstance(p, dict) and p.get("name")
+            ]
             shots_raw, shots_failure = await _llm_authored(
                 services,
-                _build_module_media_messages(services, description, media_kinds, i18n),
+                _build_module_media_messages(
+                    services, description, media_kinds, i18n, pregen_names=pregen_names or None
+                ),
                 chat_key=ctx.chat_key,
             )
         except Exception:  # noqa: BLE001 — media is never load-bearing
@@ -1522,6 +1699,23 @@ async def generate_and_install_pack_module(
                 logger.info("[pack-forge] media pass done: %d images", len(media_index))
             else:
                 logger.warning("[pack-forge] no imagegen provider for this room; media skipped")
+
+    # Bind generated investigator portraits to the cast: a `pregens` shot names its subject (the
+    # investigator), so match by name and stamp the asset file onto that pregen's avatar. A player
+    # claiming the pregen inherits the portrait as their character avatar (the claim copies the
+    # sheet, avatar included), and the module detail can show it. Rewrites the card so the stamped
+    # portraits ride the world card, not just the room's media index.
+    pregen_portraits = {
+        str(shot.get("subject")): str(shot.get("name")) for shot in media_index if shot.get("kind") == "pregens"
+    }
+    if pregen_portraits:
+        for pregen in card_text.get("pregens") or []:
+            if isinstance(pregen, dict) and pregen.get("name") in pregen_portraits:
+                pregen["avatar"] = pregen_portraits[pregen["name"]]
+        try:
+            _safe_write(source / card_rel, json.dumps(card_text, ensure_ascii=False, indent=2) + "\n")
+        except OSError as exc:
+            return ForgeResult(False, "", "", "", f"write_failed: {exc}")
 
     # Build the .lwpack.
     # Optional companion content: bundle skills / rulepacks INTO the pack (a complete .lwpack
@@ -1560,10 +1754,22 @@ async def generate_and_install_pack_module(
 
     # Write the manifest LAST, once every bundled content file is in place.
     asset_paths = [f"assets/{f.name}" for f in sorted((source / "assets").iterdir()) if f.is_file()] if (source / "assets").is_dir() else []
+    asset_titles = {
+        f"assets/{entry['name']}": entry["subject"]
+        for entry in media_index
+        if entry.get("name") and entry.get("subject")
+    }
     try:
         _safe_write(
             source / "pack.yaml",
-            _pack_module_manifest(pack_id, name, skills=packed_skills, rulepacks=packed_rulepacks, assets=asset_paths),
+            _pack_module_manifest(
+                pack_id,
+                name,
+                skills=packed_skills,
+                rulepacks=packed_rulepacks,
+                assets=asset_paths,
+                asset_titles=asset_titles,
+            ),
         )
     except OSError as exc:
         return ForgeResult(False, "", "", "", f"write_failed: {exc}")
@@ -1577,7 +1783,6 @@ async def generate_and_install_pack_module(
         logger.warning("[pack-forge] build_pack failed: %s", exc)
         return ForgeResult(False, "", "", "", f"invalid_pack_module: {exc}")
 
-    parts = [i18n.t("agent.forge.pack_module_installed", name=name, path=str(built.path))]
     # Install the pack into `data/packs/` so it appears in the module library and its detail is
     # resolvable — this is REGISTRATION, not a room binding. Room binding is `import_world_card`
     # below, which `auto_import=False` skips (the keeper imports into a room explicitly).
@@ -1585,15 +1790,22 @@ async def generate_and_install_pack_module(
 
     logger.info("[pack-forge] installing pack into %s", data_dir)
     await _emit(progress, "installing")
-    install_pack_here(data_dir, built.path)
+    install_report = install_pack_here(data_dir, built.path)
 
     parts = [i18n.t("agent.forge.pack_module_installed", name=name, path=str(built.path))]
+    if skills_adjusted:
+        parts.append(i18n.t("agent.forge.pack_module_skills_normalized", count=skills_adjusted))
     if auto_import:
         # Populate the calling room through the REAL keeper world-import path.
         logger.info("[pack-forge] importing world card into room %s", ctx.chat_key)
         await _emit(progress, "importing")
-        install_ctx = replace(ctx, fs=LocalFs(user_dir))
-        card_host = source / card_rel
+        installed_home = install_report.pack_dir
+        if installed_home is None:
+            return ForgeResult(
+                False, pack_id, name, str(built.path), "", detail="installed_pack_missing"
+            )
+        install_ctx = replace(ctx, fs=LocalFs(user_dir, extra_bases=(data_dir,)))
+        card_host = installed_home / card_rel
         room_line = await CharcardTools(services).import_world_card(install_ctx, file_path=str(card_host))
         logger.info("[pack-forge] room import done: %s", room_line[:120])
         parts.append(i18n.t("agent.forge.pack_module_room", detail=room_line))
@@ -1641,7 +1853,15 @@ def _extract_json_object(raw: str) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
-def _pack_module_manifest(pack_id: str, name: str, *, skills: list[str] | None = None, rulepacks: list[str] | None = None, assets: list[str] | None = None) -> str:
+def _pack_module_manifest(
+    pack_id: str,
+    name: str,
+    *,
+    skills: list[str] | None = None,
+    rulepacks: list[str] | None = None,
+    assets: list[str] | None = None,
+    asset_titles: dict[str, str] | None = None,
+) -> str:
     """The author-side `pack.yaml` for a generated module pack (id/version/authors/license +
     its world card + bundled companion skill/rulepack + asset illustrations). `build_pack` stamps
     assets/trust/files from the real files. Serialized as YAML so the machine-generated manifest
@@ -1661,7 +1881,11 @@ def _pack_module_manifest(pack_id: str, name: str, *, skills: list[str] | None =
         "contents": contents,
     }
     if assets:
-        manifest["assets"] = [{"path": path} for path in assets]
+        titles = asset_titles or {}
+        manifest["assets"] = [
+            {"path": path, **({"title": titles[path]} if titles.get(path) else {})}
+            for path in assets
+        ]
     return yaml.safe_dump(
         manifest,
         sort_keys=True,

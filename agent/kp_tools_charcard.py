@@ -22,8 +22,10 @@ fields (name/description/tags) are game DATA supplied at runtime, not string lit
 from __future__ import annotations
 
 import json
+import mimetypes
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
+from typing import Any
 
 from agent import npc as npc_records
 from agent.char_from_persona import build_sheet_from_persona, infer_pronoun_note
@@ -178,6 +180,39 @@ async def _register_png_avatar(services: Services, ctx: AgentCtx, host_path: Pat
     except Exception:
         return
     sheet.avatar = record.ref()
+
+
+async def _pregen_avatar_from_asset(
+    services: Services, ctx: AgentCtx, host_path: Path, asset_name: str
+) -> dict[str, Any] | None:
+    """Read a pregen portrait asset from the pack and register it as the sheet's avatar ref, so
+    claiming the pregen inherits the portrait as the player's character avatar. Best-effort: a
+    missing asset or store rejection leaves the sheet without an avatar."""
+    try:
+        from core.pack import pack_home_of
+
+        home = pack_home_of(Path(services.settings.data_dir), host_path)
+        data = (home / "assets" / asset_name).read_bytes()
+    except Exception:  # noqa: BLE001 — best-effort
+        return None
+    mime = mimetypes.guess_type(asset_name)[0] or "image/png"
+    try:
+        store = MediaStore(
+            services.store,
+            services.settings.data_dir,
+            max_file_bytes=services.settings.tui.media_max_file_bytes,
+            room_quota_bytes=services.settings.tui.media_room_quota_bytes,
+        )
+        record = await store.register_blob(
+            room=ctx.chat_key,
+            data=data,
+            mime=mime,
+            name=asset_name,
+            uploader=ctx.uid(),
+        )
+    except Exception:  # noqa: BLE001 — best-effort
+        return None
+    return record.ref()
 
 
 def _stripped_notice(i18n: I18n, world: WorldPayloads) -> str:
@@ -624,6 +659,13 @@ class CharcardTools:
                     sheet, _cast_violations = validate_sheet(
                         sheet, system, initialize_vitals=True, creation_method="rolled"
                     )
+                    # A forge-generated portrait asset (bound to this pregen by name) becomes the
+                    # sheet's avatar, so a player claiming the pregen inherits the portrait.
+                    avatar_asset = str(spec.get("avatar") or "").strip()
+                    if avatar_asset:
+                        sheet.avatar = await _pregen_avatar_from_asset(
+                            self._services, ctx, host_path, avatar_asset
+                        )
                     entry = await pregen_add(
                         self._services.documents,
                         ctx.chat_key,
@@ -670,12 +712,14 @@ class CharcardTools:
             )
 
             home = pack_home_of(Path(self._services.settings.data_dir), host_path)
+            imported_pack_manifest = None
             if home is not None:
                 manifest_path = home / "pack.yaml"
                 if manifest_path.is_file():
                     manifest = _pack_manifest_for_room_import(home)
                     if manifest is None:
                         raise ValueError("unreadable pack manifest")
+                    imported_pack_manifest = manifest
                     for skill_path in manifest.contents.get("skills", ()):
                         skill_id = PurePosixPath(str(skill_path)).name
                         if skill_id and skill_id not in desired_skills:
@@ -742,6 +786,12 @@ class CharcardTools:
             ]
             await transaction.__aexit__(None, None, None)
             transaction = None
+            if home is not None and imported_pack_manifest is not None:
+                from gateway.pack_media import sync_pack_media_to_room
+
+                await sync_pack_media_to_room(
+                    self._services, ctx.chat_key, home, imported_pack_manifest
+                )
             return "\n".join([result, *extra_lines])
         except CardImportRefused as exc:
             if transaction is not None:

@@ -183,7 +183,7 @@ from core.mvu_compat import mvu_apply_text
 from core.rulepacks import RulePack
 from core.skills import unlocked_tools_for
 from infra.i18n import t
-from infra.llm import CACHE_BREAKPOINT_KEY, ChatResult, LLMClient, Usage
+from infra.llm import CACHE_BREAKPOINT_KEY, HISTORY_NAME_KEY, ChatResult, LLMClient, Usage
 from infra.llm_errors import is_context_overflow, is_context_overflow_stop
 from infra.model_call_trace import lane_scope, set_lane_field
 from infra.usage_stats import record_context_overflow
@@ -385,6 +385,23 @@ class KPTurnResult:
     panel_events: list[dict] = field(default_factory=list)
 
 
+def _speaker_labeled(message: dict, i18n) -> dict:
+    """A player line with its speaker folded into the CONTENT, for the model's eyes.
+
+    The store keeps the speaker in the `name` column and the client replay reads it
+    from there; the model never saw either — an Anthropic user turn has no name slot,
+    and the OpenAI `name` field rejects the CJK handles this game runs on. With several
+    players at one table the unattributed user stream was exactly what let the KP pin
+    one player's declared action on another's character. The label rides the content,
+    which every provider path preserves. Assistant/KP lines and nameless (single-player
+    TUI) lines pass through untouched.
+    """
+    name = str(message.get(HISTORY_NAME_KEY) or "")
+    if message.get("role") != "user" or not name:
+        return message
+    return {**message, "content": i18n.t("prompt.player_line", name=name, text=str(message.get("content") or ""))}
+
+
 async def run_kp_turn(
     ctx: AgentCtx,
     services: Services,
@@ -573,15 +590,22 @@ async def _run_kp_turn_body(
         if parts.stable:
             base.append({"role": "system", "content": parts.stable, CACHE_BREAKPOINT_KEY: True})
         # Marked on a COPY: `chain` itself is what gets persisted back, and a wire-only
-        # breakpoint mark has no business in the store.
-        base.extend([*chain[:-1], {**chain[-1], CACHE_BREAKPOINT_KEY: True}] if chain else [])
+        # breakpoint mark has no business in the store. `_speaker_labeled` copies too —
+        # the stored records keep the speaker in the `name` column, the prompt gets it
+        # in the content (see the helper).
+        labeled = [_speaker_labeled(message, i18n) for message in chain]
+        base.extend([*labeled[:-1], {**labeled[-1], CACHE_BREAKPOINT_KEY: True}] if labeled else [])
         if parts.volatile:
             # A user-role message, not a second system one: mid-conversation system messages
             # are model- and vendor-specific, while every provider path here takes a user
             # turn unchanged. The header names it as engine state so the Keeper never reads
             # the state dump as something a player said.
             base.append({"role": "user", "content": i18n.t("prompt.state_header") + "\n\n" + parts.volatile})
-        base.append({"role": "user", "content": user_message})
+        base.append(
+            _speaker_labeled({"role": "user", "content": user_message, HISTORY_NAME_KEY: user_name}, i18n)
+            if user_name
+            else {"role": "user", "content": user_message}
+        )
         return base
 
     # The turn now in flight — completed turns + 1, the same stamp `record_entry` uses,

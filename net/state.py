@@ -109,25 +109,44 @@ async def _image_names(services: Services, chat_key: str) -> dict[str, list[str]
     """Player-visible noun lists for `.image` completions.
 
     NPC names and clue names from the module knowledge pool's PLAYER view —
-    keeper-secret-free (iron rule #3). The client offers these as argument
-    completions for `.image portrait` / `.image clue`. Empty dict when the room has
-    no pool."""
+    keeper-secret-free (iron rule #3) — plus titled pack illustrations registered
+    for the active room. The client offers these as argument completions for
+    `.image portrait` / `.image clue`."""
     from core.documents import MODULE_POOL_ID, PLAYER_VIEWER, DocumentStore
 
     docs = DocumentStore(services.store)
     try:
         pool = await docs.get_view(chat_key, "module_pool", MODULE_POOL_ID, PLAYER_VIEWER)
     except Exception:
-        return {}
-    if not pool:
-        return {}
+        pool = None
     names: dict[str, list[str]] = {}
-    npcs = [str(n.get("name") or "").strip() for n in (pool.get("npcs") or []) if str(n.get("name") or "").strip()]
+    npcs = [
+        str(n.get("name") or "").strip()
+        for n in ((pool or {}).get("npcs") or [])
+        if str(n.get("name") or "").strip()
+    ]
     if npcs:
         names["npcs"] = npcs
-    clues = [str(c.get("name") or "").strip() for c in (pool.get("clues") or []) if str(c.get("name") or "").strip()]
+    clues = [
+        str(c.get("name") or "").strip()
+        for c in ((pool or {}).get("clues") or [])
+        if str(c.get("name") or "").strip()
+    ]
     if clues:
         names["clues"] = clues
+    try:
+        raw_media = await services.store.state_get(chat_key, "module_media_index")
+        media_entries = json.loads(raw_media or "[]")
+    except Exception:
+        media_entries = []
+    for entry in media_entries if isinstance(media_entries, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        subject = str(entry.get("subject") or "").strip()
+        kind = str(entry.get("kind") or "")
+        target = "npcs" if kind == "npcs" else "clues" if kind == "items" else ""
+        if subject and target and subject not in names.setdefault(target, []):
+            names[target].append(subject)
     return names
 
 

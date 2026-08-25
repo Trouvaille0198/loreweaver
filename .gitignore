@@ -109,3 +109,6 @@ marketing/
 # Staging area for copyrighted tabletop source material — metadata (README,
 # sources.json) is tracked; the source PDFs themselves stay local, not pushed.
 content-library/**/*.pdf
+
+# Local runtime-config backups (contain plaintext API keys; never publish).
+.ops-backup/

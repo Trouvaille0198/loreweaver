@@ -385,7 +385,7 @@ def build_services(
         # Warm the credential book cache so subscription providers can resolve
         # OAuth tokens at build_llm time (sync path).
         llm_credentials.load_sync()
-        mutable_kwargs = {"credentials": llm_credentials}
+        mutable_kwargs = {"credentials": llm_credentials, "profiles": llm_profiles}
         if fallback_llm is not None:
             mutable_kwargs["fallback_llm"] = fallback_llm
         mutable = MutableLLM(settings, **mutable_kwargs)

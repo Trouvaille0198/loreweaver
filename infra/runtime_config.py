@@ -546,6 +546,33 @@ class CredentialBook:
             self._cache = updated
 
 
+    async def replace_all(self, entries: dict[str, dict[str, str]]) -> None:
+        """Replace the ENTIRE book with `entries` (import/restore path).
+
+        Providers are casefolded; entries with no fields are dropped. Passing an
+        empty dict clears every saved credential — a valid wipe, never a no-op.
+        """
+        async with self._mutation_lock:
+            updated: dict[str, dict[str, str]] = {}
+            for provider, fields in entries.items():
+                provider = (provider or "").casefold()
+                if not provider or not isinstance(fields, dict):
+                    continue
+                cleaned = {str(k): str(v) for k, v in fields.items() if v is not None}
+                if cleaned:
+                    updated[provider] = cleaned
+            await self._store.set(user_key="", store_key=self._key, value=json.dumps(updated))
+            self._cache = updated
+            self._invalidate_subscriptions(updated)
+
+
+    def _invalidate_subscriptions(self, updated: dict[str, dict[str, str]]) -> None:
+        """Drop cached OAuth token managers whose provider entry vanished (or was
+        replaced wholesale) so a later lookup re-reads from the store."""
+        for provider in list(self._subscription_managers):
+            if provider not in updated:
+                self._subscription_managers.pop(provider, None)
+
     async def save_subscription(self, provider: str, token: Any) -> None:
         """Persist a :class:`~infra.oauth_flows.SubscriptionToken` under ``provider``.
 

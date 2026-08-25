@@ -99,6 +99,8 @@ _ADMIN_REQUESTS: frozenset[str] = frozenset(
         "admin_delete_room",
         "admin_export_room",
         "admin_import_room",
+        "admin_export_llm",
+        "admin_import_llm",
         "admin_delete_room_data",
         "admin_reset_room",
         "admin_list_skills",
@@ -327,6 +329,13 @@ async def _dispatch_admin_frame(
         return await _export_room(services, keystore, caller_room, frame, i18n)
     if kind == "admin_import_room":
         return await _import_room(services, keystore, caller_room, frame, i18n)
+    if kind == "admin_export_llm":
+        return await _export_llm_config(services, i18n)
+    if kind == "admin_import_llm":
+        async with services.config_lock:
+            if reauthorize is not None and not reauthorize():
+                return _error("forbidden", i18n)
+            return await _import_llm_config(services, frame, i18n)
     if kind == "admin_delete_room_data":
         return await _delete_room_data(services, keystore, caller_room, frame, i18n, hub=hub)
     if kind == "admin_reset_room":
@@ -759,6 +768,17 @@ async def _set_llm_profile(services: Services, frame: dict[str, Any], i18n: I18n
             kind=kind,
             embedding_dim=str(embedding_dim) if kind == "embedding" else "",
         )
+        # Keep the legacy per-provider credential book in sync for chat profiles so a
+        # restart builds the global default client from either book (`MutableLLM`
+        # falls back across both). Image/embedding profiles live only in the typed book.
+        if kind == "chat":
+            await _replace_llm_static_credentials(
+                services,
+                provider,
+                api_key=api_key,
+                base_url=base_url,
+                chat_model=model,
+            )
         services.invalidate_model_profile(profile_id.casefold())
     except Exception:
         logger.exception("admin_set_llm failed (profile=%s)", profile_id)
@@ -793,6 +813,14 @@ async def _delete_llm_profile(services: Services, frame: dict[str, Any], i18n: I
         if profile_id in profiles:
             await services.llm_profiles.forget(profile_id)
             services.invalidate_model_profile(profile_id)
+            # The legacy per-provider credential book mirrors chat profiles written by
+            # `admin_set_llm`. Drop the mirror when its saved chat_model matches the
+            # deleted profile — otherwise `_llm_profiles` resurrects the deleted entry
+            # from the legacy book on the next config frame.
+            if profile_kind == "chat" and profile_model:
+                legacy = await services.llm_credentials.get(profile_provider)
+                if legacy.get("chat_model") == profile_model:
+                    await services.llm_credentials.forget(profile_provider)
         else:
             legacy_provider = profile_provider or profile_id
             await services.llm_credentials.forget(legacy_provider)
@@ -815,6 +843,110 @@ async def _delete_llm_profile(services: Services, frame: dict[str, Any], i18n: I
     if embedding_rebuilt is not None:
         reply["embedding_rebuilt"] = embedding_rebuilt
     return reply
+
+
+_LLM_EXPORT_FORMAT = "loreweaver-llm-config"
+_LLM_EXPORT_VERSION = 1
+
+
+async def _export_llm_config(services: Services, i18n: I18n) -> dict[str, Any]:
+    """Export every saved LLM/embedding/imagegen profile plus the live runtime
+    selection as one portable JSON document (keeper-gated; contains plaintext keys,
+    so the reply is only ever sent to the requesting keeper connection)."""
+    profiles = await services.llm_profiles.all()
+    credentials = await services.llm_credentials.all()
+    runtime = await services.runtime_config.get()
+    imagegen_credentials = await services.imagegen_credentials.all()
+    # Persisted runtime overrides may be empty (the Model screen saves profiles,
+    # not overrides). Merge the LIVE effective selection so the export round-trips
+    # the actually-running provider/model/endpoint even without an override.
+    live = _live_llm_settings(services)
+    runtime = {
+        **runtime,
+        "provider": live.provider or runtime.get("provider", ""),
+        "chat_model": live.chat_model or runtime.get("chat_model", ""),
+        "base_url": live.base_url or runtime.get("base_url", ""),
+    }
+    payload = {
+        "format": _LLM_EXPORT_FORMAT,
+        "version": _LLM_EXPORT_VERSION,
+        "llm_profiles": profiles,
+        "llm_credentials": credentials,
+        "runtime": runtime,
+        "imagegen_credentials": imagegen_credentials,
+    }
+    return {
+        "type": "admin_llm_export",
+        "ok": True,
+        "config": payload,
+    }
+
+
+async def _import_llm_config(services: Services, frame: dict[str, Any], i18n: I18n) -> dict[str, Any]:
+    """Replace the saved LLM/embedding/imagegen profiles with a previously exported
+    document. The live runtime selection is restored too; the MutableLLM hot-swaps.
+
+    Validate shape and known providers before writing anything, so a malformed
+    import can never leave a half-applied credential book. An empty document
+    (no profiles at all) is a valid wipe — importing it clears every saved key.
+    """
+    raw = frame.get("config")
+    if not isinstance(raw, dict):
+        return _error("bad_request", i18n)
+    if str(raw.get("format") or "") != _LLM_EXPORT_FORMAT:
+        return _error("bad_request", i18n)
+    try:
+        version = int(raw.get("version") or 0)
+    except (TypeError, ValueError):
+        return _error("bad_request", i18n)
+    if version != _LLM_EXPORT_VERSION:
+        return _error("bad_request", i18n)
+
+    profiles_raw = raw.get("llm_profiles")
+    credentials_raw = raw.get("llm_credentials")
+    runtime_raw = raw.get("runtime")
+    imagegen_raw = raw.get("imagegen_credentials")
+    if not isinstance(profiles_raw, dict) or not isinstance(credentials_raw, dict):
+        return _error("bad_request", i18n)
+    if not isinstance(runtime_raw, dict) or not isinstance(imagegen_raw, dict):
+        return _error("bad_request", i18n)
+
+    profiles: dict[str, dict[str, str]] = {}
+    for profile_id, saved in profiles_raw.items():
+        provider, kind, model = model_profile_parts(str(profile_id))
+        if not provider or not is_known_provider(provider):
+            return _error("bad_request", i18n)
+        if not isinstance(saved, dict):
+            return _error("bad_request", i18n)
+        profiles[str(profile_id)] = {str(k): str(v) for k, v in saved.items()}
+    credentials: dict[str, dict[str, str]] = {}
+    for provider, saved in credentials_raw.items():
+        provider = str(provider).casefold()
+        if not is_known_provider(provider):
+            return _error("bad_request", i18n)
+        if not isinstance(saved, dict):
+            return _error("bad_request", i18n)
+        credentials[provider] = {str(k): str(v) for k, v in saved.items()}
+
+    try:
+        await services.llm_profiles.replace_all(profiles)
+        await services.llm_credentials.replace_all(credentials)
+        await services.imagegen_credentials.replace_all(
+            {
+                str(provider): {str(k): str(v) for k, v in saved.items()}
+                for provider, saved in imagegen_raw.items()
+                if isinstance(saved, dict)
+            }
+        )
+        await services.runtime_config.replace(
+            **{key: str(value) for key, value in runtime_raw.items() if value is not None}
+        )
+        services.invalidate_model_profile(None)
+        _reconfigure_llm(services, runtime_raw)
+    except Exception:
+        logger.exception("admin_import_llm failed")
+        return _error("set_failed", i18n)
+    return await _config_frame(services)
 
 
 async def _list_models(services: Services, frame: dict[str, Any], i18n: I18n) -> dict[str, Any]:
@@ -905,7 +1037,22 @@ async def _set_imagegen(services: Services, frame: dict[str, Any], i18n: I18n) -
     supplied_base_url = str(frame.get("base_url") or "").strip()
     live = services.settings.imagegen
     same_provider = provider == (live.provider or "").casefold()
-    saved = await services.imagegen_credentials.get(provider)
+    saved = await services.imagegen_credentials.get(provider) or {}
+    # "Set as the default image model" reuses the image profile's stored key, which
+    # lives in the LLM credential book (`llm_profiles`), not the imagegen book — so
+    # clicking a saved minimax/… profile as default never makes the operator re-enter
+    # its key. Only fills gaps; never overrides a key the operator supplied or saved.
+    if not saved.get("api_key") and not saved.get("access_token"):
+        for profile_id, profile in (await services.llm_profiles.all()).items():
+            profile_provider, encoded_kind, _ = model_profile_parts(str(profile_id))
+            if profile_provider != provider or str(profile.get("kind") or encoded_kind) != "image":
+                continue
+            saved = {
+                **saved,
+                "api_key": profile.get("api_key") or profile.get("access_token") or saved.get("api_key", ""),
+                "base_url": profile.get("base_url") or saved.get("base_url", ""),
+            }
+            break
     if provider == "supergrok":
         api_key = ""
         base_url = ""
@@ -1512,12 +1659,22 @@ async def _generate(
     )
 
     async def _progress(stage: str, detail: str = "") -> None:
-        if emit_frame is None:
-            return
-        frame = {"type": "admin_generate_progress", "kind": kind, "stage": stage, "detail": detail}
+        if emit_frame is not None:
+            frame = {"type": "admin_generate_progress", "kind": kind, "stage": stage, "detail": detail}
+            try:
+                await emit_frame(frame)
+            except Exception:  # noqa: BLE001 — a dead connection must not fail the generation
+                pass
+        # Persist the in-flight stage so a refreshed/reconnected keeper still sees the running
+        # generation in the module library (`module_admin._list` merges this row) — progress that
+        # only lived on the wire vanished on every refresh.
         try:
-            await emit_frame(frame)
-        except Exception:  # noqa: BLE001 — a dead connection must not fail the generation
+            await services.store.state_set(
+                chat_key_for_room(caller_room),
+                "generation_progress",
+                json.dumps({"kind": kind, "stage": stage, "detail": detail}, ensure_ascii=False),
+            )
+        except Exception:  # noqa: BLE001 — progress persistence must never fail a generation
             pass
 
     async def _run() -> ForgeResult:
@@ -1546,20 +1703,34 @@ async def _generate(
     import asyncio
 
     if emit_frame is not None:
-        asyncio.get_running_loop().create_task(_finish_generation(_run(), kind, emit_frame))
+        asyncio.get_running_loop().create_task(_finish_generation(_run(), kind, emit_frame, services, caller_room))
         return {"type": "admin_generate_started", "kind": kind}
     result = await _run()
     return _generated_frame(kind, result)
 
 
-async def _finish_generation(coro: Any, kind: str, emit_frame: Any) -> None:
+async def _finish_generation(
+    coro: Any,
+    kind: str,
+    emit_frame: Any,
+    services: Services | None = None,
+    caller_room: str = "",
+) -> None:
     """Await a background forge generation and push its `admin_generated` result to the caller.
-    Best-effort: a dead connection just loses the result frame."""
+    Best-effort: a dead connection just loses the result frame; the persisted generation-progress
+    row is cleared either way."""
     try:
         result = await coro
-        await emit_frame(_generated_frame(kind, result))
+        if emit_frame is not None:
+            await emit_frame(_generated_frame(kind, result))
     except Exception:  # noqa: BLE001 — a background generation must never crash the loop
         pass
+    finally:
+        if services is not None and caller_room:
+            try:
+                await services.store.state_delete(chat_key_for_room(caller_room), "generation_progress")
+            except Exception:  # noqa: BLE001 — clearing progress is best-effort
+                pass
 
 
 def _option_list(options: Any, key: str) -> list[str] | None:

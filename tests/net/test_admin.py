@@ -2742,6 +2742,207 @@ async def test_deleting_a_room_over_the_wire_drops_its_turn_lock_after_the_frame
         await server.close()
 
 
+async def test_admin_set_llm_profile_also_writes_legacy_credential_book(tmp_path):
+    """`admin_set_llm` saves chat profiles under the typed profile book AND mirrors
+    the key into the legacy per-provider credential book, so a restart builds the
+    global default client from either book (the MutableLLM startup path reads the
+    legacy book first, then falls back to the typed profiles)."""
+    services = _services(str(tmp_path))
+    admin = AdminService(services, Keystore())
+
+    saved = await admin.dispatch(
+        "keeper",
+        "arkham",
+        {
+            "type": "admin_set_llm",
+            "provider": "deepseek",
+            "chat_model": "deepseek-chat",
+            "api_key": "sk-profile-secret",
+        },
+        get_i18n("en"),
+    )
+    assert saved["type"] == "admin_config"
+
+    assert (await services.llm_profiles.get("deepseek::deepseek-chat"))["api_key"] == "sk-profile-secret"
+    legacy = await services.llm_credentials.get("deepseek")
+    assert legacy["api_key"] == "sk-profile-secret"
+    assert legacy["chat_model"] == "deepseek-chat"
+
+
+async def test_admin_set_llm_profile_does_not_leak_key_into_legacy_book_for_non_chat_kinds(tmp_path):
+    """Image/embedding profiles stay in the typed book only — the legacy per-provider
+    book is chat-scoped, so an image key must never surface there."""
+    services = _services(str(tmp_path))
+    admin = AdminService(services, Keystore())
+
+    saved = await admin.dispatch(
+        "keeper",
+        "arkham",
+        {
+            "type": "admin_set_llm",
+            "provider": "minimax-cn",
+            "chat_model": "image-01",
+            "kind": "image",
+            "api_key": "sk-image-secret",
+        },
+        get_i18n("en"),
+    )
+    assert saved["type"] == "admin_config"
+
+    assert (await services.llm_profiles.get("minimax-cn::image::image-01"))["api_key"] == "sk-image-secret"
+    assert await services.llm_credentials.get("minimax-cn") == {}
+
+
+async def test_admin_delete_llm_profile_cleans_its_legacy_credential_mirror(tmp_path):
+    """Deleting a chat profile must also drop the legacy credential mirror written
+    for it, or `_llm_profiles` resurrects the deleted entry from the legacy book."""
+    services = _services(str(tmp_path))
+    admin = AdminService(services, Keystore())
+
+    await admin.dispatch(
+        "keeper",
+        "arkham",
+        {
+            "type": "admin_set_llm",
+            "provider": "deepseek",
+            "chat_model": "deepseek-chat",
+            "api_key": "sk-profile-secret",
+        },
+        get_i18n("en"),
+    )
+
+    deleted = await admin.dispatch(
+        "keeper",
+        "arkham",
+        {"type": "admin_delete_llm", "id": "deepseek::deepseek-chat"},
+        get_i18n("en"),
+    )
+    assert deleted["type"] == "admin_config"
+    assert deleted["llms"] == []
+    assert await services.llm_profiles.get("deepseek::deepseek-chat") == {}
+    assert await services.llm_credentials.get("deepseek") == {}
+
+
+async def test_admin_export_llm_config_round_trips_every_book(tmp_path):
+    """`admin_export_llm` returns every saved credential book plus the runtime
+    selection; `admin_import_llm` restores them and hot-swaps."""
+    services = _services(str(tmp_path))
+    admin = AdminService(services, Keystore())
+    i18n = get_i18n("en")
+
+    await admin.dispatch(
+        "keeper",
+        "arkham",
+        {
+            "type": "admin_set_llm",
+            "provider": "deepseek",
+            "chat_model": "deepseek-chat",
+            "api_key": "sk-profile-secret",
+        },
+        i18n,
+    )
+    await admin.dispatch(
+        "keeper",
+        "arkham",
+        {
+            "type": "admin_set_llm",
+            "provider": "minimax-cn",
+            "chat_model": "image-01",
+            "kind": "image",
+            "api_key": "sk-image-secret",
+        },
+        i18n,
+    )
+
+    exported = await admin.dispatch("keeper", "arkham", {"type": "admin_export_llm"}, i18n)
+    assert exported["type"] == "admin_llm_export"
+    assert exported["ok"] is True
+    config = exported["config"]
+    assert config["format"] == "loreweaver-llm-config"
+    assert config["llm_profiles"]["deepseek::deepseek-chat"]["api_key"] == "sk-profile-secret"
+    assert config["llm_profiles"]["minimax-cn::image::image-01"]["api_key"] == "sk-image-secret"
+    assert config["llm_credentials"]["deepseek"]["api_key"] == "sk-profile-secret"
+    # The live effective selection is merged into `runtime` even without a
+    # persisted override, so the export round-trips the running model.
+    assert config["runtime"]["provider"] == "openai"
+    assert config["runtime"]["chat_model"] == "gpt-4o"
+
+    # Wipe every book, then import the export back.
+    await admin.dispatch(
+        "keeper",
+        "arkham",
+        {
+            "type": "admin_import_llm",
+            "config": {**config, "llm_profiles": {}, "llm_credentials": {}, "runtime": {}},
+        },
+        i18n,
+    )
+    assert await services.llm_profiles.all() == {}
+    assert await services.llm_credentials.all() == {}
+
+    imported = await admin.dispatch("keeper", "arkham", {"type": "admin_import_llm", "config": config}, i18n)
+    assert imported["type"] == "admin_config"
+    assert (await services.llm_profiles.get("deepseek::deepseek-chat"))["api_key"] == "sk-profile-secret"
+    assert (await services.llm_credentials.get("deepseek"))["api_key"] == "sk-profile-secret"
+
+
+async def test_admin_import_llm_config_rejects_malformed_documents(tmp_path):
+    services = _services(str(tmp_path))
+    admin = AdminService(services, Keystore())
+    i18n = get_i18n("en")
+
+    bad_format = await admin.dispatch(
+        "keeper",
+        "arkham",
+        {"type": "admin_import_llm", "config": {"format": "nope", "version": 1}},
+        i18n,
+    )
+    assert bad_format["type"] == "admin_error"
+    assert bad_format["code"] == "bad_request"
+
+    bad_version = await admin.dispatch(
+        "keeper",
+        "arkham",
+        {
+            "type": "admin_import_llm",
+            "config": {
+                "format": "loreweaver-llm-config",
+                "version": 99,
+                "llm_profiles": {},
+                "llm_credentials": {},
+                "runtime": {},
+                "imagegen_credentials": {},
+            },
+        },
+        i18n,
+    )
+    assert bad_version["type"] == "admin_error"
+    assert bad_version["code"] == "bad_request"
+
+    bad_provider = await admin.dispatch(
+        "keeper",
+        "arkham",
+        {
+            "type": "admin_import_llm",
+            "config": {
+                "format": "loreweaver-llm-config",
+                "version": 1,
+                "llm_profiles": {"nope-9000::model": {"api_key": "sk-x"}},
+                "llm_credentials": {},
+                "runtime": {},
+                "imagegen_credentials": {},
+            },
+        },
+        i18n,
+    )
+    assert bad_provider["type"] == "admin_error"
+    assert bad_provider["code"] == "bad_request"
+
+    # Nothing was written by the failed imports.
+    assert await services.llm_profiles.all() == {}
+    assert await services.llm_credentials.all() == {}
+
+
 async def test_admin_llm_profiles_and_room_assignments_are_separate(tmp_path):
     services = _services(str(tmp_path))
     keystore = Keystore()

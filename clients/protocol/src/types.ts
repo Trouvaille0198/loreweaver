@@ -60,6 +60,9 @@ export const FrameType = {
   AdminDeleteRoom: "admin_delete_room",
   AdminExportRoom: "admin_export_room",
   AdminImportRoom: "admin_import_room",
+  AdminExportLLM: "admin_export_llm",
+  AdminImportLLM: "admin_import_llm",
+  AdminLLMExport: "admin_llm_export",
   AdminDeleteRoomData: "admin_delete_room_data",
   AdminResetRoom: "admin_reset_room",
   AdminConfig: "admin_config",
@@ -1063,6 +1066,43 @@ export interface AdminImportRoomFrame {
   room?: string
 }
 
+// Ask the server for a portable snapshot of every saved LLM/embedding/imagegen
+// profile plus the live runtime selection. The reply (`admin_llm_export`) carries
+// PLAINTEXT keys and is only ever sent to the requesting keeper connection.
+export interface AdminExportLLMFrame {
+  type: typeof FrameType.AdminExportLLM
+}
+
+// Replace the saved LLM/embedding/imagegen profiles with a previously exported
+// document (`admin_llm_export.config`), then hot-swap the live runtime selection.
+// Answer is the usual `admin_config` frame. Importing an empty profile set wipes
+// every saved key — the caller confirms before sending.
+export interface AdminImportLLMFrame {
+  type: typeof FrameType.AdminImportLLM
+  config: {
+    format: string
+    version: number
+    llm_profiles: Record<string, Record<string, string>>
+    llm_credentials: Record<string, Record<string, string>>
+    runtime: Record<string, string>
+    imagegen_credentials: Record<string, Record<string, string>>
+  }
+}
+
+// Server → keeper: the exported LLM configuration document.
+export interface AdminLLMExportFrame {
+  type: typeof FrameType.AdminLLMExport
+  ok: boolean
+  config: {
+    format: string
+    version: number
+    llm_profiles: Record<string, Record<string, string>>
+    llm_credentials: Record<string, Record<string, string>>
+    runtime: Record<string, string>
+    imagegen_credentials: Record<string, Record<string, string>>
+  }
+}
+
 export interface AdminDeleteRoomDataFrame {
   type: typeof FrameType.AdminDeleteRoomData
   room: string
@@ -1326,6 +1366,8 @@ export type ClientFrame =
   | AdminDeleteRoomFrame
   | AdminExportRoomFrame
   | AdminImportRoomFrame
+  | AdminExportLLMFrame
+  | AdminImportLLMFrame
   | AdminDeleteRoomDataFrame
   | AdminResetRoomFrame
   | AdminUpdateServerFrame
@@ -1356,6 +1398,7 @@ export type ServerFrame =
   | TurnStatusFrame
   | PongFrame
   | AdminConfigFrame
+  | AdminLLMExportFrame
   | AdminRoomConfigFrame
   | AdminModelsFrame
   | AdminKeysFrame
