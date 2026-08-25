@@ -38,6 +38,11 @@ IMAGEGEN_PRESETS: dict[str, dict[str, str]] = {
         "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1",
         "model": "qwen-image-3.0-pro",
     },
+    # 千问AI平台按量付费（通用 API Key sk-ws-）；DashScope 原生文生图端点
+    "qwen-api": {
+        "base_url": "https://dashscope.aliyuncs.com/api/v1",
+        "model": "qwen-image-3.0-pro",
+    },
 }
 
 TokenProvider = Callable[[], Awaitable[str]]
@@ -531,7 +536,10 @@ def build_imagegen(
         return MiniMaxImageGen(cfg)
     if provider == "siliconflow":
         return SiliconFlowImageGen(cfg)
-    if provider == "qwen":
+    # qwen / qwen-api both speak the DashScope native multimodal-generation protocol
+    # (NOT OpenAI-compatible `/images/generations`); the `qwen` Token-Plan endpoint and
+    # the pay-as-you-go `qwen-api` DashScope endpoint share the same request/response shape.
+    if provider in {"qwen", "qwen-api"}:
         return QwenImageGen(cfg)
     return OpenAICompatImageGen(cfg)
 
