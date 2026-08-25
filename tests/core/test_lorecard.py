@@ -476,6 +476,8 @@ def test_items_parse_normalizes_and_caps():
                 "effect": "+1 to Spot Hidden",
                 "bonus": {"侦查": 1, "坏的": "x"},
                 "quantity": 2,
+                "origin": "藏珍阁",
+                "original_holder": "冯兆辉",
             },
             {"blurb": "no name -> skipped"},
             "not-an-object",
@@ -492,6 +494,8 @@ def test_items_parse_normalizes_and_caps():
     assert parsed.items[0]["quantity"] == 2
     assert parsed.items[1]["bonus"] == {}
     assert parsed.items[0]["scope"] == "module"
+    assert parsed.items[0]["origin"] == "藏珍阁"
+    assert parsed.items[0]["original_holder"] == "冯兆辉"
     assert parsed.items[2]["scope"] == "universal"
     assert parsed.items[3]["scope"] == "module"  # invalid scope fails closed
     assert any("items[1]" in warning for warning in parsed.warnings)

@@ -324,10 +324,12 @@ class ModuleAdminService:
                         "name": str(it.get("name", "")),
                         "kind": str(it.get("kind") or ""),
                         "slot": str(it.get("slot") or ""),
+                        "scope": str(it.get("scope") or ""),
                         "description": str(it.get("description") or ""),
                         "effect": str(it.get("effect") or ""),
                         "lore": str(it.get("lore") or ""),
                         "origin": str(it.get("origin") or ""),
+                        "original_holder": str(it.get("original_holder") or ""),
                         "quantity": it.get("quantity", 1) if isinstance(it.get("quantity"), int) else 1,
                         "bonus": dict(it.get("bonus") or {}),
                     }
