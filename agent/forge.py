@@ -176,9 +176,10 @@ COMPANION_OPTION_IDS: tuple[str, ...] = ("skills", "rulepacks", "cards")
 # the KEY subjects only, and one generation never renders more than a dozen images.
 _MEDIA_KIND_CAPS: dict[str, int] = {"cover": 1, "scenes": 6, "npcs": 6, "items": 6, "pregens": 6}
 # Render at most a few shots concurrently: image providers rate-limit (HTTP 429) when a full
-# cast's portraits fan out at once, and serializing a dozen images is a 10+ minute slog. Three
-# in flight is a reasonable middle ground.
-_MEDIA_CONCURRENCY = 3
+# cast's portraits fan out at once, and serializing a dozen images is a 10+ minute slog. Five
+# in flight is a good middle ground now that 429/5xx/timeout retries actually fire (a transient
+# rate-limit costs one backoff, not a dropped illustration).
+_MEDIA_CONCURRENCY = 5
 _MEDIA_RETRIES = 3
 
 
