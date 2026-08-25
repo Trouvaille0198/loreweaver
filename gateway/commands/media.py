@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shlex
 from pathlib import Path
@@ -383,6 +384,40 @@ class MediaCommands:
                 ctx.chat_key,
                 Event(kind="system", text=ctx.i18n.t("commands.image.generating"), data={"level": "info", "spinner": True}),
             )
+        # Image generation is minutes-long (LLM prompt expansion + a provider I2I/T2I
+        # call). Running it inline holds the room's turn lock for the whole stretch and
+        # queues every other input behind it; hand the slow half to a background task
+        # instead — the command returns immediately and the finished image lands in the
+        # room as a media frame + system message. The imagegen client and the checks
+        # above are resolved up front so the task can never hit a misconfigured room.
+        tasks = getattr(self, "_image_background_tasks", None)
+        if tasks is None:
+            tasks = set()
+            setattr(self, "_image_background_tasks", tasks)
+        task = asyncio.create_task(
+            self._generate_image_background(
+                ctx, kind, prompt, imagegen, intent=intent, focus=focus, story_mode=story_mode
+            )
+        )
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        return ctx.i18n.t("commands.image.started")
+
+    async def _generate_image_background(
+        self,
+        ctx: CommandCtx,
+        kind: str,
+        prompt: str,
+        imagegen: Any,
+        *,
+        intent: str,
+        focus: str = "",
+        story_mode: bool = False,
+    ) -> None:
+        """The slow half of `.image` — prompt expansion, reference gathering, provider
+        generation, storage and media publication — run OUTSIDE the room's turn lock so
+        a minutes-long request never blocks the table. Success and failure both surface
+        as room system messages (the spinner line doubles as the pending placeholder)."""
         try:
             prompt = await self._expand_image_prompt(ctx, kind, prompt, force=bool(intent), focus=focus, story_mode=story_mode)
             # Reuse the module's illustration of this subject as a reference so the new
@@ -421,11 +456,34 @@ class MediaCommands:
                         data={"level": "info", "spinner": False},
                     ),
                 )
-            return ctx.i18n.t("commands.image.generated", kind=kind, file=record.name, hash=record.hash[:12])
+                await ctx.router.hub.publish(
+                    ctx.chat_key,
+                    Event(
+                        kind="system",
+                        text=ctx.i18n.t(
+                            "commands.image.generated", kind=kind, file=record.name, hash=record.hash[:12]
+                        ),
+                        data={"level": "info"},
+                    ),
+                )
         except ImageGenError as exc:
-            return ctx.i18n.t(f"commands.avatar.error.{exc.code}")
+            await self._image_notify(ctx, ctx.i18n.t(f"commands.avatar.error.{exc.code}"))
         except Exception as exc:
-            return ctx.i18n.t("commands.image.failed", error=str(exc))
+            await self._image_notify(ctx, ctx.i18n.t("commands.image.failed", error=str(exc)))
+
+    async def _image_notify(self, ctx: CommandCtx, text: str) -> None:
+        """Surface an image-generation outcome (success/failure) to the room and retire
+        the pending spinner line. No-op when the room has no hub (CLI standalone)."""
+        if ctx.router.hub is None:
+            return
+        await ctx.router.hub.publish(
+            ctx.chat_key,
+            Event(kind="system", text=ctx.i18n.t("commands.image.generating"), data={"level": "info", "spinner": False}),
+        )
+        await ctx.router.hub.publish(
+            ctx.chat_key,
+            Event(kind="system", text=text, data={"level": "info"}),
+        )
 
     async def _expand_image_prompt(self, ctx: CommandCtx, kind: str, prompt: str, *, force: bool = False, focus: str = "", story_mode: bool = False) -> str:
         """Expand a "generate the current X" request into a concrete image prompt.
@@ -624,6 +682,21 @@ class MediaCommands:
 
         return "\n".join(lines)
 
+    async def _active_module_pack_id(self, ctx: CommandCtx) -> str:
+        """The calling room's active module pack id ("" when none), so reference images are
+        scoped to the CURRENT module. `module_media_index` is append-only across module
+        switches, so without this filter an old module's art would anchor (and slow down,
+        via I2I) the new story's image requests."""
+        try:
+            raw = await ctx.services.store.state_get(ctx.chat_key, "active_module")
+            if raw:
+                value = json.loads(raw)
+                if isinstance(value, dict):
+                    return str(value.get("pack_id") or "").strip()
+        except Exception:
+            pass
+        return ""
+
     async def _gather_reference(
         self, ctx: CommandCtx, kind: str, imagegen: Any, *, focus: str = "", extra: str = ""
     ) -> tuple[bytes | None, str]:
@@ -640,6 +713,7 @@ class MediaCommands:
         if kind not in getattr(imagegen, "reference_kinds", frozenset({"portrait"})):
             return None, ""
         focus = focus.strip() or extra.strip()
+        pack_id = await self._active_module_pack_id(ctx)
         try:
             raw = await ctx.services.store.state_get(ctx.chat_key, "module_media_index")
             entries: list[dict] = []
@@ -651,6 +725,12 @@ class MediaCommands:
             for e in entries:
                 kind_key = {"portrait": "npcs", "scene": "scenes", "clue": "items"}.get(kind)
                 if str(e.get("kind") or "") != kind_key:
+                    continue
+                # The index accumulates every forge module this room ever ran (entries are
+                # append-only, never purged on module switch). Only the CURRENT module's
+                # illustrations may anchor a reference — an old module's scene art would
+                # otherwise leak into the new story (and drag an I2I pass along).
+                if pack_id and not str(e.get("name") or "").startswith(f"module-{pack_id}-"):
                     continue
                 name = str(e.get("subject") or "").strip()
                 if focus:
@@ -681,6 +761,7 @@ class MediaCommands:
             matches = [
                 r for r in records
                 if r.name.startswith("module-") and f"-{kind_key}-" in r.name and is_image_mime(r.mime)
+                and (not pack_id or r.name.startswith(f"module-{pack_id}-"))
             ]
             if not matches:
                 return None, ""

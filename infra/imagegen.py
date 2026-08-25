@@ -403,7 +403,7 @@ class QwenImageGen:
         settings: ImageGenSettings,
         *,
         client: httpx.AsyncClient | None = None,
-        timeout: float = 180.0,
+        timeout: float = 300.0,
     ) -> None:
         self._settings = settings
         self._client = client
@@ -447,6 +447,11 @@ class QwenImageGen:
                 "size": qwen_size,
                 "watermark": False,
                 "prompt_extend": True,
+                # DashScope defaults `enable_thinking` to true, which "increases
+                # generation time" (per the qwen-image API reference). .image is a
+                # scene/atmosphere handout — the extra reasoning is not worth the
+                # latency on top of an already-slow I2I pass.
+                "enable_thinking": False,
             },
         }
 
