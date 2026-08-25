@@ -614,8 +614,15 @@ Client → server:
   immediately replies `admin_generate_started`, then streams stage progress via
   `admin_generate_progress` and finally pushes `admin_generated` when done, all on the
   requesting connection:
-  `{type:"admin_generate", kind:"skill"|"rule"|"module"|"pack", description:string, locale?:"en"|"zh", options?:{media?:string[], companion?:string[], extends?:string, system?:string}}`
+  `{type:"admin_generate", kind:"skill"|"rule"|"module"|"pack"|"module_prompt", description:string, locale?:"en"|"zh", request_id?:string, options?:{media?:string[], companion?:string[], extends?:string, system?:string}}`
   `locale` selects the author's language and defaults to the connection/server locale.
+  `kind:"module_prompt"` is a keeper-only, prompt-assistance request. Its `description`
+  is a JSON object `{idea:string, mode:"suggest"|"rewrite"}` rather than the plain
+  forge description. `suggest` creates a new scenario seed when `idea` is empty;
+  `rewrite` expands the supplied idea into a prompt that can be pasted back into a
+  later `kind:"module"` or `kind:"pack"` request. It only returns text: it never
+  parses, writes, installs, imports, or broadcasts a module. `request_id`, when supplied,
+  is echoed by the matching `admin_generated` response so clients can ignore stale replies.
   `kind:"pack"` (2.6) authors a COMPLETE module as a native world card wrapped in a
   `.lwpack` content pack — the canonical full-module shape (lorebook + typed trackers +
   claimable cast + optional assets + bundled companion skill/rulepack) — installed into the
@@ -677,7 +684,10 @@ Server → client:
   install/import outcome; inspect it to determine whether the room actually
   received the module (`ok` means the authored artifact was written, not that a
   later room import necessarily succeeded). It is empty for `skill`/`rule`:
-  `{type:"admin_generated", kind:"skill"|"rule"|"module"|"pack", ok:boolean, id:string, name:string, error:string, detail:string}`
+  For `kind:"module_prompt"`, `detail` is the generated prompt text on success;
+  `id` and `name` are empty, and no installation has taken place. `request_id` is
+  present when the request supplied one:
+  `{type:"admin_generated", kind:"skill"|"rule"|"module"|"pack"|"module_prompt", ok:boolean, id:string, name:string, error:string, detail:string, request_id?:string}`
 - `admin_generate_started` — sent immediately in reply to an async `admin_generate` (`kind:"module"`/`"pack"`), confirming the generation is queued and runs in the background; the final result arrives later as `admin_generated`:
   `{type:"admin_generate_started", kind:"module"|"pack"}`
 - `admin_generate_progress` — streamed during an async module/pack generation, one per pipeline stage, so a client can show live progress instead of a bare spinner:

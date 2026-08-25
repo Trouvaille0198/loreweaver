@@ -125,7 +125,7 @@ export type AdminErrorCode =
   | "op_failed"
   | "not_configured"
 export type AdminRoomOpAction = "export" | "import" | "delete" | "reset"
-export type AdminForgeKind = "skill" | "rule" | "module"
+export type AdminForgeKind = "skill" | "rule" | "module" | "pack" | "module_prompt"
 
 export interface ClientInfo {
   name: string
@@ -1324,6 +1324,8 @@ export interface AdminGenerateFrame {
   description: string
   /** UI locale for localized authoring prompts; falls back to the server locale when omitted. */
   locale?: "en" | "zh"
+  /** Additive correlation id for one-shot authoring helpers such as `module_prompt`. */
+  request_id?: string
   /** v2.5 (additive): per-generation opt-ins, honored for `kind:"module"` only. Absent means the
    * module is authored exactly as before (no extra content, no extra model/image calls). */
   options?: AdminGenerateOptions
@@ -1340,6 +1342,8 @@ export interface AdminGeneratedFrame {
   // actually landed in the room (ok merely means a valid document was authored + written); empty
   // for skill/rule, which have no per-room install step.
   detail: string
+  /** Echoed when the request supplied one, allowing private authoring helpers to reject stale replies. */
+  request_id?: string
 }
 
 export type ClientFrame =

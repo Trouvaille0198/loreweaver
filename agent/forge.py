@@ -789,6 +789,48 @@ def _build_module_messages(
     ]
 
 
+def _build_module_prompt_messages(
+    services: Services,
+    idea: str,
+    *,
+    mode: str,
+    locale: str | None = None,
+) -> list[dict]:
+    """Build the plain-text prompt-assistant request without invoking module authoring."""
+    i18n = services.i18n.with_locale(locale) if locale else services.i18n
+    request_key = (
+        "agent.forge.module_prompt_suggest"
+        if mode == "suggest"
+        else "agent.forge.module_prompt_rewrite"
+    )
+    return [
+        {"role": "system", "content": i18n.t("agent.forge.module_prompt_system_prompt")},
+        {"role": "user", "content": i18n.t(request_key, idea=idea)},
+    ]
+
+
+async def generate_module_prompt(
+    services: Services,
+    idea: str,
+    *,
+    mode: str,
+    locale: str | None = None,
+    chat_key: str | None = None,
+) -> ForgeResult:
+    """Generate a module description only; never parse, persist, or install the result."""
+    if mode not in {"suggest", "rewrite"}:
+        return ForgeResult(False, "", "", "", "bad_request")
+    content, failure = await _llm_authored(
+        services,
+        _build_module_prompt_messages(services, idea, mode=mode, locale=locale),
+        chat_key=chat_key,
+    )
+    if failure is not None:
+        return failure
+    assert content is not None
+    return ForgeResult(True, "", "", "", "", detail=_strip_code_fence(content).strip())
+
+
 async def generate_and_install_module(
     services: Services,
     ctx: AgentCtx,
