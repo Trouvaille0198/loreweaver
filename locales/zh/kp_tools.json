@@ -292,6 +292,7 @@
   "kp_tools.item.transferred": "✅ 已将 {item} 从 {source} 转给 {target}",
   "kp_tools.item.used": "✅ {character} 已使用 {item}",
   "kp_tools.item.not_in_catalog": "❌ 「{item}」不在本房间的物品目录中",
+  "kp_tools.item.module_mismatch": "❌ 「{item}」属于其他剧本，在当前剧本中不会生效",
   "kp_tools.item.equipped": "✅ {character} 已装备 {item}（{slot}）",
   "kp_tools.item.unequipped": "✅ {character} 已卸下 {item}"
 }

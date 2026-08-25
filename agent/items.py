@@ -89,6 +89,8 @@ def _instance_data(owner: str, template: dict, qty: int) -> dict[str, Any]:
         "equipped_slot": None,
         "kind": str(template.get("kind") or ""),
         "slot": str(template.get("slot") or ""),
+        "scope": str(template.get("scope") or ""),
+        "module_id": str(template.get("module_id") or ""),
         "description": str(template.get("description") or ""),
         "lore": str(template.get("lore") or ""),
         "effect": str(template.get("effect") or ""),
@@ -194,13 +196,39 @@ def render_item_views(items: list[Document]) -> list[dict[str, Any]]:
     return out
 
 
-def aggregate_equipped_bonuses(items: list[Document]) -> dict[str, int]:
+def item_active(active_module: dict | None, data: dict) -> bool:
+    """Whether an item instance contributes in the current room. Universal items (scope
+    ``universal``, or legacy items with no module binding) always do; module-scoped items
+    only while the room's active module matches the item's ``module_id`` (pack_id or
+    source_id). With no active module, module-scoped items are inert — a plot artifact
+    from another campaign must never leak bonuses into a sandbox room."""
+    scope = str(data.get("scope") or "")
+    if scope == "universal":
+        return True
+    module_id = str(data.get("module_id") or "").strip()
+    if not module_id:
+        return True  # unbound legacy item — treat as universal
+    if not active_module:
+        return False
+    return module_id in {
+        str(active_module.get("pack_id") or ""),
+        str(active_module.get("source_id") or ""),
+    }
+
+
+def aggregate_equipped_bonuses(
+    items: list[Document], active_module: dict | None = None
+) -> dict[str, int]:
     """Sum the structured `bonus` maps ({canonical: delta}) of every EQUIPPED item
-    (equipped_slot set). Used to refresh a sheet's `equipped_bonuses`."""
+    (equipped_slot set) that is ACTIVE in this room (`item_active` — module-scoped
+    items contribute nothing outside their own module). Used to refresh a sheet's
+    `equipped_bonuses`."""
     total: dict[str, int] = {}
     for doc in items:
         data = doc.data
         if data.get("equipped_slot") is None:
+            continue
+        if not item_active(active_module, data):
             continue
         bonus = data.get("bonus")
         if not isinstance(bonus, dict):

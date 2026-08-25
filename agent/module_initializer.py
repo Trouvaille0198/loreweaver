@@ -259,6 +259,7 @@ class ModuleInitializer:
         locale: str | None = None,
         llm: LLMClient | None = None,
         model: str | None = None,
+        module_id: str = "",
     ) -> None:
         """Run (or skip, if already running) full-module analysis for `chat_key`.
 
@@ -270,6 +271,10 @@ class ModuleInitializer:
         nothing to analyze, or if persistence itself raises. Diagnostics live
         separately under `module_init_error.{chat_key}`.
         A concurrent call while one is already `"processing"` is a no-op.
+
+        `module_id` is the importing module's identity (source_id); the analyzed
+        `items` templates are stamped with it so module-scoped gear only works
+        while that module is the room's active one.
         """
         status_key = "module_init_status"
         error_key = "module_init_error"
@@ -312,7 +317,21 @@ class ModuleInitializer:
             # The script's items seed the room's item catalog (Layer 0 -> Layer 1):
             # designed templates (kind/effect/origin/lore), no holders — instances are
             # created only when play actually obtains them via the grant verbs.
-            await ensure_catalog(self.documents, chat_key, outcome.analysis.get("items") or [])
+            # Module-scoped items (scope != "universal") are stamped with the importing
+            # module's id, so a plot artifact from another module contributes nothing.
+            analyzed_items = outcome.analysis.get("items") or []
+            if module_id and isinstance(analyzed_items, list):
+                analyzed_items = [
+                    {
+                        **dict(tpl),
+                        "scope": str(tpl.get("scope") or "module"),
+                        "module_id": "" if str(tpl.get("scope") or "module") == "universal" else module_id,
+                    }
+                    if isinstance(tpl, dict)
+                    else tpl
+                    for tpl in analyzed_items
+                ]
+            await ensure_catalog(self.documents, chat_key, analyzed_items)
 
             if outcome.used_fallback:
                 status = "ready_fallback"

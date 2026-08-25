@@ -236,13 +236,21 @@ def _parse_pregens(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
 def _parse_items(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
     """Native item-catalog list → normalized templates the room importer seeds.
 
-    Shape: ``[{name, kind?, slot?, description?, effect?, lore?, origin?,
+    Shape: ``[{name, kind?, slot?, scope?, description?, effect?, lore?, origin?,
     quantity?, bonus?: {canonical: int}}]``. ``name`` is the only required field;
     a missing name drops the entry with a warning. ``slot`` names the equip slot
     the item occupies when equipped (empty = not equippable), and ``bonus`` is the
     equipped mechanical delta map (sheet canonical -> int) that the engine
     aggregates into the sheet's derived bonuses — this is what makes a designed
     item grant a real effect, not just a prop.
+
+    ``scope`` marks whether the item is ``universal`` (works in ANY module — a
+    handgun, a healing salve, a toolkit) or ``module`` (bound to the module it
+    ships with — a quest artifact, a plot device). The importer stamps module
+    items with the room's active module id; an item whose module no longer
+    matches the room's active module contributes nothing in play. The default
+    is ``module`` — a module-bound item failing closed is safer than a
+    module-only prop leaking across campaigns.
     """
     if raw is None:
         return ()
@@ -261,6 +269,13 @@ def _parse_items(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
         if not name:
             warnings.append(f"items[{index}]: ignored (missing name)")  # i18n-exempt: author diagnostic, wrapped in a localized import summary
             continue
+        scope_raw = _text(item.get("scope")).strip().casefold()
+        if scope_raw not in {"universal", "module"}:
+            if scope_raw:
+                warnings.append(f"items[{index}].scope: {scope_raw!r} ignored (want universal|module)")  # i18n-exempt: author diagnostic, wrapped in a localized import summary
+            scope = "module"
+        else:
+            scope = scope_raw
         bonus: dict[str, int] = {}
         bonus_raw = item.get("bonus")
         if isinstance(bonus_raw, dict):
@@ -281,6 +296,7 @@ def _parse_items(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
                 "name": name,
                 "kind": _text(item.get("kind")).strip()[:40],
                 "slot": _text(item.get("slot")).strip()[:40],
+                "scope": scope,
                 "description": _text(item.get("description")).strip()[:500],
                 "lore": _text(item.get("lore")).strip()[:2000],
                 "effect": _text(item.get("effect")).strip()[:500],
