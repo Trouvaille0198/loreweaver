@@ -28,6 +28,7 @@
   "charcard.tools.preview.tags_line": "标签：{tags}",
   "charcard.tools.preview.world_line": "世界机制：钩子脚本 {hooks} 个、变量声明 {vars} 条、模板代码块 {ejs} 处——需守秘人以 `.import <角色卡文件> world` 导入。",
   "charcard.tools.world.cast_line": "预设卡入池（{count} 名）：{names}——玩家用 `.pc claim <名字>` 认领。",
+  "charcard.tools.world.items_line": "已将 {count} 件设计物品种入房间目录——用 `.item grant <物品> <角色>` 发放。",
   "charcard.tools.world.skills_enabled_line": "已为本房间启用该包内的 KP 技能：{ids}。",
   "charcard.tools.world.done": "已将「{name}」导入为世界内容：设定条目 {lore} 条（守秘人信任级）、变量声明 {vars} 条已注入、钩子脚本 {hooks} 个已安装。",
   "charcard.tools.world.failed": "导入世界卡失败：{error}",

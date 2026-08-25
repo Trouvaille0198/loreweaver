@@ -912,6 +912,16 @@ _VALID_PACK_LORECARD = json.dumps(
             }
         ],
         "pregens": [{"name": "Ada Marsh", "concept": "A sharp-eyed reporter hooked by the disappearances."}],
+        "items": [
+            {
+                "name": "The Ferryman's Bell",
+                "kind": "quest",
+                "slot": "accessory",
+                "effect": "+1 to Listen",
+                "bonus": {"Listen": 1},
+                "quantity": 1,
+            },
+        ],
     },
     ensure_ascii=False,
 )
@@ -950,6 +960,16 @@ async def test_pack_module_generates_lwpack_and_populates_room(tmp_path: Path) -
         assert any("ferryman" in text for text in texts)
         pregens = await pregen_entries(services.documents, ctx.chat_key)
         assert {entry["name"] for entry in pregens} == {"Ada Marsh"}
+
+        # The card's designed items seeded the room's item catalog (Layer 0 -> Layer 1),
+        # so `.item grant "The Ferryman's Bell" <character>` can hand out the gear.
+        from agent.items import catalog_template, get_item_catalog
+
+        catalog = await get_item_catalog(services.documents, ctx.chat_key)
+        assert [entry["name"] for entry in catalog] == ["The Ferryman's Bell"]
+        template = await catalog_template(services.documents, ctx.chat_key, "The Ferryman's Bell")
+        assert template is not None and template["bonus"] == {"Listen": 1}
+        assert template["effect"] == "+1 to Listen"
     finally:
         forge_module._USER_MODULE_DIR = original_user_dir
 
@@ -1238,6 +1258,30 @@ async def test_pack_module_bundles_companion_skill_and_rulepack(tmp_path: Path) 
         m = inspect_pack(Path(result.path))
         assert "skills/marsh-horror-pacing" in m.contents["skills"]
         assert "rulepacks/marsh-mystery-rules.yaml" in m.contents["rulepacks"]
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
+async def test_pack_module_worldcard_retries_after_transient_llm_failure(tmp_path: Path) -> None:
+    """A transient LLM failure (empty response) on world-card authoring must be retried once
+    before failing the whole module — the same retry policy as the companion lanes, so a provider
+    hiccup doesn't sink a complete .lwpack the way it used to."""
+    services = _option_services(
+        tmp_path,
+        ["", _VALID_PACK_LORECARD],  # world card attempt 1 -> empty_response, attempt 2 -> success
+        imagegen=False,
+    )
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        result = await generate_and_install_pack_module(
+            services, ctx, "a marsh-town disappearance mystery"
+        )
+
+        assert result.ok, result.error
+        assert result.path.endswith(".lwpack")
     finally:
         forge_module._USER_MODULE_DIR = original_user_dir
 

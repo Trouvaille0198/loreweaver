@@ -31,6 +31,7 @@ from agent import npc as npc_records
 from agent.char_from_persona import build_sheet_from_persona, infer_pronoun_note
 from agent.context import AgentCtx
 from agent.hook_runtime import install_room_hooks
+from agent.items import ensure_catalog
 from agent.kp_tools_npc import keeper_npc_refusal, player_name_refusal
 from agent.module_lifecycle import (
     ModuleImportTransaction,
@@ -767,6 +768,15 @@ class CharcardTools:
             module_identity["enabled_panel_packs"] = owned_panels
             await publish_active_module(self._services, ctx.chat_key, module_identity)
 
+            # A native bundle may ship an item CATALOG (`items:`): templates with mechanical
+            # effects (kind/slot/bonus) that `.item grant` can later hand to characters and
+            # equip for derived bonuses — the same Layer 0 -> Layer 1 seeding the module
+            # initializer performs for `.md` modules.
+            items_line = ""
+            if lorecard is not None and lorecard.items:
+                await ensure_catalog(self._services.documents, ctx.chat_key, list(lorecard.items))
+                items_line = i18n.t("charcard.tools.world.items_line", count=len(lorecard.items))
+
             result = i18n.t(
                 "charcard.tools.world.done",
                 name=card.name or i18n.t("common.unknown"),
@@ -782,7 +792,7 @@ class CharcardTools:
                     titles=i18n.t("common.list_separator").join(skipped_titles[:5]),
                 )
             extra_lines = [
-                line for line in (pinned_line, specs_line, brief_line, pregen_line, cast_line, skill_line, skipped_line) if line
+                line for line in (pinned_line, specs_line, brief_line, pregen_line, cast_line, items_line, skill_line, skipped_line) if line
             ]
             await transaction.__aexit__(None, None, None)
             transaction = None

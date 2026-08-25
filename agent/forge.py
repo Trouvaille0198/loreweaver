@@ -183,17 +183,25 @@ _MEDIA_RETRIES = 3
 
 
 def _should_retry_imagegen(exc: BaseException) -> bool:
-    """Retry transient image-provider failures (rate-limit / 5xx), not permanent rejections."""
+    """Retry transient image-provider failures (timeout / rate-limit / 5xx), not permanent
+    rejections. A timeout is a hung or overloaded provider — the most transient failure there
+    is — and an HTTP 429/5xx is a provider-side hiccup; both deserve the bounded backoff retry.
+
+    Uses ``ImageGenError.code`` (never ``args[0]``): the constructor stores ``detail or code``
+    as the single args entry, so a status-carrying error's ``args[0]`` is the STATUS, and a
+    bare code error's ``args[0]`` is the code itself.
+    """
     if not isinstance(exc, ImageGenError):
         return True
-    if exc.args and exc.args[0] == "imagegen_http_error":
-        status = str(exc.args[1]) if len(exc.args) > 1 else ""
+    code = exc.code
+    if code == "imagegen_http_error":
+        status = str(exc.args[0]) if exc.args else ""
         return status in {"429", "500", "502", "503", "504"}
-    return False
+    return code == "imagegen_timeout"
 
 
 async def _imagegen_generate_retry(imagegen: Any, prompt: str, *, size: str) -> tuple[bytes, str]:
-    """`imagegen.generate` with bounded backoff retry for transient failures (429/5xx)."""
+    """`imagegen.generate` with bounded backoff retry for transient failures (timeout / 429/5xx)."""
     last: BaseException | None = None
     for attempt in range(_MEDIA_RETRIES):
         try:
@@ -1569,6 +1577,19 @@ _PACK_MODULE_CARD_SCHEMA = """{
             "concept": "one-line character concept",
             "skills": {"Spot Hidden": 60, "Fast Talk": 45, "Library Use": 50}
         }
+    ],
+    "items": [
+        {
+            "name": "an item characters can actually obtain (e.g. 'The Bronze Mirror')",
+            "kind": "weapon|armor|consumable|gem|tool|quest|misc",
+            "slot": "the equip slot when worn (e.g. 'weapon', 'armor', 'accessory'; leave empty for a non-equippable item)",
+            "description": "short player-visible intro (what it is, how it looks)",
+            "effect": "the mechanical effect (e.g. '+2 attack', 'heals 1d4', '+1 to Spot Hidden'); empty for purely narrative items",
+            "lore": "background story — ONLY for notable items, else leave empty",
+            "origin": "where the item comes from (optional)",
+            "bonus": {"SheetCanonical": 1, "AnotherCanonical": -1},
+            "quantity": 1
+        }
     ]
 }"""
 
@@ -1755,12 +1776,11 @@ async def generate_and_install_pack_module(
     logger.info("[pack-forge] start room=%s media=%s companion=%s", ctx.chat_key, media_kinds, companion_kinds)
     await _emit(progress, "authoring")
 
-    # Author the world card JSON.
-    raw, failure = await _llm_authored(
-        services,
-        _build_pack_module_messages(services, description, ctx.locale),
-        chat_key=ctx.chat_key,
-    )
+    # Author the world card JSON. A live provider can transiently time out or return empty for
+    # this long structured prompt (same failure mode as the companion skill/rulepack lanes), so
+    # retry once before failing the whole module — a provider hiccup shouldn't sink a complete
+    # .lwpack the way it used to.
+    raw, failure = await _llm_authored_retry(services, _build_pack_module_messages(services, description, ctx.locale), chat_key=ctx.chat_key)
     if failure is not None:
         logger.warning("[pack-forge] world-card authoring failed: %s", failure.error)
         return failure
