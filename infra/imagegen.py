@@ -38,6 +38,10 @@ IMAGEGEN_PRESETS: dict[str, dict[str, str]] = {
         "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1",
         "model": "qwen-image-3.0-pro",
     },
+    "qwen-coding-plan": {
+        "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1",
+        "model": "qwen-image-3.0-pro",
+    },
     # 千问AI平台按量付费（通用 API Key sk-ws-）；DashScope 原生文生图端点
     "qwen-api": {
         "base_url": "https://dashscope.aliyuncs.com/api/v1",
@@ -572,6 +576,9 @@ def _apply_imagegen_preset(cfg: ImageGenSettings) -> ImageGenSettings:
     if not preset:
         return cfg
     updates: dict[str, str] = {}
+    # Use the repo-defined image endpoint/model only as DEFAULTS when the keeper left
+    # them blank. A base_url the keeper actually supplied is a deliberate custom endpoint
+    # (self-hosted compatible service etc.) and must be respected, never overridden.
     if not cfg.base_url:
         updates["base_url"] = preset["base_url"]
     if not cfg.model:

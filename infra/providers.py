@@ -8,6 +8,7 @@ from inspect import Parameter, signature
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
 from infra.config import LLMSettings, Settings
+from infra.imagegen import IMAGEGEN_PRESETS
 from infra.llm import CACHE_BREAKPOINT_KEY, ChatResult, LLMClient, OpenAILLM, ToolCall, Usage, parse_usage
 from infra.llm_retry import RetryingLLM
 from infra.oauth_flows import (
@@ -240,6 +241,12 @@ def provider_catalog() -> list[ProviderMetadata]:
             {
                 "id": name,
                 "default_base_url": _PROVIDER_DEFAULT_BASE_URL_OVERRIDES.get(name, PRESETS.get(name, "")),
+                # The IMAGE endpoint differs from the chat endpoint for some providers
+                # (DashScope image is `.../api/v1`, chat is `.../compatible-mode/v1`). Expose the
+                # repo-defined image default so the model screen can prefill the correct image
+                # base_url instead of reusing the chat address. Empty when the provider has no
+                # image preset (then the chat default applies).
+                "image_default_base_url": IMAGEGEN_PRESETS.get(name, {}).get("base_url", ""),
                 "auth_type": provider_auth_type(name),
                 "model_kinds": list(provider_model_kinds(name)),
             }
