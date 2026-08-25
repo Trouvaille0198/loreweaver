@@ -3223,6 +3223,77 @@ async def test_admin_llm_profiles_and_room_assignments_are_separate(tmp_path):
         await server.close()
 
 
+async def test_admin_room_model_save_is_not_shadowed_by_legacy_bare_name_row(tmp_path):
+    """A stale `llm_selection` row written under the bare room name by an older
+    engine must not shadow the canonical session-key row after a save.
+
+    Older versions persisted under the bare room name (``arkham``); the current
+    engine writes under the canonical session key (``tui:group:arkham``). The
+    dual-spelling read used to prefer the caller's own spelling, so the web
+    model screen (which reads by the bare name) kept seeing the stale row and
+    snapped the imagegen assignment back to the old value after a successful
+    save. The canonical row must win, and saving must retire the legacy row.
+    """
+    services = _services(str(tmp_path))
+    keystore = Keystore()
+    keeper_key = keystore.add(room="arkham", name="Keeper", role="keeper")
+    # Legacy state: an older engine stored the selection under the bare room name.
+    await services.store.state_set(
+        "arkham",
+        ROOM_LLM_SELECTION_KEY,
+        json.dumps(
+            {
+                "main": "",
+                "scribe": "",
+                "director": "",
+                "imagegen": "openai::image::legacy-image",
+                "scribe_enabled": True,
+                "director_enabled": True,
+            }
+        ),
+    )
+    server = TuiServer(services, keystore, port=0)
+    url = await _start(server)
+    try:
+        ws, *_ = await _connect_and_join(url, keeper_key, "Keeper")
+        image = await _send(
+            ws,
+            {
+                "type": "admin_set_llm",
+                "provider": "openai",
+                "chat_model": "gpt-image-1",
+                "kind": "image",
+                "api_key": "sk-profile-secret",
+            },
+        )
+        assert image["type"] == "admin_config"
+        image_id = next(p["id"] for p in image["llms"] if p["kind"] == "image")
+        assert image_id == "openai::image::gpt-image-1"
+
+        # Before any new save the legacy row is still visible (read fallback).
+        room = await _send(ws, {"type": "admin_get_room_config"})
+        assert room["stored"]["imagegen"] == "openai::image::legacy-image"
+
+        # Saving a new imagegen must stick: the reply and later reads return the
+        # NEW value, not the legacy one (regression: it used to snap back).
+        saved = await _send(ws, {"type": "admin_set_room_model", "imagegen": image_id})
+        assert saved["type"] == "admin_room_config"
+        assert saved["stored"]["imagegen"] == image_id
+
+        room = await _send(ws, {"type": "admin_get_room_config"})
+        assert room["stored"]["imagegen"] == image_id
+
+        # Self-heal: the legacy bare-name row is gone, the canonical row holds the save.
+        assert await services.store.state_get("arkham", ROOM_LLM_SELECTION_KEY) is None
+        canonical = await services.store.state_get(
+            session_key_for_room("arkham"), ROOM_LLM_SELECTION_KEY
+        )
+        assert json.loads(canonical)["imagegen"] == image_id
+        await ws.close()
+    finally:
+        await server.close()
+
+
 async def test_admin_profile_key_never_crosses_to_a_changed_endpoint(tmp_path):
     services = _services(str(tmp_path))
     admin = AdminService(services, Keystore())

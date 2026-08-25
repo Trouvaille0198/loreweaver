@@ -544,6 +544,10 @@ async def _set_room_model(
     chat_key = session_key_for_room(room)
     if frame.get("clear") is True:
         await services.store.state_delete(chat_key, ROOM_LLM_SELECTION_KEY)
+        # Retire a legacy bare-name row written by an older engine so a cleared
+        # selection can never resurface through the fallback read.
+        if room != chat_key:
+            await services.store.state_delete(room, ROOM_LLM_SELECTION_KEY)
         return await _room_config_frame(services, room)
     selection = await _room_llm_selection(services, room)
     expected_kind = {"main": "chat", "scribe": "chat", "director": "chat", "imagegen": "image"}
@@ -559,6 +563,12 @@ async def _set_room_model(
         if key in frame:
             selection[key] = bool(frame[key])
     await services.store.state_set(chat_key, ROOM_LLM_SELECTION_KEY, json.dumps(selection))
+    # Self-heal: drop the legacy bare-name row (older engines wrote that
+    # spelling). With both rows present, the canonical-preference read in
+    # `room_model_selection` already ignores it, but removing it keeps the
+    # store single-spelling for new deployments and heals old ones on first save.
+    if room != chat_key:
+        await services.store.state_delete(room, ROOM_LLM_SELECTION_KEY)
     return await _room_config_frame(services, room)
 
 
