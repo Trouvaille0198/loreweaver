@@ -31,7 +31,7 @@ from agent.context import AgentCtx, LocalFs
 from agent.forge import generate_and_install_module, generate_and_install_pack_module
 from agent.services import build_services
 from core.dice_engine import seed_dice
-from core.pregen_roster import pregen_entries
+from core.pregen_roster import pregen_entries, pregen_pristine_sheet
 from gateway.imagegen import reset_imagegen_limiters
 from infra.config import ImageGenSettings, Settings
 from infra.embeddings import FakeEmbeddings
@@ -950,6 +950,145 @@ async def test_pack_module_generates_lwpack_and_populates_room(tmp_path: Path) -
         assert any("ferryman" in text for text in texts)
         pregens = await pregen_entries(services.documents, ctx.chat_key)
         assert {entry["name"] for entry in pregens} == {"Ada Marsh"}
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
+def test_pack_module_manifest_preserves_media_subject_titles() -> None:
+    """Generated pack assets retain the subject that the detail page uses as their label."""
+    from core.yaml_safety import safe_load_no_aliases
+
+    manifest = safe_load_no_aliases(
+        forge_module._pack_module_manifest(
+            "fog-manor",
+            "Fog Manor",
+            assets=["assets/module-fog-manor-npcs-1.jpg", "assets/module-fog-manor-scenes-2.jpg"],
+            asset_titles={
+                "assets/module-fog-manor-npcs-1.jpg": "The Tailor",
+                "assets/module-fog-manor-scenes-2.jpg": "The ballroom",
+            },
+        )
+    )
+
+    assert manifest["assets"] == [
+        {"path": "assets/module-fog-manor-npcs-1.jpg", "title": "The Tailor"},
+        {"path": "assets/module-fog-manor-scenes-2.jpg", "title": "The ballroom"},
+    ]
+
+
+# coc7 base values for the skills the normalization test feeds in (game data, i18n-exempt).
+_BASE = {"侦查": 25, "话术": 5, "图书馆": 20, "心理学": 10, "潜行": 20, "聆听": 20, "急救": 30, "神秘学": 5, "汽车驾驶": 20}
+
+
+async def test_pack_module_normalizes_pregen_skills_to_the_budget(tmp_path: Path) -> None:
+    """The model's pregen `skills` are shaped by the engine, never trusted: unknown names are
+    dropped, values clamp to the rulepack's creation max, and the spend above base is scaled
+    down to the nominal skill-point budget (CoC defaults: INT 50 x2 + EDU 50 x4 = 300) while
+    preserving the author's profile. The normalized values reach the imported pregen sheet."""
+    card = json.loads(_VALID_PACK_LORECARD)
+    card["pregens"] = [
+        {
+            "name": "Ada Marsh",
+            "concept": "A sharp-eyed reporter.",
+            "skills": {
+                "Spot Hidden": 999,  # over the 90 creation max -> clamped, then budget-scaled
+                "Fast Talk": 80,
+                "not-a-skill": 60,  # not a coc7 skill -> dropped
+                "Library Use": 70,
+                "Psychology": 60,
+                "Stealth": 55,
+                "Listen": 50,
+                "First Aid": 40,
+                "Occult": 35,
+                "Drive Auto": 30,
+            },
+        },
+        {
+            "name": "Harvey Cole",
+            "concept": "A quiet archivist.",
+            "skills": {"Spot Hidden": 999},  # single skill: clamp survives (spend fits the budget)
+        },
+    ]
+    services = _option_services(tmp_path, [json.dumps(card, ensure_ascii=False)], imagegen=False)
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        result = await generate_and_install_pack_module(services, ctx, "a marsh mystery")
+        assert result.ok, result.error
+        assert "skill-point budget" in result.detail
+
+        # The world card written into the pack source carries the normalized profile.
+        src_dir = tmp_path / f"{result.skill_id}.pack-src"
+        card_files = list((src_dir / "cards").glob("*.lorecard.json"))
+        assert card_files, "the pack source must ship the world card"
+        written = json.loads(card_files[0].read_text(encoding="utf-8"))
+        ada, harvey = written["pregens"][0], written["pregens"][1]
+        skills = ada["skills"]
+        assert "侦查" in skills, "Spot Hidden must resolve to the canonical coc7 name"
+        assert "not-a-skill" not in skills
+        assert all(0 <= value <= 90 for value in skills.values())
+        spent = sum(value - _BASE[key] for key, value in skills.items())
+        assert spent <= 300, f"spend {spent} must fit the nominal coc7 skill-point budget of 300"
+        # The author's signature skills stay on top after scaling (profile preserved).
+        ordered = sorted(skills, key=skills.get, reverse=True)
+        assert ordered[:2] == ["侦查", "话术"]
+        # A profile that fits the budget keeps its clamped value untouched: 999 -> 90.
+        assert harvey["skills"]["侦查"] == 90
+
+        # The room import applied the normalized profile to the claimable pregen sheet.
+        sheet = await pregen_pristine_sheet(services.documents, ctx.chat_key, "ada-marsh")
+        assert sheet is not None
+        assert sheet.skills.get("侦查") == skills["侦查"]
+        assert sheet.skills.get("话术") == skills["话术"]
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
+def test_pack_module_schema_and_prompts_advertise_pregen_skills() -> None:
+    """The model-facing contract must keep advertising pregen `skills` and the budget rule —
+    if the schema or prompts stop asking for them, the feature silently degrades."""
+    assert '"skills"' in forge_module._PACK_MODULE_CARD_SCHEMA
+    assert '"name_en"' in forge_module._PACK_MODULE_CARD_SCHEMA
+    root = Path(__file__).resolve().parents[2]
+    for locale, needle in (("en", "skill-point budget"), ("zh", "技能点预算")):
+        data = json.loads((root / "locales" / locale / "agent.json").read_text(encoding="utf-8"))
+        assert needle in data["agent.forge.pack_module_system_prompt"]
+
+
+def test_pack_module_schema_and_prompts_require_keeper_only_entries() -> None:
+    """A generated module must carry the two keeper-only skeleton entries a hand-authored module
+    ships — an ending plan (结局门) and an NPC knowledge boundary (人物所知边界) — so a keeper who
+    runs it can finish the story and never over-shares. Pins the forge contract to it."""
+    assert '"category": "lore|npc|clue|truth|secret"' in forge_module._PACK_MODULE_CARD_SCHEMA
+    root = Path(__file__).resolve().parents[2]
+    for locale, needles in (
+        ("en", ("结局门", "人物所知边界", "ending", "knowledge")),
+        ("zh", ("结局门与信物", "人物所知边界", "secret: true")),
+    ):
+        data = json.loads((root / "locales" / locale / "agent.json").read_text(encoding="utf-8"))
+        prompt = data["agent.forge.pack_module_system_prompt"]
+        assert all(needle in prompt for needle in needles)
+
+
+async def test_pack_module_uses_name_en_for_the_module_id(tmp_path: Path) -> None:
+    """A CJK module name has no ASCII to slug, so the model's `name_en` supplies the stable id —
+    without it a Chinese-only name degrades to stray ASCII from the description (a module whose id
+    became "coc")."""
+    card = json.loads(_VALID_PACK_LORECARD)
+    card["name"] = "雾钟镇的午夜钟声"
+    card["name_en"] = "Midnight Bells of Mist Town"
+    services = _option_services(tmp_path, [json.dumps(card, ensure_ascii=False)], imagegen=False)
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        result = await generate_and_install_pack_module(services, ctx, "a marsh mystery")
+        assert result.ok, result.error
+        assert result.skill_id == "midnight-bells-of-mist-town"
+        assert (tmp_path / "midnight-bells-of-mist-town.pack-src" / "pack.yaml").is_file()
     finally:
         forge_module._USER_MODULE_DIR = original_user_dir
 

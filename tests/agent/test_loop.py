@@ -552,6 +552,53 @@ async def test_history_is_not_capped_and_replays_whole():
     assert persisted[-1] == {"role": "assistant", "content": "newest reply", "_lw_turn": 1}
 
 
+async def test_player_lines_carry_the_speakers_name_for_the_model():
+    """Multi-player attribution: the model must see WHO declared each action.
+
+    Regression for a live-table failure: the speaker name was persisted
+    (`chat_history.name`) and shown in the client replay, but no provider path ever
+    delivered it — every player line reached the model as one anonymous user stream,
+    so with several players the KP pinned one player's declared action on another's
+    character. The label rides the CONTENT (the one channel every provider path
+    preserves); the stored record keeps raw text + the name column, and the name
+    metadata never reaches a vendor wire.
+    """
+    llm = FakeLLM(script=[assistant_text("first reply"), assistant_text("second reply")])
+    services = _services(llm)
+    chat_key = "chat-attribution"
+
+    await run_kp_turn(_ctx(chat_key), services, _toolset(), "I examine the ledger.", user_name="Nora")
+    await run_kp_turn(_ctx(chat_key), services, _toolset(), "I follow the butler.", user_name="Bob")
+
+    outgoing, _ = llm.calls[1]
+    roles_and_content = [(m["role"], m["content"]) for m in outgoing]
+    assert ("user", "Nora: I examine the ledger.") in roles_and_content
+    assert ("user", "Bob: I follow the butler.") in roles_and_content
+
+    stored = await load_chain(services, chat_key, "chat_history")
+    assert [(m["role"], m["content"], m.get("_lw_name", "")) for m in stored] == [
+        ("user", "I examine the ledger.", "Nora"),
+        ("assistant", "first reply", ""),
+        ("user", "I follow the butler.", "Bob"),
+        ("assistant", "second reply", ""),
+    ]
+
+    from infra.llm import wire_messages
+
+    assert all("_lw_name" not in m for m in wire_messages(outgoing))
+
+
+async def test_nameless_player_lines_pass_through_unlabeled():
+    """A single-player line (no user_name) keeps its exact content — no dangling colon."""
+    llm = FakeLLM(script=[assistant_text("reply")])
+    services = _services(llm)
+
+    await run_kp_turn(_ctx("chat-anon"), services, _toolset(), "I look around.")
+
+    outgoing, _ = llm.calls[0]
+    assert ("user", "I look around.") in [(m["role"], m["content"]) for m in outgoing]
+
+
 # ---------------------------------------------------------------------------
 # F9: a real provider error becomes a friendly localized reply, never a crash
 # ---------------------------------------------------------------------------

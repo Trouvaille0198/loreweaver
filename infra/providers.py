@@ -16,7 +16,7 @@ from infra.oauth_flows import (
     TokenManager,
     is_subscription_provider,
 )
-from infra.runtime_config import OVERRIDE_FIELDS, apply_overrides
+from infra.runtime_config import OVERRIDE_FIELDS, apply_overrides, model_profile_parts
 
 if TYPE_CHECKING:
     from infra.runtime_config import CredentialBook
@@ -36,6 +36,9 @@ PRESETS: dict[str, str] = {
     "minimax-cn": "https://api.minimaxi.com/v1",
     "siliconflow": "https://api.siliconflow.cn/v1",
     "zhipu": "https://open.bigmodel.cn/api/paas/v4",
+    # 通义千问 Token Plan 个人版（OpenAI 兼容端点；API Key 以 sk-sp- 开头，与
+    # 通用 sk-ws- 不混用）。文档：https://platform.qianwenai.com/docs/token-plan/personal/token-plan-personal-quickstart
+    "qwen": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
     "xai": "https://api.x.ai/v1",
     "supergrok": XAI_API_BASE,
     "mistral": "https://api.mistral.ai/v1",
@@ -266,14 +269,13 @@ def provider_model_kinds(name: str) -> tuple[ModelKind, ...]:
         return ("chat", "image")
     if provider in {"openai", "siliconflow"}:
         return ("chat", "embedding", "image")
-    if provider in {"minimax-cn", "xai"}:
+    if provider in {"minimax-cn", "xai", "qwen"}:
         return ("chat", "image")
     if provider in {"together", "fireworks"}:
         return ("chat", "embedding", "image")
     if provider in {"mistral", "ollama", "lmstudio", "vllm", "openrouter"}:
         return ("chat", "embedding")
     return ("chat",)
-
 
 def provider_supports_kind(name: str, kind: str) -> bool:
     """Whether the provider can be represented on the requested engine surface."""
@@ -382,10 +384,12 @@ class MutableLLM:
         *,
         builder: Callable[..., LLMClient] = build_llm,
         credentials: CredentialBook | None = None,
+        profiles: CredentialBook | None = None,
         fallback_llm: LLMClient | None = None,
     ) -> None:
         self._builder = builder
         self._credentials = credentials
+        self._profiles = profiles
         self._fallback_llm = fallback_llm
         self._settings = settings  # shared/effective settings (mutated in place)
         self._base = settings.model_copy(deep=True)  # pristine baseline for reset
@@ -429,11 +433,22 @@ class MutableLLM:
         persisted records. A restart must combine them before the configured
         client is built; otherwise a valid Model-screen setup silently degrades
         to the offline fallback when the runtime snapshot omits its secret.
+
+        The Model screen saves credentials under the typed profile book
+        (`llm_profiles`, keyed `provider::model`), while the legacy path writes
+        the per-provider credential book (`llm_credentials`, keyed `provider`).
+        Fall back across both so either save location survives a restart.
         """
-        if self._credentials is None:
-            return settings
         provider = (settings.llm.provider or "openai").casefold()
-        saved = self._credentials.get_sync(provider)
+        saved: dict[str, str] = {}
+        if self._credentials is not None:
+            saved.update(self._credentials.get_sync(provider))
+        if not saved.get("api_key") and self._profiles is not None:
+            for profile_id, profile in self._profiles.load_sync().items():
+                profile_provider, kind, _model = model_profile_parts(profile_id)
+                if profile_provider == provider and kind == "chat" and profile.get("api_key"):
+                    saved = profile
+                    break
         updates: dict[str, str] = {}
         if not settings.llm.api_key and saved.get("api_key"):
             updates["api_key"] = saved["api_key"]

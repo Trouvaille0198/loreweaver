@@ -7,6 +7,7 @@ import {
   type AdminGenerateFrame,
   type AdminGenerateOptions,
   type AdminImportRoomFrame,
+  type AdminImportLLMFrame,
   type AdminKeyPurpose,
   type AdminListModelsFrame,
   type AdminMintKeyFrame,
@@ -139,6 +140,8 @@ const serverFrameValidators: Record<string, (f: Record<string, unknown>) => bool
   [FrameType.Pong]: (f) => isNum(f.t),
   [FrameType.AdminConfig]: (f) =>
     isStr(f.provider) && isStr(f.chat_model) && isArr(f.providers) && isProviderCatalog(f.provider_catalog),
+  [FrameType.AdminLLMExport]: (f) =>
+    typeof f.ok === "boolean" && typeof f.config === "object" && f.config !== null,
   [FrameType.AdminModels]: (f) => isStr(f.provider) && isArr(f.models),
   [FrameType.AdminKeys]: (f) => isArr(f.keys),
   [FrameType.AdminRoomConfig]: (f) =>
@@ -431,6 +434,14 @@ export class WsClient {
     const frame: AdminImportRoomFrame = { type: FrameType.AdminImportRoom, path }
     if (room) frame.room = room
     this.send(frame)
+  }
+
+  adminExportLLM(): void {
+    this.send({ type: FrameType.AdminExportLLM })
+  }
+
+  adminImportLLM(config: AdminImportLLMFrame["config"]): void {
+    this.send({ type: FrameType.AdminImportLLM, config })
   }
 
   adminDeleteRoomData(room: string, backup?: boolean, path?: string): void {

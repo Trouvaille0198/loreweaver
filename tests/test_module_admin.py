@@ -94,10 +94,21 @@ async def test_module_detail_includes_only_this_modules_forge_media(tmp_path):
     await media.register_blob(room=chat_key, data=b"\x89PNG-scene", mime="image/png", name="module-marsh-case-scenes-2.png", uploader="keeper")
     await media.register_blob(room=chat_key, data=b"\x89PNG-other", mime="image/png", name="module-other-module-cover-1.png", uploader="keeper")
     await media.register_blob(room=chat_key, data=b"\x89PNG-hand", mime="image/png", name="scene-handout.png", uploader="keeper")
+    await store.state_set(
+        chat_key,
+        "module_media_index",
+        json.dumps(
+            [
+                {"kind": "cover", "subject": "Marsh manor", "name": "module-marsh-case-cover-1.png"},
+                {"kind": "scenes", "subject": "The ferry crossing", "name": "module-marsh-case-scenes-2.png"},
+            ]
+        ),
+    )
 
     detail = json.loads((await admin._detail(room, root, "marsh-case.md"))["detail"])
     names = [record["name"] for record in detail["media"]]
     assert names == ["module-marsh-case-cover-1.png", "module-marsh-case-scenes-2.png"]
+    assert [record["subject"] for record in detail["media"]] == ["Marsh manor", "The ferry crossing"]
     assert all(record["hash"] and record["mime"] == "image/png" and record["size"] > 0 for record in detail["media"])
 
     (root / "other.md").write_text("# Other\n", encoding="utf-8")
@@ -107,6 +118,41 @@ async def test_module_detail_includes_only_this_modules_forge_media(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.asyncio
+async def test_module_list_includes_in_flight_generation(tmp_path):
+    """A generation running in this room shows as a placeholder source in the module library (the
+    in-flight stage is persisted by `net.admin._progress`; `module_admin._list` merges it), so a
+    keeper sees the running forge — and still sees it after a refresh — instead of nothing."""
+    store = Store(":memory:")
+    services = SimpleNamespace(
+        settings=SimpleNamespace(data_dir=tmp_path),
+        store=store,
+        documents=DocumentStore(store),
+        worldbook=Worldbook(store),
+    )
+    admin = ModuleAdminService(SimpleNamespace(services=services, keystore=None, fs=None, hub=None))
+    room = "gen-room"
+    chat_key = chat_key_for_room(room)
+    root = tmp_path / "modules"
+    root.mkdir()
+
+    empty = json.loads((await admin._list(room, root))["detail"])
+    assert all(not m.get("generating") for m in empty["modules"])
+
+    # What `net.admin._progress` persists during a forge.
+    await store.state_set(
+        chat_key,
+        "generation_progress",
+        json.dumps({"kind": "pack", "stage": "media", "detail": "rendering cover"}),
+    )
+    listed = json.loads((await admin._list(room, root))["detail"])
+    first = listed["modules"][0]
+    assert first["generating"] is True
+    assert first["stage"] == "media"
+    assert first["detail"] == "rendering cover"
+    assert first["source_kind"] == "generating"
+
+
 async def test_import_pack_routes_to_world_card_import(tmp_path, monkeypatch):
     """`module_import` of an installed .lwpack pack id routes to the keeper WORLD-CARD import
     path (`CharcardTools.import_world_card`) — a binary bundle, not a Markdown scenario — and
@@ -336,6 +382,71 @@ async def test_delete_pack_module_refuses_current_module(tmp_path, monkeypatch):
     assert json.loads(reply["detail"])["error"] == "module_in_use"
     assert home.exists(), "in-use pack home untouched"
 
+
+@pytest.mark.asyncio
+async def test_delete_text_module_unlinks_file(tmp_path):
+    """`module_delete` on a Markdown text source removes the file (not the pack path).
+
+    Regression: the `or "/" not in name` predicate routed every text filename into
+    `delete_installed_pack`, which reported `source_not_found` and left the file behind.
+    """
+    store = Store(":memory:")
+    services = SimpleNamespace(
+        settings=SimpleNamespace(data_dir=tmp_path),
+        store=store,
+        documents=DocumentStore(store),
+        worldbook=Worldbook(store),
+    )
+    admin = ModuleAdminService(SimpleNamespace(services=services, keystore=None, fs=None, hub=None))
+    root = tmp_path / "modules"
+    root.mkdir()
+    source = root / "guangyuan-waterline.md"
+    source.write_text("# Waterline\n\nIt begins.", encoding="utf-8")
+
+    reply = await admin._delete("fog-room", root, {"name": "guangyuan-waterline.md", "source_kind": "text"})
+
+    assert reply["ok"] is True
+    assert json.loads(reply["detail"])["name"] == "guangyuan-waterline.md"
+    assert not source.exists(), "text source file removed"
+
+
+@pytest.mark.asyncio
+async def test_delete_text_module_refuses_current_module(tmp_path):
+    """A text source that is the room's current module is refused (`module_in_use`)."""
+    from agent.module_lifecycle import publish_active_module
+
+    store = Store(":memory:")
+    services = SimpleNamespace(
+        settings=SimpleNamespace(data_dir=tmp_path),
+        store=store,
+        documents=DocumentStore(store),
+        worldbook=Worldbook(store),
+    )
+    admin = ModuleAdminService(SimpleNamespace(services=services, keystore=None, fs=None, hub=None))
+    root = tmp_path / "modules"
+    root.mkdir()
+    source = root / "guangyuan-waterline.md"
+    source.write_text("# Waterline\n\nIt begins.", encoding="utf-8")
+    room_key = chat_key_for_room("fog-room")
+    await publish_active_module(
+        services,
+        room_key,
+        {
+            "kind": "text",
+            "source_id": "text:waterline",
+            "name": "guangyuan-waterline.md",
+            "source": "guangyuan-waterline.md",
+            "lore_sources": [],
+            "enabled_skills": [],
+            "enabled_panel_packs": [],
+        },
+    )
+
+    reply = await admin._delete("fog-room", root, {"name": "guangyuan-waterline.md", "source_kind": "text"})
+
+    assert reply["ok"] is False
+    assert json.loads(reply["detail"])["error"] == "module_in_use"
+    assert source.exists(), "in-use text source untouched"
 
 @pytest.mark.asyncio
 async def test_module_import_does_not_self_deadlock_under_session_lock(tmp_path, monkeypatch):

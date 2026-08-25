@@ -66,6 +66,18 @@ def test_build_llm_selects_minimax_cn_openai_compatible_preset(monkeypatch):
     assert llm._client.init_kwargs["base_url"] == "https://api.minimaxi.com/v1"
 
 
+def test_build_llm_selects_qwen_token_plan_preset(monkeypatch):
+    monkeypatch.setattr("infra.llm.AsyncOpenAI", _FakeAsyncOpenAI)
+
+    llm = build_llm(_settings("qwen"))
+
+    assert is_known_provider("qwen")
+    assert isinstance(llm.inner, OpenAILLM)
+    assert llm._client.init_kwargs["base_url"] == (
+        "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    )
+
+
 def test_provider_catalog_carries_backend_owned_defaults_and_auth_modes():
     catalog = {provider["id"]: provider for provider in provider_catalog()}
 
@@ -89,6 +101,12 @@ def test_provider_catalog_carries_backend_owned_defaults_and_auth_modes():
     }
     assert catalog["deepseek"]["model_kinds"] == ["chat"]
     assert catalog["ollama"]["model_kinds"] == ["chat", "embedding"]
+    assert catalog["qwen"] == {
+        "id": "qwen",
+        "default_base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        "auth_type": "api_key",
+        "model_kinds": ["chat", "image"],
+    }
 
 
 def test_build_llm_explicit_base_url_overrides_preset(monkeypatch):
@@ -252,6 +270,87 @@ def test_mutable_llm_uses_saved_web_credentials_for_selected_provider():
     assert llm.inner is not fallback
     assert captured[0].llm.api_key == "saved-deepseek-key"
     assert captured[0].llm.base_url == "https://saved.example/v1"
+
+
+def test_mutable_llm_falls_back_to_typed_profile_book_when_credentials_book_is_empty():
+    """The Model screen saves keys under the typed profile book (`provider::model`),
+    not the legacy per-provider credential book. A restart must find them there too,
+    or a valid setup silently degrades to the offline fallback."""
+    captured: list[Settings] = []
+
+    class EmptyCredentials:
+        def get_sync(self, provider: str) -> dict[str, str]:
+            return {}
+
+    class Profiles:
+        def load_sync(self) -> dict[str, dict[str, str]]:
+            return {
+                "deepseek::deepseek-v4-flash": {
+                    "api_key": "profile-deepseek-key",
+                    "base_url": "https://api.deepseek.com/v1",
+                    "chat_model": "deepseek-v4-flash",
+                    "kind": "chat",
+                },
+                "minimax-cn::image::image-01": {
+                    "api_key": "profile-minimax-key",
+                    "base_url": "https://api.minimaxi.com/v1",
+                    "chat_model": "image-01",
+                    "kind": "image",
+                },
+            }
+
+    fallback = object()
+
+    def builder(settings: Settings) -> object:
+        captured.append(settings)
+        return object()
+
+    llm = MutableLLM(
+        Settings(llm=LLMSettings(provider="deepseek", api_key="")),
+        builder=builder,
+        credentials=EmptyCredentials(),
+        profiles=Profiles(),
+        fallback_llm=fallback,
+    )
+
+    assert llm.inner is not fallback
+    assert captured[0].llm.api_key == "profile-deepseek-key"
+    assert captured[0].llm.base_url == "https://api.deepseek.com/v1"
+
+
+def test_mutable_llm_stays_on_fallback_when_profiles_book_has_no_chat_key():
+    """A provider present only as an image profile must not satisfy the chat lookup —
+    otherwise a restart would build the wrong client with the wrong key."""
+    captured: list[Settings] = []
+
+    class Profiles:
+        def load_sync(self) -> dict[str, dict[str, str]]:
+            return {
+                "minimax-cn::image::image-01": {
+                    "api_key": "profile-minimax-key",
+                    "base_url": "https://api.minimaxi.com/v1",
+                    "chat_model": "image-01",
+                    "kind": "image",
+                },
+            }
+
+    fallback = object()
+
+    def builder(settings: Settings) -> object:
+        captured.append(settings)
+        return object()
+
+    llm = MutableLLM(
+        Settings(llm=LLMSettings(provider="deepseek", api_key="")),
+        builder=builder,
+        credentials=None,
+        profiles=Profiles(),
+        fallback_llm=fallback,
+    )
+
+    assert llm.inner is fallback
+    assert llm.using_fallback is True
+    assert captured == []
 
 
 def _builder_failing_for(bad_provider: str, built=None):

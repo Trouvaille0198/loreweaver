@@ -34,6 +34,10 @@ IMAGEGEN_PRESETS: dict[str, dict[str, str]] = {
     "minimax-cn": {"base_url": MINIMAX_IMAGE_URL, "model": "image-01"},
     "siliconflow": {"base_url": SILICONFLOW_IMAGE_BASE_URL, "model": "Kwai-Kolors/Kolors"},
     "supergrok": {"base_url": XAI_API_BASE, "model": XAI_DEFAULT_IMAGE_MODEL},
+    "qwen": {
+        "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1",
+        "model": "qwen-image-3.0-pro",
+    },
 }
 
 TokenProvider = Callable[[], Awaitable[str]]
@@ -369,6 +373,100 @@ class SiliconFlowImageGen:
         return data, _detect_image_mime(data, declared_mime)
 
 
+# 通义千问 Token Plan 的文生图走 DashScope 原生多模态接口，不是 OpenAI 兼容的
+# `/images/generations`：请求体是 `{model, input.messages[*].content[*].text,
+# parameters.size}`（尺寸用 `宽*高` 星号分隔），响应里图片以 URL 形式放在
+# `output.choices[*].message.content[*].image`。详见
+# https://platform.qianwenai.com/docs/api-reference/image-generation/qwen-text-to-image.md
+QWEN_IMAGE_ENDPOINT = "/services/aigc/multimodal-generation/generation"
+
+
+class QwenImageGen:
+    """通义千问多模态文生图（DashScope 原生协议）HTTP client."""
+
+    # Native surface 不支持参考图锚定（该协议当前只有纯文本 prompt 文生图）。
+    reference_kinds: frozenset[str] = frozenset()
+
+    def __init__(
+        self,
+        settings: ImageGenSettings,
+        *,
+        client: httpx.AsyncClient | None = None,
+        timeout: float = 180.0,
+    ) -> None:
+        self._settings = settings
+        self._client = client
+        self._timeout = timeout
+
+    async def generate(
+        self,
+        prompt: str,
+        *,
+        size: str = "1024x1024",
+        reference: bytes | None = None,
+        reference_mime: str = "",
+    ) -> tuple[bytes, str]:
+        prompt = str(prompt or "").strip()
+        if not prompt:
+            raise ImageGenError("imagegen_bad_prompt")
+        if not self._settings.model or not self._settings.api_key:
+            raise ImageGenError("imagegen_not_configured")
+
+        # DashScope 的 size 用 `宽*高`（星号），OpenAI 兼容的 `1024x1024` 需转换。
+        qwen_size = str(size or self._settings.size or "1024x1024").casefold().replace("x", "*")
+        request_body = {
+            "model": self._settings.model,
+            "input": {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"text": prompt}],
+                    }
+                ]
+            },
+            "parameters": {
+                "size": qwen_size,
+                "watermark": False,
+                "prompt_extend": True,
+            },
+        }
+
+        close_client = False
+        client = self._client
+        if client is None:
+            client = httpx.AsyncClient(timeout=self._timeout)
+            close_client = True
+        try:
+            base = _base_url(self._settings).rstrip("/")
+            response = await client.post(
+                f"{base}{QWEN_IMAGE_ENDPOINT}",
+                headers={"Authorization": f"Bearer {self._settings.api_key}"},
+                json=request_body,
+            )
+            if response.status_code < 200 or response.status_code >= 300:
+                raise ImageGenError("imagegen_http_error", str(response.status_code))
+            try:
+                payload = response.json()
+                content = payload["output"]["choices"][0]["message"]["content"]
+                image_url = next(
+                    str(item["image"]) for item in content if isinstance(item, dict) and item.get("image")
+                )
+            except (KeyError, IndexError, StopIteration, TypeError, ValueError) as exc:
+                raise ImageGenError("imagegen_bad_response") from exc
+            data, declared_mime = await _siliconflow_image_bytes(client, image_url)
+        except httpx.TimeoutException as exc:
+            raise ImageGenError("imagegen_timeout") from exc
+        except httpx.HTTPError as exc:
+            raise ImageGenError("imagegen_http_error") from exc
+        finally:
+            if close_client:
+                await client.aclose()
+
+        if not data:
+            raise ImageGenError("imagegen_bad_response")
+        return data, _detect_image_mime(data, declared_mime)
+
+
 class FakeImageGen:
     """Deterministic offline image generator for tests.
 
@@ -423,6 +521,8 @@ def build_imagegen(
         return MiniMaxImageGen(cfg)
     if provider == "siliconflow":
         return SiliconFlowImageGen(cfg)
+    if provider == "qwen":
+        return QwenImageGen(cfg)
     return OpenAICompatImageGen(cfg)
 
 
