@@ -512,7 +512,7 @@ class FakeImageGen:
 def build_imagegen(
     settings: Settings,
     *,
-    llm_credentials: CredentialBook | None = None,
+    credentials: CredentialBook | None = None,
 ) -> ImageGen | None:
     """Build the configured image generator, or ``None`` when incomplete.
 
@@ -523,7 +523,7 @@ def build_imagegen(
     provider = (cfg.provider or "").casefold()
 
     if provider == "supergrok":
-        return _build_supergrok_imagegen(cfg, llm_credentials=llm_credentials)
+        return _build_supergrok_imagegen(cfg, credentials=credentials)
 
     if not cfg.provider or not cfg.model or not cfg.api_key:
         return None
@@ -539,11 +539,11 @@ def build_imagegen(
 def _build_supergrok_imagegen(
     cfg: ImageGenSettings,
     *,
-    llm_credentials: CredentialBook | None,
+    credentials: CredentialBook | None,
 ) -> ImageGen | None:
-    if llm_credentials is None:
+    if credentials is None:
         return None
-    manager = llm_credentials.subscription_manager_sync("supergrok")
+    manager = credentials.subscription_manager_sync("supergrok")
     if manager is None:
         return None
     filled = cfg.model_copy(

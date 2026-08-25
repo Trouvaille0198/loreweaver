@@ -43,6 +43,7 @@ from infra.runtime_config import (
     RuntimeConfig,
     apply_lane_overrides,
     apply_overrides,
+    migrate_llm_credentials,
     model_profile_parts,
 )
 from infra.store import Store
@@ -78,7 +79,6 @@ class Services:
     imagegen: ImageGen | None
     embeddings: Embeddings
     runtime_config: RuntimeConfig
-    llm_credentials: CredentialBook
     llm_profiles: CredentialBook
     imagegen_runtime_config: ImageGenRuntimeConfig
     imagegen_credentials: ImageGenCredentialBook
@@ -128,6 +128,36 @@ class Services:
             selection[key] = bool(decoded[key]) if isinstance(default, bool) else str(decoded[key] or "")
         return selection
 
+    async def clear_room_model_profile(self, profile_id: str) -> list[str]:
+        """Clear every room's model-selection lane that references `profile_id`.
+
+        Called when a profile is deleted so no room is left holding a dangling
+        reference (which would otherwise silently fall back to the global
+        default). Returns the chat keys of the rooms whose selection changed.
+        """
+        if not profile_id:
+            return []
+        affected: list[str] = []
+        for room in await self.store.state_rooms():
+            raw = await self.store.state_get(room, ROOM_LLM_SELECTION_KEY)
+            if not raw:
+                continue
+            try:
+                selection = json.loads(raw)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if not isinstance(selection, dict):
+                continue
+            changed = False
+            for lane in ROOM_MODEL_DEFAULTS:
+                if str(selection.get(lane) or "") == profile_id:
+                    selection[lane] = ""
+                    changed = True
+            if changed:
+                await self.store.state_set(room, ROOM_LLM_SELECTION_KEY, json.dumps(selection))
+                affected.append(room)
+        return affected
+
     async def room_lane_enabled(self, chat_key: str, lane: str) -> bool:
         """Whether a room may run its Scribe or Director lane."""
         if lane not in {"scribe", "director"}:
@@ -150,6 +180,13 @@ class Services:
         saved = await self.llm_profiles.get(profile_id)
         provider, kind, encoded_model = model_profile_parts(profile_id)
         if not saved or kind != "chat":
+            logger.warning(
+                "room %r lane %r references LLM profile %r which no longer exists; "
+                "falling back to the global default",
+                chat_key,
+                lane,
+                profile_id,
+            )
             return None
         model = str(saved.get("chat_model") or encoded_model).strip()
         if not provider or not model:
@@ -159,7 +196,7 @@ class Services:
         patched.llm.chat_model = model
         patched.llm.api_key = saved.get("api_key") or ""
         patched.llm.base_url = saved.get("base_url") or ""
-        client = build_llm(patched, credentials=self.llm_credentials)
+        client = build_llm(patched, credentials=self.llm_profiles)
         self._room_llm_cache[profile_id] = client
         return client
 
@@ -176,7 +213,15 @@ class Services:
         if profile_id:
             saved = await self.llm_profiles.get(profile_id)
             provider, kind, encoded_model = model_profile_parts(profile_id)
-            if saved and kind == "chat" and provider:
+            if not saved or kind != "chat" or not provider:
+                logger.warning(
+                    "room %r lane %r references LLM profile %r which no longer exists; "
+                    "reporting the global default",
+                    chat_key,
+                    lane,
+                    profile_id,
+                )
+            elif saved and kind == "chat" and provider:
                 model = str(saved.get("chat_model") or encoded_model).strip()
                 if model:
                     return model
@@ -197,6 +242,12 @@ class Services:
         saved = await self.llm_profiles.get(profile_id)
         provider, kind, encoded_model = model_profile_parts(profile_id)
         if not saved or kind != "image":
+            logger.warning(
+                "room %r image lane references imagegen profile %r which no longer "
+                "exists; falling back to the global generator",
+                chat_key,
+                profile_id,
+            )
             return self.imagegen
         model = str(saved.get("chat_model") or encoded_model).strip()
         if not provider or not model:
@@ -206,7 +257,7 @@ class Services:
         patched.imagegen.model = model
         patched.imagegen.api_key = saved.get("api_key") or ""
         patched.imagegen.base_url = saved.get("base_url") or ""
-        client = build_imagegen(patched, llm_credentials=self.llm_credentials)
+        client = build_imagegen(patched, credentials=self.llm_profiles)
         if client is None:
             return self.imagegen
         self._room_imagegen_cache[profile_id] = client
@@ -330,7 +381,9 @@ def build_services(
         enable_tool_trace(path if path.is_absolute() else Path(settings.data_dir) / path)
     store = store or Store(db_path)
     runtime_config = RuntimeConfig(store)
-    llm_credentials = CredentialBook(store)
+    # One-shot: merge any legacy `runtime_config.credentials` data into the
+    # unified `runtime_config.llm_profiles` book and drop the legacy key.
+    migrate_llm_credentials(store)
     llm_profiles = CredentialBook(store, key=LLM_PROFILES_KEY)
     imagegen_runtime_config = ImageGenRuntimeConfig(store)
     imagegen_credentials = ImageGenCredentialBook(store)
@@ -339,6 +392,10 @@ def build_services(
     base_scribe_settings = settings.scribe.model_copy(deep=True)
     base_director_settings = settings.director.model_copy(deep=True)
     base_embedding_settings = settings.llm.model_copy(deep=True)
+    # The deployment baseline BEFORE any persisted runtime override is applied —
+    # `MutableLLM.apply({})` must reset to this (e.g. deleting the live-default
+    # profile), not to the startup-overridden snapshot.
+    pristine_settings = settings.model_copy(deep=True)
     imagegen_overrides = imagegen_runtime_config.load_sync()
     runtime_overrides = runtime_config.load_sync()
     if runtime_overrides:
@@ -384,8 +441,8 @@ def build_services(
     if llm is None:
         # Warm the credential book cache so subscription providers can resolve
         # OAuth tokens at build_llm time (sync path).
-        llm_credentials.load_sync()
-        mutable_kwargs = {"credentials": llm_credentials, "profiles": llm_profiles}
+        llm_profiles.load_sync()
+        mutable_kwargs = {"credentials": llm_profiles, "base": pristine_settings}
         if fallback_llm is not None:
             mutable_kwargs["fallback_llm"] = fallback_llm
         mutable = MutableLLM(settings, **mutable_kwargs)
@@ -443,7 +500,7 @@ def build_services(
         embeddings=embeddings,
         operation_lock=embedding_lock,
     )
-    imagegen = build_imagegen(settings, llm_credentials=llm_credentials)
+    imagegen = build_imagegen(settings, credentials=llm_profiles)
 
     return Services(
         settings=settings,
@@ -460,7 +517,6 @@ def build_services(
         imagegen=imagegen,
         embeddings=embeddings,
         runtime_config=runtime_config,
-        llm_credentials=llm_credentials,
         llm_profiles=llm_profiles,
         imagegen_runtime_config=imagegen_runtime_config,
         imagegen_credentials=imagegen_credentials,

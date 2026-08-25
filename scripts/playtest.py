@@ -84,7 +84,7 @@ from infra.config import get_settings  # noqa: E402
 from infra.embeddings import LocalEmbeddings  # noqa: E402
 from infra.llm import ChatResult, FakeLLM, ToolCall, Usage  # noqa: E402
 from infra.oauth_flows import canonical_subscription_provider  # noqa: E402
-from infra.runtime_config import CREDENTIALS_KEY, DEFAULT_KEY  # noqa: E402
+from infra.runtime_config import CREDENTIALS_KEY, DEFAULT_KEY, LLM_PROFILES_KEY  # noqa: E402
 from infra.store import Store  # noqa: E402
 
 # Player archetypes -- varied behaviour surfaces different KP/engine paths.
@@ -1396,10 +1396,17 @@ async def _build_behavior_services(
     try:
         source_uri = f"file:{Path(credentials_db).resolve()}?mode=ro"
         with sqlite3.connect(source_uri, uri=True) as source:
+            # The unified book is `runtime_config.llm_profiles`; accept a legacy
+            # `runtime_config.credentials` book as a fallback for pre-unification DBs.
             row = source.execute(
                 "SELECT value FROM kv WHERE user_key = '' AND store_key = ?",
-                (CREDENTIALS_KEY,),
+                (LLM_PROFILES_KEY,),
             ).fetchone()
+            if row is None:
+                row = source.execute(
+                    "SELECT value FROM kv WHERE user_key = '' AND store_key = ?",
+                    (CREDENTIALS_KEY,),
+                ).fetchone()
         credentials = row[0] if row else None
     except sqlite3.Error as exc:
         raise ValueError("credentials database could not be read") from exc
@@ -1415,14 +1422,27 @@ async def _build_behavior_services(
         raise ValueError("credentials database has an invalid provider credential book") from exc
     provider_key = provider.casefold()
     canonical_key = canonical_subscription_provider(provider_key) or provider_key
-    selected = credential_book.get(canonical_key) if isinstance(credential_book, dict) else None
+    selected = None
+    if isinstance(credential_book, dict):
+        selected = credential_book.get(canonical_key)
+        if not isinstance(selected, dict):
+            # Unified book keys are `provider::model`; match the requested chat
+            # profile when there is no bare provider entry.
+            from infra.runtime_config import model_profile_parts
+
+            for profile_id, entry in credential_book.items():
+                p, kind, _m = model_profile_parts(str(profile_id))
+                if p == canonical_key and kind == "chat" and isinstance(entry, dict):
+                    chat_model = str(entry.get("chat_model") or "").strip()
+                    if not model or chat_model == model:
+                        selected = entry
+                        break
     if not isinstance(selected, dict):
         raise ValueError(f"credentials database has no credential for provider {canonical_key!r}")
-    credentials = json.dumps({canonical_key: selected})
 
     temporary = tempfile.TemporaryDirectory(prefix="loreweaver-behavior-eval-")
     eval_store = Store(Path(temporary.name) / "eval.db")
-    await eval_store.set(store_key=CREDENTIALS_KEY, value=credentials)
+    await eval_store.set(store_key=LLM_PROFILES_KEY, value=json.dumps({canonical_key: selected}))
     await eval_store.set(
         store_key=DEFAULT_KEY,
         value=json.dumps(

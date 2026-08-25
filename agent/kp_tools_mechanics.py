@@ -36,6 +36,16 @@ from __future__ import annotations
 import json
 
 from agent.context import AgentCtx
+from agent.items import (
+    aggregate_equipped_bonuses,
+    catalog_template,
+    find_instance,
+    grant_instance,
+    instances_for_owner,
+    render_held_items,
+    render_item_views,
+    set_equipped,
+)
 from agent.npc import list_companions
 from agent.services import Services, room_rule_variant
 from agent.tools import tool
@@ -96,6 +106,27 @@ def _characteristic_lines(sheet: CharacterSheet, i18n: I18n, locale: str | None)
         for meter in character_resources(sheet, locale)
     ]
     return attribute_lines, meter_lines
+
+
+async def _refresh_character_bonuses(
+    services: Services, ctx: AgentCtx, char_name: str, owner_uid: str
+) -> None:
+    """Recompute `char_name`'s `equipped_bonuses` AND its display `equipment` list from
+    its item instances, then persist. Called by every item mutation so checks/dice read
+    the same bonuses and clients (via the roster) see the same items as the sheet."""
+    try:
+        items = await instances_for_owner(services.documents, ctx.chat_key, char_name)
+        bonuses = aggregate_equipped_bonuses(items)
+        sheet = await services.characters.get_character(owner_uid, ctx.chat_key, char_name)
+        if not has_character(sheet):
+            return
+        sheet.equipped_bonuses = bonuses
+        sheet.equipment = render_held_items(items)
+        sheet.items = render_item_views(items)
+        await services.characters.save_character(owner_uid, ctx.chat_key, sheet)
+    except Exception:
+        # A bonus refresh failure must never roll back the item operation itself.
+        return
 
 
 async def _resolve_actor_identity(
@@ -506,6 +537,186 @@ class CharacterTools:
         except Exception as exc:
             return i18n.t("kp_tools.character.status.failed", error=str(exc))
 
+    # -- items / equipment --------------------------------------------------
+    # Phase 2: items are `item` documents (agent.items); `grant` validates the room's
+    # catalog (D6 - no template-less items), equip slots drive bonuses (D3), and every
+    # mutation refreshes the sheet's equipped_bonuses. These verbs are the cross-owner
+    # write path an AI Keeper uses to grant/move/consume gear on ANY member.
+
+    @tool
+    async def grant_item(self, ctx: AgentCtx, character: str, item_id: str, qty: int = 1) -> str:
+        """Grant a real item to a character once the party has ACTUALLY obtained it in play (picked up, looted, bought, rewarded).
+
+Args:
+    character: target character name (any member of the party)
+    item_id: the item's catalog template name (must exist in the room's item catalog)
+    qty: how many to grant (default 1; same-owner same-name instances merge)
+
+Rules:
+- Call ONLY when the item is genuinely in that character's hands in the story - never pre-award, never for narration alone.
+- The item MUST be in the room's catalog; you cannot invent a template.
+- Narrate that the character now holds it after granting."""
+        i18n = self.services.i18n.with_locale(ctx.locale)
+        try:
+            if qty is None or int(qty) < 1:
+                return i18n.t("kp_tools.item.bad_qty")
+        except (TypeError, ValueError):
+            return i18n.t("kp_tools.item.bad_qty")
+        try:
+            character = (character or "").strip()
+            item_id = (item_id or "").strip()
+            if not character or not item_id:
+                return i18n.t("kp_tools.item.bad_args")
+            owner = await self.services.characters.get_character_owner(ctx.chat_key, character)
+            if not owner:
+                return i18n.t("kp_tools.item.character_not_found", name=character)
+            template = await catalog_template(self.services.documents, ctx.chat_key, item_id)
+            if template is None:
+                return i18n.t("kp_tools.item.not_in_catalog", item=item_id)
+            await grant_instance(self.services.documents, ctx.chat_key, character, template, int(qty))
+            await _refresh_character_bonuses(self.services, ctx, character, owner)
+            return i18n.t("kp_tools.item.granted", character=character, item=item_id)
+        except CharacterDataError:
+            return i18n.t("kp_tools.character.data_error")
+        except Exception as exc:
+            return i18n.t("kp_tools.item.failed", error=str(exc))
+
+    @tool
+    async def transfer_item(self, ctx: AgentCtx, source: str, target: str, item: str, qty: int = 1) -> str:
+        """Move a real item between two characters (handed over, sold, given away). Args: source, target, item (name), qty (default 1). Source must hold it; both must exist; narrate the handover."""
+        i18n = self.services.i18n.with_locale(ctx.locale)
+        try:
+            if qty is None or int(qty) < 1:
+                return i18n.t("kp_tools.item.bad_qty")
+        except (TypeError, ValueError):
+            return i18n.t("kp_tools.item.bad_qty")
+        try:
+            source = (source or "").strip()
+            target = (target or "").strip()
+            item = (item or "").strip()
+            if not source or not target or not item:
+                return i18n.t("kp_tools.item.bad_args")
+            if source.casefold() == target.casefold():
+                return i18n.t("kp_tools.item.same_character")
+            characters = self.services.characters
+            src_owner = await characters.get_character_owner(ctx.chat_key, source)
+            dst_owner = await characters.get_character_owner(ctx.chat_key, target)
+            if not src_owner:
+                return i18n.t("kp_tools.item.character_not_found", name=source)
+            if not dst_owner:
+                return i18n.t("kp_tools.item.character_not_found", name=target)
+            doc = await find_instance(self.services.documents, ctx.chat_key, source, item)
+            if doc is None:
+                return i18n.t("kp_tools.item.not_found", name=source, item=item)
+            src_qty = int(doc.data.get("quantity", 1))
+            move = min(int(qty), src_qty)
+            if src_qty <= move:
+                await self.services.documents.delete(ctx.chat_key, "item", doc.id)
+            else:
+                await self.services.documents.put(
+                    ctx.chat_key, "item", doc.id, {**doc.data, "quantity": src_qty - move}
+                )
+            await grant_instance(self.services.documents, ctx.chat_key, target, doc.data, move)
+            await _refresh_character_bonuses(self.services, ctx, source, src_owner)
+            await _refresh_character_bonuses(self.services, ctx, target, dst_owner)
+            return i18n.t("kp_tools.item.transferred", item=item, source=source, target=target)
+        except CharacterDataError:
+            return i18n.t("kp_tools.character.data_error")
+        except Exception as exc:
+            return i18n.t("kp_tools.item.failed", error=str(exc))
+
+    @tool
+    async def remove_item(self, ctx: AgentCtx, character: str, item: str) -> str:
+        """Remove an item from a character (lost, destroyed, taken away). Args: character, item. Character must hold it."""
+        i18n = self.services.i18n.with_locale(ctx.locale)
+        try:
+            character = (character or "").strip()
+            item = (item or "").strip()
+            if not character or not item:
+                return i18n.t("kp_tools.item.bad_args")
+            owner = await self.services.characters.get_character_owner(ctx.chat_key, character)
+            if not owner:
+                return i18n.t("kp_tools.item.character_not_found", name=character)
+            doc = await find_instance(self.services.documents, ctx.chat_key, character, item)
+            if doc is None:
+                return i18n.t("kp_tools.item.not_found", name=character, item=item)
+            await self.services.documents.delete(ctx.chat_key, "item", doc.id)
+            await _refresh_character_bonuses(self.services, ctx, character, owner)
+            return i18n.t("kp_tools.item.removed", item=item, character=character)
+        except CharacterDataError:
+            return i18n.t("kp_tools.character.data_error")
+        except Exception as exc:
+            return i18n.t("kp_tools.item.failed", error=str(exc))
+
+    @tool
+    async def use_item(self, ctx: AgentCtx, character: str, item: str) -> str:
+        """Consume an item (drinks a potion, spends a token); phase 2 has no use-effects, so using removes it. Args: character, item. Character must hold it."""
+        i18n = self.services.i18n.with_locale(ctx.locale)
+        try:
+            character = (character or "").strip()
+            item = (item or "").strip()
+            if not character or not item:
+                return i18n.t("kp_tools.item.bad_args")
+            owner = await self.services.characters.get_character_owner(ctx.chat_key, character)
+            if not owner:
+                return i18n.t("kp_tools.item.character_not_found", name=character)
+            doc = await find_instance(self.services.documents, ctx.chat_key, character, item)
+            if doc is None:
+                return i18n.t("kp_tools.item.not_found", name=character, item=item)
+            await self.services.documents.delete(ctx.chat_key, "item", doc.id)
+            await _refresh_character_bonuses(self.services, ctx, character, owner)
+            return i18n.t("kp_tools.item.used", character=character, item=item)
+        except CharacterDataError:
+            return i18n.t("kp_tools.character.data_error")
+        except Exception as exc:
+            return i18n.t("kp_tools.item.failed", error=str(exc))
+
+    @tool
+    async def equip_item(self, ctx: AgentCtx, character: str, item: str, slot: str = "") -> str:
+        """Equip an item into a slot so its mechanical bonus applies. Args: character, item, slot (optional; defaults to the item's declared slot). Character must hold it; unequip_item stops the bonus."""
+        i18n = self.services.i18n.with_locale(ctx.locale)
+        try:
+            character = (character or "").strip()
+            item = (item or "").strip()
+            if not character or not item:
+                return i18n.t("kp_tools.item.bad_args")
+            owner = await self.services.characters.get_character_owner(ctx.chat_key, character)
+            if not owner:
+                return i18n.t("kp_tools.item.character_not_found", name=character)
+            doc = await find_instance(self.services.documents, ctx.chat_key, character, item)
+            if doc is None:
+                return i18n.t("kp_tools.item.not_found", name=character, item=item)
+            effective_slot = slot.strip() or str(doc.data.get("slot") or "equipped")
+            await set_equipped(self.services.documents, ctx.chat_key, doc.id, effective_slot)
+            await _refresh_character_bonuses(self.services, ctx, character, owner)
+            return i18n.t("kp_tools.item.equipped", item=item, character=character, slot=effective_slot)
+        except CharacterDataError:
+            return i18n.t("kp_tools.character.data_error")
+        except Exception as exc:
+            return i18n.t("kp_tools.item.failed", error=str(exc))
+
+    @tool
+    async def unequip_item(self, ctx: AgentCtx, character: str, item: str) -> str:
+        """Unequip an item, stopping its mechanical bonus. Args: character, item. Character must hold it."""
+        i18n = self.services.i18n.with_locale(ctx.locale)
+        try:
+            character = (character or "").strip()
+            item = (item or "").strip()
+            if not character or not item:
+                return i18n.t("kp_tools.item.bad_args")
+            owner = await self.services.characters.get_character_owner(ctx.chat_key, character)
+            if not owner:
+                return i18n.t("kp_tools.item.character_not_found", name=character)
+            doc = await find_instance(self.services.documents, ctx.chat_key, character, item)
+            if doc is None:
+                return i18n.t("kp_tools.item.not_found", name=character, item=item)
+            await set_equipped(self.services.documents, ctx.chat_key, doc.id, None)
+            await _refresh_character_bonuses(self.services, ctx, character, owner)
+            return i18n.t("kp_tools.item.unequipped", item=item, character=character)
+        except CharacterDataError:
+            return i18n.t("kp_tools.character.data_error")
+        except Exception as exc:
+            return i18n.t("kp_tools.item.failed", error=str(exc))
 
 class DiceTools:
     """AI-KP tools for dice rolls, graded checks, HP management and dice pools."""

@@ -617,10 +617,12 @@ Client → server:
   `{type:"admin_generate", kind:"skill"|"rule"|"module"|"pack"|"module_prompt", description:string, locale?:"en"|"zh", request_id?:string, options?:{media?:string[], companion?:string[], extends?:string, system?:string}}`
   `locale` selects the author's language and defaults to the connection/server locale.
   `kind:"module_prompt"` is a keeper-only, prompt-assistance request. Its `description`
-  is a JSON object `{idea:string, mode:"suggest"|"rewrite"}` rather than the plain
+  is a JSON object `{idea:string, mode:"suggest"|"rewrite", rule_strategy?:string, room_system?:string}` rather than the plain
   forge description. `suggest` creates a new scenario seed when `idea` is empty;
   `rewrite` expands the supplied idea into a prompt that can be pasted back into a
-  later `kind:"module"` or `kind:"pack"` request. It only returns text: it never
+  later `kind:"module"` or `kind:"pack"` request. `rule_strategy` and `room_system`
+  describe the selected room rules so the assistant can include concrete compatibility
+  requirements. It only returns text: it never
   parses, writes, installs, imports, or broadcasts a module. `request_id`, when supplied,
   is echoed by the matching `admin_generated` response so clients can ignore stale replies.
   `kind:"pack"` (2.6) authors a COMPLETE module as a native world card wrapped in a

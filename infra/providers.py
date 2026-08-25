@@ -384,15 +384,18 @@ class MutableLLM:
         *,
         builder: Callable[..., LLMClient] = build_llm,
         credentials: CredentialBook | None = None,
-        profiles: CredentialBook | None = None,
         fallback_llm: LLMClient | None = None,
+        base: Settings | None = None,
     ) -> None:
         self._builder = builder
         self._credentials = credentials
-        self._profiles = profiles
         self._fallback_llm = fallback_llm
         self._settings = settings  # shared/effective settings (mutated in place)
-        self._base = settings.model_copy(deep=True)  # pristine baseline for reset
+        # `apply({})` resets to `_base`. Callers that built `settings` after
+        # applying persisted runtime overrides must pass the TRUE deployment
+        # baseline here, or a delete-then-reset would revert to the stale
+        # startup override instead of the configured default.
+        self._base = (base or settings).model_copy(deep=True)
         self._inner: LLMClient = self._build_initial(settings)
 
     def _build_initial(self, settings: Settings) -> LLMClient:
@@ -429,22 +432,22 @@ class MutableLLM:
     def _with_saved_credentials(self, settings: Settings) -> Settings:
         """Resolve the selected provider's web-saved credential before building.
 
-        Runtime model selection and the per-provider credential book are separate
-        persisted records. A restart must combine them before the configured
-        client is built; otherwise a valid Model-screen setup silently degrades
-        to the offline fallback when the runtime snapshot omits its secret.
+        Runtime model selection and the credential book are separate persisted
+        records. A restart must combine them before the configured client is
+        built; otherwise a valid Model-screen setup silently degrades to the
+        offline fallback when the runtime snapshot omits its secret.
 
-        The Model screen saves credentials under the typed profile book
-        (`llm_profiles`, keyed `provider::model`), while the legacy path writes
-        the per-provider credential book (`llm_credentials`, keyed `provider`).
-        Fall back across both so either save location survives a restart.
+        Credentials live in one unified book keyed ``provider::[kind::]model``
+        (or bare ``provider`` for a chat_model-less entry such as an OAuth
+        subscription). Look up the provider directly, then scan its chat
+        profiles, so either save shape survives a restart.
         """
         provider = (settings.llm.provider or "openai").casefold()
         saved: dict[str, str] = {}
         if self._credentials is not None:
             saved.update(self._credentials.get_sync(provider))
-        if not saved.get("api_key") and self._profiles is not None:
-            for profile_id, profile in self._profiles.load_sync().items():
+        if not saved.get("api_key") and self._credentials is not None:
+            for profile_id, profile in self._credentials.load_sync().items():
                 profile_provider, kind, _model = model_profile_parts(profile_id)
                 if profile_provider == provider and kind == "chat" and profile.get("api_key"):
                     saved = profile

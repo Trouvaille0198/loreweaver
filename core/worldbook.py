@@ -95,6 +95,10 @@ class LoreEntry:
     delay: int = 0  # not eligible until the room's turn counter reaches this
     group: str = ""  # inclusion group: at most ONE member of a group injects per turn
     group_weight: int = 100
+    # Optional illustration asset filename (e.g. a forge-generated NPC/scene/item portrait).
+    # Rides the document verbatim so a module's bound images survive re-import and project to
+    # the keeper's lore view; empty when the entry has no bound image.
+    image: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -121,6 +125,7 @@ class LoreEntry:
             "delay": self.delay,
             "group": self.group,
             "group_weight": self.group_weight,
+            "image": self.image,
         }
 
     @classmethod
@@ -156,6 +161,7 @@ class LoreEntry:
             delay=min(9999, max(0, _coerce_entry_int(data.get("delay"), 0))),
             group=str(data.get("group") or ""),
             group_weight=max(1, _coerce_entry_int(data.get("group_weight"), 100)),
+            image=str(data.get("image") or ""),
         )
 
 

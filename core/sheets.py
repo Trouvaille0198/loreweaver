@@ -252,8 +252,8 @@ def canonical_values(sheet: Any, pack: Any) -> dict[str, Any]:
     return values
 
 
-def sheet_value(sheet: Any, pack: Any, canonical: str) -> int:
-    """One canonical name's current value for `sheet` (derived recomputed)."""
+def _sheet_value_raw(sheet: Any, pack: Any, canonical: str) -> int:
+    """One canonical name's base value for `sheet` (derived recomputed, pre-bonus)."""
     spec = pack.sheet_spec
     if spec is not None:
         attr_key = spec.attr_keys.get(canonical)
@@ -281,6 +281,16 @@ def sheet_value(sheet: Any, pack: Any, canonical: str) -> int:
     if canonical in values:
         return _int_or(values[canonical])
     return _int_or(pack.defaults.get(canonical, 0))
+
+
+def sheet_value(sheet: Any, pack: Any, canonical: str) -> int:
+    """One canonical name's current value for `sheet`, including equipped-item
+    bonuses aggregated into `sheet.equipped_bonuses` by the item lane."""
+    value = _sheet_value_raw(sheet, pack, canonical)
+    bonuses = getattr(sheet, "equipped_bonuses", None)
+    if bonuses and canonical in bonuses:
+        value += int(bonuses[canonical])
+    return value
 
 
 def set_sheet_value(sheet: Any, pack: Any, canonical: str, value: int) -> None:

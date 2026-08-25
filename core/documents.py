@@ -242,11 +242,72 @@ def _project_note(doc: Document, viewer: Viewer) -> dict[str, Any] | None:
     return dict(doc.data) if viewer.is_keeper else None
 
 
+# -- items (phase 2) ---------------------------------------------------------
+# An item instance is a mechanical-holding entity (who has it, its slot, its
+# quantity) distinct from the narrative `clue` pool. Projection enforces D5:
+# the table may READ any character's holdings, but a `secret` item stays
+# keeper-only (invisible outside the keeper) so its reveal is never spoiled.
+
+_ITEM_PUBLIC_FIELDS = ("name", "kind", "slot", "description", "effect", "owner", "quantity", "equipped_slot")
+
+
+def _project_item(doc: Document, viewer: Viewer) -> dict[str, Any] | None:
+    """Keeper sees the whole instance; every other viewer sees a table-level public
+    subset of non-`secret` items. A `secret` item is invisible outside the keeper."""
+    if viewer.is_keeper:
+        return dict(doc.data)
+    if doc.data.get("secret"):
+        return None
+    return {key: doc.data[key] for key in _ITEM_PUBLIC_FIELDS if key in doc.data}
+
+
+def _project_item_catalog(doc: Document, viewer: Viewer) -> dict[str, Any] | None:
+    """The room's item catalog (the kinds the script/rulepack designed). The keeper sees
+    full templates including lore/origin; players see a stripped existence list with no
+    secret lore or provenance that would spoil the story."""
+    if viewer.is_keeper:
+        return dict(doc.data)
+    templates = []
+    for entry in doc.data.get("items", []):
+        if isinstance(entry, dict) and not entry.get("secret"):
+            templates.append(
+                {
+                    "name": entry.get("name", ""),
+                    "kind": entry.get("kind", ""),
+                    "description": entry.get("description", ""),
+                    "effect": entry.get("effect", ""),
+                }
+            )
+    return {"items": templates}
+
+
+def _validate_item(doc: Document, services: Any) -> list[str]:
+    violations = []
+    data = doc.data
+    if not isinstance(data.get("template_id"), str) or not data["template_id"]:
+        violations.append("item requires a template_id")  # i18n-exempt: document-validator diagnostic
+    if not isinstance(data.get("owner"), str) or not data["owner"]:
+        violations.append("item requires an owner")  # i18n-exempt: document-validator diagnostic
+    return violations
+
+
+def _validate_item_catalog(doc: Document, services: Any) -> list[str]:
+    items = doc.data.get("items")
+    if not isinstance(items, list):
+        return ["item catalog 'items' must be a list"]  # i18n-exempt: document-validator diagnostic
+    violations = []
+    for index, entry in enumerate(items):
+        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str) or not entry["name"]:
+            violations.append(f"item catalog entry {index} requires a name")  # i18n-exempt: document-validator diagnostic
+    return violations
+
+
 # Singleton document ids.
 MODVARS_ID = "modvars"
 MVU_ID = "mvu"
 MODULE_POOL_ID = "module"
 SCENE_ID = "scene"
+ITEM_CATALOG_ID = "item_catalog"
 
 for _name, _project_fn, _singleton in (
     ("lore", _project_lore, None),
@@ -263,6 +324,27 @@ for _name, _project_fn, _singleton in (
     register_document_type(
         DocumentType(name=_name, schema_version=1, project=_project_fn, singleton_id=_singleton)
     )
+
+# Item types carry write-validation (registered separately from the schema-less
+# loop above). `item` is the first PLURAL type (many instances per room); its
+# doc_id is the instance's unique id.
+register_document_type(
+    DocumentType(
+        name="item",
+        schema_version=1,
+        project=_project_item,
+        validate_write=_validate_item,
+    )
+)
+register_document_type(
+    DocumentType(
+        name="item_catalog",
+        schema_version=1,
+        project=_project_item_catalog,
+        validate_write=_validate_item_catalog,
+        singleton_id=ITEM_CATALOG_ID,
+    )
+)
 
 # M18 campaign chronicle types. Their projections/validators live in
 # `core.chronicle` (imported here at module level — that module depends on this

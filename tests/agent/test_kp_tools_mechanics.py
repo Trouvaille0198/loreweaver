@@ -45,7 +45,7 @@ def _build() -> tuple[Services, AgentCtx]:
 # ---------------------------------------------------------------------------
 
 
-def test_toolset_collects_all_thirteen_static_tools_and_none_are_keeper_only():
+def test_toolset_collects_all_static_tools_and_none_are_keeper_only():
     services, _ctx = _build()
     toolset = Toolset(CharacterTools(services), DiceTools(services), InitiativeTools(services))
 
@@ -59,16 +59,22 @@ def test_toolset_collects_all_thirteen_static_tools_and_none_are_keeper_only():
         "switch_character",
         "delete_character",
         "update_character_status",
+        "grant_item",
+        "transfer_item",
+        "remove_item",
+        "use_item",
+        "equip_item",
+        "unequip_item",
         "roll_dice",
         "skill_check",
         "hp_manager",
         "initiative_tracker",
     }
-    assert len(expected_names) == 13
+    assert len(expected_names) == 19
     assert set(toolset.names()) == expected_names
 
     schemas = toolset.schemas()
-    assert len(schemas) == 13
+    assert len(schemas) == 19
     for name in expected_names:
         assert toolset.is_keeper_only(name) is False
 

@@ -78,6 +78,18 @@ def _scripted_analysis_json() -> str:
                     "leads_to": "the truth about the keeper",
                 }
             ],
+            "items": [
+                {
+                    "name": "The Sunken Bell",
+                    "kind": "quest",
+                    "description": "A green-crusted bell from the wreck.",
+                    "lore": "It hums faintly when near the lighthouse.",
+                    "effect": "+1 STR",
+                    "origin": "the salt & anchor",
+                    "original_holder": "Martha",
+                    "clue": "human teeth in the lens",
+                }
+            ],
             "timeline": [
                 {"time": "Night 1", "event": "The lighthouse light shifts to a sickly green.", "involved": ["Elias Crane"]}
             ],
@@ -573,3 +585,60 @@ def test_fallback_full_analysis_extracts_markdown_module_catalog_sections():
     assert analysis["timeline"][0]["time"] == "19:30"
     assert len(analysis["truths"]) == 1
     assert analysis["threats"][0]["name"] == "隐默者"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 — the module's items seed the room's item catalog
+# ---------------------------------------------------------------------------
+
+
+async def test_initialize_seeds_item_catalog_from_analysis_items():
+    """An AI-analyzed module whose `items` category is populated seeds the room's
+    item catalog (Layer 0 -> Layer 1), so the Keeper can later grant them."""
+    store = Store()
+    await store.state_set("chat_items", "module_fulltext", MODULE_EN_TEXT)
+    llm = FakeLLM(script=[assistant_text(_scripted_analysis_json())])
+    mi = _make_initializer(llm=llm, store=store)
+
+    await mi.initialize("chat_items")
+
+    assert await store.state_get("chat_items", "module_init_status") == "ready"
+    documents = DocumentStore(store)
+    catalog = await documents.get_singleton("chat_items", "item_catalog")
+    assert catalog is not None
+    names = [entry["name"] for entry in catalog.data["items"]]
+    assert "The Sunken Bell" in names
+    # The designed template carries its narrative + mechanical fields, no holder.
+    bell = next(entry for entry in catalog.data["items"] if entry["name"] == "The Sunken Bell")
+    assert bell["kind"] == "quest"
+    assert bell["effect"] == "+1 STR"
+    assert bell["origin"] == "the salt & anchor"
+
+
+async def test_fallback_analysis_seeds_item_catalog_from_items_section():
+    """The offline heuristic fallback still extracts a module's `物品` section and
+    seeds the catalog, so an unanalyzable module is not left item-less."""
+    store = Store()
+    text = """# 雾镇
+
+## 物品
+
+- 海妖铃铛：在灯塔底部发现，能驱散迷雾。
+- 船长日记：记录最后一次航行的真相。
+
+## NPC
+
+### 老船长
+- 外在形象：独眼老人。
+"""
+    await store.state_set("chat_fb", "module_fulltext", text)
+    mi = _make_initializer(llm=FakeLLM(script=["junk", "still junk"]), store=store)
+
+    await mi.initialize("chat_fb")
+
+    documents = DocumentStore(store)
+    catalog = await documents.get_singleton("chat_fb", "item_catalog")
+    assert catalog is not None
+    names = [entry["name"] for entry in catalog.data["items"]]
+    assert "海妖铃铛" in names
+    assert "船长日记" in names

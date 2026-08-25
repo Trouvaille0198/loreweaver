@@ -794,6 +794,8 @@ def _build_module_prompt_messages(
     idea: str,
     *,
     mode: str,
+    rule_strategy: str = "",
+    room_system: str = "",
     locale: str | None = None,
 ) -> list[dict]:
     """Build the plain-text prompt-assistant request without invoking module authoring."""
@@ -803,10 +805,100 @@ def _build_module_prompt_messages(
         if mode == "suggest"
         else "agent.forge.module_prompt_rewrite"
     )
+    rule_requirement = _module_prompt_rule_requirement(i18n, rule_strategy, room_system)
     return [
         {"role": "system", "content": i18n.t("agent.forge.module_prompt_system_prompt")},
-        {"role": "user", "content": i18n.t(request_key, idea=idea)},
+        {
+            "role": "user",
+            "content": i18n.t(request_key, idea=idea, rule_requirement=rule_requirement),
+        },
     ]
+
+
+def _module_prompt_rule_requirement(i18n: Any, rule_strategy: str, room_system: str) -> str:
+    """Turn the forge selector into a concrete, model-facing room rule constraint."""
+    strategy = rule_strategy.strip()
+    selected_system = strategy.split(":", 1)[1] if ":" in strategy else room_system.strip()
+    fallback_details = {
+        "coc7": i18n.t("agent.forge.module_prompt_rule_coc7"),
+        "dnd5e": i18n.t("agent.forge.module_prompt_rule_dnd5e"),
+        "wod": i18n.t("agent.forge.module_prompt_rule_wod"),
+    }.get(
+        selected_system,
+        i18n.t(
+            "agent.forge.module_prompt_rule_generic",
+            system=selected_system or i18n.t("agent.forge.module_prompt_room_system"),
+        ),
+    )
+    system_details = _module_prompt_loaded_rule_details(i18n, selected_system) or fallback_details
+    if strategy == "standalone":
+        return i18n.t("agent.forge.module_prompt_rule_standalone")
+    if strategy.startswith("use:"):
+        return i18n.t("agent.forge.module_prompt_rule_use", system=selected_system, details=system_details)
+    if strategy.startswith("patch:"):
+        return i18n.t("agent.forge.module_prompt_rule_patch", system=selected_system, details=system_details)
+    return i18n.t(
+        "agent.forge.module_prompt_rule_follow",
+        system=selected_system or i18n.t("agent.forge.module_prompt_room_system"),
+        details=system_details,
+    )
+
+
+def _module_prompt_loaded_rule_details(i18n: Any, system: str) -> str:
+    """Describe the selected parsed RulePack without exposing its raw YAML to the model."""
+    if not system:
+        return ""
+    try:
+        pack = rulepacks.load_rulepack(system)
+    except (ValueError, OSError):
+        return ""
+
+    locale = getattr(i18n, "locale", "en")
+    resolver = pack.resolver
+    if resolver is None:
+        roll = i18n.t("agent.forge.module_prompt_rule_missing")
+        target = i18n.t("agent.forge.module_prompt_rule_missing")
+        outcomes = i18n.t("agent.forge.module_prompt_rule_missing")
+        difficulties = i18n.t("agent.forge.module_prompt_rule_missing")
+        parameters = i18n.t("agent.forge.module_prompt_rule_missing")
+        default_check = i18n.t("agent.forge.module_prompt_rule_missing")
+    else:
+        roll = resolver.roll
+        target = f"{resolver.target_kind} {resolver.compare}"
+        default_check = resolver.check.default_skill or (
+            str(resolver.check.default_target)
+            if resolver.check.default_target is not None
+            else i18n.t("agent.forge.module_prompt_rule_missing")
+        )
+        outcomes = ", ".join(
+            pack.rank_label(entry.rank.id, locale) for entry in resolver.ladders.get("", ())
+        ) or i18n.t("agent.forge.module_prompt_rule_missing")
+        difficulties = ", ".join(entry.id for entry in resolver.difficulties) or i18n.t(
+            "agent.forge.module_prompt_rule_none"
+        )
+        parameters = ", ".join(
+            f"{entry.id} ({entry.minimum}-{entry.maximum}, {entry.default=})" for entry in resolver.params
+        ) or i18n.t("agent.forge.module_prompt_rule_none")
+
+    raw_fields = pack.st_show.get("top") or list(pack.defaults)[:12]
+    fields = ", ".join(pack.display_name(str(field), locale) for field in raw_fields[:12]) or i18n.t(
+        "agent.forge.module_prompt_rule_none"
+    )
+    mechanics = ", ".join(spec.label(locale) for spec in pack.subsystems.values()) or i18n.t(
+        "agent.forge.module_prompt_rule_none"
+    )
+    return i18n.t(
+        "agent.forge.module_prompt_rule_loaded",
+        system=pack.system,
+        roll=roll,
+        target=target,
+        default_check=default_check,
+        fields=fields,
+        outcomes=outcomes,
+        difficulties=difficulties,
+        parameters=parameters,
+        mechanics=mechanics,
+    )
 
 
 async def generate_module_prompt(
@@ -814,6 +906,8 @@ async def generate_module_prompt(
     idea: str,
     *,
     mode: str,
+    rule_strategy: str = "",
+    room_system: str = "",
     locale: str | None = None,
     chat_key: str | None = None,
 ) -> ForgeResult:
@@ -822,7 +916,14 @@ async def generate_module_prompt(
         return ForgeResult(False, "", "", "", "bad_request")
     content, failure = await _llm_authored(
         services,
-        _build_module_prompt_messages(services, idea, mode=mode, locale=locale),
+        _build_module_prompt_messages(
+            services,
+            idea,
+            mode=mode,
+            rule_strategy=rule_strategy,
+            room_system=room_system,
+            locale=locale,
+        ),
         chat_key=chat_key,
     )
     if failure is not None:
@@ -1117,14 +1218,84 @@ def _parse_shot_list(raw: str, kinds: list[str]) -> list[_Shot]:
     return shots
 
 
+# Which media kind illustrates which worldbook category. The world card's entries are
+# category-tagged (lore/npc/clue/truth/secret); a generated `npcs` shot depicts a `npc`
+# entry, `scenes` shots depict `lore` (place/setting) entries, `items` shots depict `clue`
+# (item/clue) entries. Truth/secret (keeper-only) entries are never illustrated.
+_WORLDBOOK_CATEGORY_TO_MEDIA_KIND: dict[str, str] = {"npc": "npcs", "lore": "scenes", "clue": "items"}
+
+
+def _worldbook_subject_names(card_text: dict[str, Any]) -> dict[str, list[str]]:
+    """Real scene/NPC/item names per media kind, from the world card's worldbook entries.
+
+    Each entry's PRIMARY name is its first trigger key (the worldbook schema has no dedicated
+    `name` field; keys[0] is the canonical name the module refers to). Returns e.g.
+    ``{"npcs": ["以赛亚·哈德利", …], "scenes": […], "items": […]}`` so the shot-designer is
+    told to use the ACTUAL cast/places/objects — otherwise it invents names that cannot bind
+    back to the worldbook entries (the pregens already had this guard; scenes/NPCs/items did
+    not)."""
+    names: dict[str, list[str]] = {}
+    for entry in card_text.get("worldbook") or []:
+        if not isinstance(entry, dict):
+            continue
+        category = str(entry.get("category") or "lore").strip().casefold()
+        kind = _WORLDBOOK_CATEGORY_TO_MEDIA_KIND.get(category)
+        if not kind:
+            continue
+        keys = entry.get("keys") or []
+        primary = next((str(k).strip() for k in keys if str(k).strip()), "")
+        if primary and primary not in names.setdefault(kind, []):
+            names[kind].append(primary)
+    return names
+
+
+def _bind_worldbook_images(card_text: dict[str, Any], media_index: list[dict[str, str]]) -> int:
+    """Stamp generated npc/scene/item illustrations onto their matching worldbook entries.
+
+    Mirrors the pregen-portrait binding (match shot.subject to the entry's canonical name and
+    write the asset filename onto the entry). Without it the scene/NPC/item images stayed
+    orphans — generated and stored, but never attached to the worldbook entry they depict. The
+    ``image`` field rides the card and survives import into the room's lore documents (see
+    `core.worldbook.LoreEntry.image`). Returns how many entries were stamped."""
+    bound = 0
+    shots_by_kind: dict[str, list[dict[str, str]]] = {}
+    for shot in media_index:
+        kind = shot.get("kind")
+        if kind in ("npcs", "scenes", "items") and shot.get("name"):
+            shots_by_kind.setdefault(kind, []).append(shot)
+    for entry in card_text.get("worldbook") or []:
+        if not isinstance(entry, dict):
+            continue
+        category = str(entry.get("category") or "lore").strip().casefold()
+        kind = _WORLDBOOK_CATEGORY_TO_MEDIA_KIND.get(category)
+        if not kind or entry.get("image"):
+            continue
+        keys = {str(k).strip().casefold() for k in (entry.get("keys") or []) if str(k).strip()}
+        for shot in shots_by_kind.get(kind, []):
+            subject = str(shot.get("subject") or "").strip().casefold()
+            if subject and subject in keys:
+                entry["image"] = shot.get("name", "")
+                bound += 1
+                break
+    return bound
+
+
 def _build_module_media_messages(
-    services: Services, content: str, kinds: list[str], i18n, pregen_names: list[str] | None = None
+    services: Services,
+    content: str,
+    kinds: list[str],
+    i18n,
+    pregen_names: list[str] | None = None,
+    subject_names: dict[str, list[str]] | None = None,
 ) -> list[dict]:
     """The two-message shot-list prompt, mirroring `_build_module_messages`: the localized
     shot-designer framing as the system message, and the kinds-with-caps request plus the module
     document as the user message. ``pregen_names`` (the world card's CLAIMABLE INVESTIGATORS)
     are appended so `pregens` shots name the ACTUAL cast — otherwise the shot designer invents its
-    own names and the portraits cannot bind back to the investigators."""
+    own names and the portraits cannot bind back to the investigators. ``subject_names`` extends
+    the same discipline to the other kinds: real scene/NPC/item names from the world card, so
+    `npcs`/`scenes`/`items` shots depict characters/places/objects that actually exist in the
+    module and can bind back to their worldbook entries."""
     system_prompt = "\n\n".join(
         (
             i18n.t("agent.forge.module_media_system_prompt"),
@@ -1137,6 +1308,12 @@ def _build_module_media_messages(
         user_prompt += "\n\n" + i18n.t(
             "agent.forge.module_media_pregen_list", names="\n".join(f"- {name}" for name in pregen_names)
         )
+    if subject_names:
+        groups = "\n".join(
+            f"- {kind}: {'、'.join(names)}" for kind, names in subject_names.items() if names
+        )
+        if groups:
+            user_prompt += "\n\n" + i18n.t("agent.forge.module_media_subject_names", groups=groups)
     return [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
@@ -1741,10 +1918,18 @@ async def generate_and_install_pack_module(
                 for p in (card_text.get("pregens") or [])
                 if isinstance(p, dict) and p.get("name")
             ]
+            # Real scene/NPC/item names from the world card, so `npcs`/`scenes`/`items`
+            # shots use the ACTUAL cast/places/objects and can bind back to their entries.
+            subject_names = _worldbook_subject_names(card_text)
             shots_raw, shots_failure = await _llm_authored(
                 services,
                 _build_module_media_messages(
-                    services, description, media_kinds, i18n, pregen_names=pregen_names or None
+                    services,
+                    description,
+                    media_kinds,
+                    i18n,
+                    pregen_names=pregen_names or None,
+                    subject_names=subject_names or None,
                 ),
                 chat_key=ctx.chat_key,
             )
@@ -1817,11 +2002,12 @@ async def generate_and_install_pack_module(
             else:
                 logger.warning("[pack-forge] no imagegen provider for this room; media skipped")
 
-    # Bind generated investigator portraits to the cast: a `pregens` shot names its subject (the
-    # investigator), so match by name and stamp the asset file onto that pregen's avatar. A player
-    # claiming the pregen inherits the portrait as their character avatar (the claim copies the
-    # sheet, avatar included), and the module detail can show it. Rewrites the card so the stamped
-    # portraits ride the world card, not just the room's media index.
+    # Bind generated images to the world card. Investigator portraits stamp onto the matching
+    # pregen's `avatar` (a player claiming the pregen inherits the portrait); npc/scene/item
+    # shots stamp onto their matching worldbook entry's `image` (so the illustrations are no
+    # longer orphans — they ride the card, survive re-import, and appear beside the entry).
+    # One rewrite covers both bindings.
+    card_rewritten = False
     pregen_portraits = {
         str(shot.get("subject")): str(shot.get("name")) for shot in media_index if shot.get("kind") == "pregens"
     }
@@ -1829,6 +2015,10 @@ async def generate_and_install_pack_module(
         for pregen in card_text.get("pregens") or []:
             if isinstance(pregen, dict) and pregen.get("name") in pregen_portraits:
                 pregen["avatar"] = pregen_portraits[pregen["name"]]
+                card_rewritten = True
+    if _bind_worldbook_images(card_text, media_index):
+        card_rewritten = True
+    if card_rewritten:
         try:
             _safe_write(source / card_rel, json.dumps(card_text, ensure_ascii=False, indent=2) + "\n")
         except OSError as exc:

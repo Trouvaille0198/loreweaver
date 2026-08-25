@@ -279,5 +279,18 @@
   "commands.module.deleted": "已删除模组：{name}",
   "commands.module.delete_failed_source_not_found": "未安装该模组：{name}",
   "commands.module.delete_failed_dev_mount": "无法删除 {name}：它是实时挂载的开发源目录。",
-  "commands.module.delete_failed_module_in_use": "无法删除 {name}：它是本房间当前模组。"
+  "commands.module.delete_failed_module_in_use": "无法删除 {name}：它是本房间当前模组。",
+  "commands.help.item": "物品管理: .item inv [名] | add <名> [数量] | drop <名> [数量] | give <名> <目标>（守密人）",
+  "commands.item.usage": "用法: .item inv [名] | add <名> [数量] | drop <名> [数量] | give <名> <目标>",
+  "commands.item.inv_empty": "🎒 {name} 身上没有物品。",
+  "commands.item.inv_header": "🎒 {name}: {items}",
+  "commands.item.added": "✅ 已给 {name} 添加 {item}",
+  "commands.item.dropped": "✅ 已从 {name} 移除 {item}",
+  "commands.item.given": "✅ 已给 {name} {item}",
+  "commands.item.not_found": "❌ {name} 身上没有「{item}」",
+  "commands.item.character_not_found": "❌ 本房间没有角色「{name}」",
+  "commands.item.denied": "只有守密人才能把物品给其他角色。",
+  "commands.item.equipped": "✅ {name} 已装备 {item}（{slot}）",
+  "commands.item.unequipped": "✅ {name} 已卸下 {item}",
+  "commands.item.not_in_catalog": "❌ 「{item}」不在本房间的物品目录中"
 }

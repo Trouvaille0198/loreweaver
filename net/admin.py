@@ -415,7 +415,7 @@ async def _set_embedding(services: Services, frame: dict[str, Any], i18n: I18n) 
 async def _config_frame(services: Services) -> dict[str, Any]:
     info = _describe_llm(services)
     overrides = await services.runtime_config.get()
-    saved_providers = await services.llm_credentials.providers()
+    saved_providers = await services.llm_profiles.providers()
     providers = provider_catalog()
     # Subscription status for the model screen (no new protocol frames).
     provider = (info["provider"] or "").casefold()
@@ -428,7 +428,7 @@ async def _config_frame(services: Services) -> dict[str, Any]:
     )
     subscription_status = ""
     if oauth_path:
-        sub = await services.llm_credentials.load_subscription(provider)
+        sub = await services.llm_profiles.load_subscription(provider)
         if sub is not None:
             subscription_status = "logged_in"
             from datetime import UTC, datetime
@@ -468,36 +468,31 @@ async def _config_frame(services: Services) -> dict[str, Any]:
 
 async def _llm_profiles(services: Services) -> list[dict[str, Any]]:
     """Return typed model profiles, treating untyped persisted entries as chat."""
+    book = await services.llm_profiles.all()
+    # A bare `provider` entry is the live-model credential written by the
+    # `admin_set_model` path. When a typed `provider::model` profile already
+    # exists for the same provider+model, the bare entry is a redundant mirror —
+    # skip it so it never renders as a duplicate of the typed profile.
+    typed_ids = {str(pid) for pid in book if "::" in str(pid)}
     profiles: dict[str, dict[str, Any]] = {}
-    for profile_id, saved in (await services.llm_profiles.all()).items():
-        provider, encoded_kind, encoded_model = model_profile_parts(str(profile_id))
+    for profile_id, saved in book.items():
+        profile_id = str(profile_id)
+        provider, encoded_kind, encoded_model = model_profile_parts(profile_id)
         model = saved.get("chat_model", "") or encoded_model
         kind = str(saved.get("kind") or encoded_kind)
         if not provider or kind not in MODEL_KINDS:
             continue
-        secret = saved.get("api_key") or saved.get("access_token") or ""
-        profiles[str(profile_id)] = {
-            "id": str(profile_id),
-            "provider": provider,
-            "chat_model": model,
-            "kind": kind,
-            "embedding_dim": int(saved.get("embedding_dim") or 0),
-            "base_url": saved.get("base_url", ""),
-            "api_key_masked": mask_secret(secret),
-            "has_key": bool(secret),
-        }
-    for provider, saved in (await services.llm_credentials.all()).items():
-        model = saved.get("chat_model", "")
-        profile_id = model_profile_id(provider, model) if model else provider
-        if profile_id in profiles:
-            continue
+        if "::" not in profile_id and model:
+            # Bare chat entry duplicating an existing typed chat profile.
+            if model_profile_id(provider, str(model)) in typed_ids:
+                continue
         secret = saved.get("api_key") or saved.get("access_token") or ""
         profiles[profile_id] = {
             "id": profile_id,
             "provider": provider,
             "chat_model": model,
-            "kind": "chat",
-            "embedding_dim": 0,
+            "kind": kind,
+            "embedding_dim": int(saved.get("embedding_dim") or 0),
             "base_url": saved.get("base_url", ""),
             "api_key_masked": mask_secret(secret),
             "has_key": bool(secret),
@@ -656,7 +651,7 @@ async def _set_model(services: Services, frame: dict[str, Any], i18n: I18n) -> d
         api_key = supplied_api_key if api_key_supplied else "" if endpoint_changed else fallback_api_key
 
     oauth_path = provider == "supergrok" or (provider in CHATGPT_SUBSCRIPTION_PROXY_PROVIDER_NAMES and not base_url)
-    if oauth_path and await services.llm_credentials.load_subscription(provider) is None:
+    if oauth_path and await services.llm_profiles.load_subscription(provider) is None:
         return _error("set_failed", i18n)
 
     supplied_model = str(frame.get("chat_model") or "").strip()
@@ -681,7 +676,13 @@ async def _set_model(services: Services, frame: dict[str, Any], i18n: I18n) -> d
         _reconfigure_llm(services, overrides)
         await services.runtime_config.replace(**overrides)
         if not oauth_path and (api_key_supplied or base_url_supplied or api_key or base_url):
-            await _replace_llm_static_credentials(services, provider, api_key=api_key, base_url=base_url)
+            await _replace_llm_static_credentials(
+                services,
+                provider,
+                api_key=api_key,
+                base_url=base_url,
+                chat_model=chat_model,
+            )
     except Exception:
         logger.exception("admin_set_model failed (provider=%s)", provider)
         return _error("set_failed", i18n)
@@ -709,7 +710,7 @@ async def _set_llm_profile(services: Services, frame: dict[str, Any], i18n: I18n
     profile_id = model_profile_id(provider, model, kind)
     all_profiles = await services.llm_profiles.all()
     saved = all_profiles.get(profile_id, {})
-    legacy_saved = await services.llm_credentials.get(provider)
+    legacy_saved = await services.llm_profiles.get(provider)
     base_url_supplied = "base_url" in frame
     base_url = str(frame.get("base_url") or "").strip() if base_url_supplied else str(saved.get("base_url") or "")
     endpoint = _profile_endpoint(provider, kind, base_url)
@@ -749,7 +750,7 @@ async def _set_llm_profile(services: Services, frame: dict[str, Any], i18n: I18n
 
     auth_type = provider_auth_type(provider)
     subscription = (
-        await services.llm_credentials.load_subscription(provider)
+        await services.llm_profiles.load_subscription(provider)
         if auth_type in {"oauth", "api_key_or_oauth"}
         else None
     )
@@ -769,17 +770,6 @@ async def _set_llm_profile(services: Services, frame: dict[str, Any], i18n: I18n
             kind=kind,
             embedding_dim=str(embedding_dim) if kind == "embedding" else "",
         )
-        # Keep the legacy per-provider credential book in sync for chat profiles so a
-        # restart builds the global default client from either book (`MutableLLM`
-        # falls back across both). Image/embedding profiles live only in the typed book.
-        if kind == "chat":
-            await _replace_llm_static_credentials(
-                services,
-                provider,
-                api_key=api_key,
-                base_url=base_url,
-                chat_model=model,
-            )
         services.invalidate_model_profile(profile_id.casefold())
     except Exception:
         logger.exception("admin_set_llm failed (profile=%s)", profile_id)
@@ -814,19 +804,22 @@ async def _delete_llm_profile(services: Services, frame: dict[str, Any], i18n: I
         if profile_id in profiles:
             await services.llm_profiles.forget(profile_id)
             services.invalidate_model_profile(profile_id)
-            # The legacy per-provider credential book mirrors chat profiles written by
-            # `admin_set_llm`. Drop the mirror when its saved chat_model matches the
-            # deleted profile — otherwise `_llm_profiles` resurrects the deleted entry
-            # from the legacy book on the next config frame.
-            if profile_kind == "chat" and profile_model:
-                legacy = await services.llm_credentials.get(profile_provider)
-                if legacy.get("chat_model") == profile_model:
-                    await services.llm_credentials.forget(profile_provider)
         else:
+            # A bare (chat_model-less) entry — e.g. an OAuth subscription or a
+            # legacy provider-scoped key — is keyed by provider name.
             legacy_provider = profile_provider or profile_id
-            await services.llm_credentials.forget(legacy_provider)
+            await services.llm_profiles.forget(legacy_provider)
             if canonical != legacy_provider:
-                await services.llm_credentials.forget(canonical)
+                await services.llm_profiles.forget(canonical)
+        # A room whose model selection referenced the deleted profile must not
+        # silently fall back to the global default — clear the dangling lanes.
+        cleared = await services.clear_room_model_profile(profile_id)
+        if cleared:
+            logger.info(
+                "admin_delete_llm cleared deleted profile %r from rooms: %s",
+                profile_id,
+                ", ".join(cleared),
+            )
         live = _live_llm_settings(services)
         if (
             profile_kind == "chat"
@@ -836,6 +829,17 @@ async def _delete_llm_profile(services: Services, frame: dict[str, Any], i18n: I
             _reconfigure_llm(services, {})
             for key in ("provider", "chat_model", "api_key", "base_url"):
                 current.pop(key, None)
+        if profile_kind == "image":
+            # Mirror the live-LLM reset: if the deleted image profile is the one
+            # the GLOBAL imagegen runtime selection currently points at, reset the
+            # runtime selection so the operator's deletion is honored, not kept
+            # alive by a stale runtime-config copy.
+            ig_runtime = await services.imagegen_runtime_config.get()
+            ig_provider = str(ig_runtime.get("provider") or "").casefold()
+            ig_model = str(ig_runtime.get("model") or "").strip()
+            if ig_provider == profile_provider and (not profile_model or ig_model == profile_model):
+                await services.imagegen_runtime_config.replace()
+                _reconfigure_imagegen(services, {})
         await services.runtime_config.replace(**current)
     except Exception:
         logger.exception("admin_delete_llm failed (profile=%s)", profile_id)
@@ -847,7 +851,11 @@ async def _delete_llm_profile(services: Services, frame: dict[str, Any], i18n: I
 
 
 _LLM_EXPORT_FORMAT = "loreweaver-llm-config"
-_LLM_EXPORT_VERSION = 1
+# v1 carried two books (`llm_profiles` + legacy `llm_credentials`) and its import
+# WIPED the typed profiles by replace_all'ing credentials over them. v2 unifies to
+# one `llm_profiles` book (typed + bare provider entries) and imports accept v1 by
+# merging its legacy entries into the unified book.
+_LLM_EXPORT_VERSION = 2
 
 
 async def _export_llm_config(services: Services, i18n: I18n) -> dict[str, Any]:
@@ -855,9 +863,12 @@ async def _export_llm_config(services: Services, i18n: I18n) -> dict[str, Any]:
     selection as one portable JSON document (keeper-gated; contains plaintext keys,
     so the reply is only ever sent to the requesting keeper connection)."""
     profiles = await services.llm_profiles.all()
-    credentials = await services.llm_credentials.all()
     runtime = await services.runtime_config.get()
     imagegen_credentials = await services.imagegen_credentials.all()
+    # The live image-generation runtime selection (which provider/model/endpoint
+    # actually produces images), so an import restores "which imagegen" — not just
+    # the saved credential boxes.
+    imagegen_runtime = await services.imagegen_runtime_config.get()
     # Persisted runtime overrides may be empty (the Model screen saves profiles,
     # not overrides). Merge the LIVE effective selection so the export round-trips
     # the actually-running provider/model/endpoint even without an override.
@@ -872,9 +883,9 @@ async def _export_llm_config(services: Services, i18n: I18n) -> dict[str, Any]:
         "format": _LLM_EXPORT_FORMAT,
         "version": _LLM_EXPORT_VERSION,
         "llm_profiles": profiles,
-        "llm_credentials": credentials,
         "runtime": runtime,
         "imagegen_credentials": imagegen_credentials,
+        "imagegen_runtime": imagegen_runtime,
     }
     return {
         "type": "admin_llm_export",
@@ -900,16 +911,21 @@ async def _import_llm_config(services: Services, frame: dict[str, Any], i18n: I1
         version = int(raw.get("version") or 0)
     except (TypeError, ValueError):
         return _error("bad_request", i18n)
-    if version != _LLM_EXPORT_VERSION:
+    if version not in (1, _LLM_EXPORT_VERSION):
         return _error("bad_request", i18n)
 
     profiles_raw = raw.get("llm_profiles")
-    credentials_raw = raw.get("llm_credentials")
+    credentials_raw = raw.get("llm_credentials") if version == 1 else None
     runtime_raw = raw.get("runtime")
     imagegen_raw = raw.get("imagegen_credentials")
-    if not isinstance(profiles_raw, dict) or not isinstance(credentials_raw, dict):
+    imagegen_runtime_raw = raw.get("imagegen_runtime")
+    if not isinstance(profiles_raw, dict):
+        return _error("bad_request", i18n)
+    if version == 1 and not isinstance(credentials_raw, dict):
         return _error("bad_request", i18n)
     if not isinstance(runtime_raw, dict) or not isinstance(imagegen_raw, dict):
+        return _error("bad_request", i18n)
+    if not isinstance(imagegen_runtime_raw, dict):
         return _error("bad_request", i18n)
 
     profiles: dict[str, dict[str, str]] = {}
@@ -920,18 +936,22 @@ async def _import_llm_config(services: Services, frame: dict[str, Any], i18n: I1
         if not isinstance(saved, dict):
             return _error("bad_request", i18n)
         profiles[str(profile_id)] = {str(k): str(v) for k, v in saved.items()}
-    credentials: dict[str, dict[str, str]] = {}
-    for provider, saved in credentials_raw.items():
-        provider = str(provider).casefold()
-        if not is_known_provider(provider):
-            return _error("bad_request", i18n)
-        if not isinstance(saved, dict):
-            return _error("bad_request", i18n)
-        credentials[provider] = {str(k): str(v) for k, v in saved.items()}
+    if credentials_raw:
+        # v1 legacy entries are keyed by provider; fold them into the unified book
+        # (a chat_model-ed entry lands under `provider::model`).
+        for provider, saved in credentials_raw.items():
+            provider = str(provider).casefold()
+            if not is_known_provider(provider):
+                return _error("bad_request", i18n)
+            if not isinstance(saved, dict):
+                return _error("bad_request", i18n)
+            entry = {str(k): str(v) for k, v in saved.items()}
+            model = str(entry.get("chat_model") or "").strip()
+            profile_id = model_profile_id(provider, model) if model else provider
+            profiles[profile_id] = {**profiles.get(profile_id, {}), **entry}
 
     try:
         await services.llm_profiles.replace_all(profiles)
-        await services.llm_credentials.replace_all(credentials)
         await services.imagegen_credentials.replace_all(
             {
                 str(provider): {str(k): str(v) for k, v in saved.items()}
@@ -939,6 +959,11 @@ async def _import_llm_config(services: Services, frame: dict[str, Any], i18n: I1
                 if isinstance(saved, dict)
             }
         )
+        imagegen_runtime = {str(k): str(v) for k, v in imagegen_runtime_raw.items() if v is not None}
+        # Always replace (an empty selection wipes imagegen too, mirroring how an
+        # empty `runtime` wipes the LLM selection), then rebuild the live client.
+        await services.imagegen_runtime_config.replace(**imagegen_runtime)
+        _reconfigure_imagegen(services, imagegen_runtime)
         await services.runtime_config.replace(
             **{key: str(value) for key, value in runtime_raw.items() if value is not None}
         )
@@ -971,7 +996,7 @@ async def _list_models(services: Services, frame: dict[str, Any], i18n: I18n) ->
     base_url_supplied = "base_url" in frame
     supplied_api_key = str(frame.get("api_key") or "").strip()
     supplied_base_url = str(frame.get("base_url") or "").strip()
-    saved = await services.llm_credentials.get(provider)
+    saved = await services.llm_profiles.get(provider)
     same_provider = _provider_identity(provider) == _provider_identity(current_provider)
     fallback_api_key, fallback_base_url = _static_credential_pair(
         same_provider,
@@ -1054,6 +1079,19 @@ async def _set_imagegen(services: Services, frame: dict[str, Any], i18n: I18n) -
                 "base_url": profile.get("base_url") or saved.get("base_url", ""),
             }
             break
+    # A provider's imagegen often reuses its CHAT key (one api_key for qwen chat +
+    # qwen image). The generic chat credential book was never consulted, so such a
+    # key was missed and imagegen got configured with api_key="" — build_imagegen
+    # then returned None and generation was silently skipped. Only fills a gap,
+    # never overrides a key the operator supplied or saved.
+    if not saved.get("api_key") and not saved.get("access_token"):
+        chat_cred = await services.llm_profiles.get(provider) or {}
+        if chat_cred.get("api_key") or chat_cred.get("access_token"):
+            saved = {
+                **saved,
+                "api_key": chat_cred.get("api_key") or chat_cred.get("access_token") or saved.get("api_key", ""),
+                "base_url": chat_cred.get("base_url") or saved.get("base_url", ""),
+            }
     if provider == "supergrok":
         api_key = ""
         base_url = ""
@@ -1161,14 +1199,14 @@ async def _replace_llm_static_credentials(
 ) -> None:
     """Replace exact + canonical alias profile fields."""
     canonical = canonical_subscription_provider(provider)
-    await services.llm_credentials.replace_static(
+    await services.llm_profiles.replace_static(
         canonical,
         api_key=api_key,
         base_url=base_url,
         chat_model=chat_model,
     )
     if canonical != provider:
-        await services.llm_credentials.replace_static(
+        await services.llm_profiles.replace_static(
             provider,
             api_key=api_key,
             base_url=base_url,
@@ -1180,8 +1218,8 @@ async def _saved_llm_credentials(services: Services, provider: str) -> dict[str,
     """Load target-scoped static credentials, with canonical alias fallback."""
     provider = (provider or "").casefold()
     canonical = canonical_subscription_provider(provider)
-    canonical_saved = await services.llm_credentials.get(canonical) if canonical != provider else {}
-    exact_saved = await services.llm_credentials.get(provider)
+    canonical_saved = await services.llm_profiles.get(canonical) if canonical != provider else {}
+    exact_saved = await services.llm_profiles.get(provider)
     return {**canonical_saved, **exact_saved}
 
 
@@ -1206,7 +1244,7 @@ def _reconfigure_llm(services: Services, overrides: dict[str, str]) -> bool:
 
 def _reconfigure_imagegen(services: Services, overrides: dict[str, str]) -> None:
     effective = apply_imagegen_overrides(services.settings, overrides)
-    candidate = build_imagegen(effective, llm_credentials=services.llm_credentials)
+    candidate = build_imagegen(effective, credentials=services.llm_profiles)
     # Publish the new settings/client as one synchronous step only after the
     # candidate was constructed successfully.  In particular, a raising builder
     # must leave the old live settings and client untouched.
@@ -1645,7 +1683,11 @@ async def _generate(
             return _error("bad_request", i18n)
         idea = prompt_request.get("idea")
         mode = prompt_request.get("mode")
+        rule_strategy = prompt_request.get("rule_strategy", "")
+        room_system = prompt_request.get("room_system", "")
         if not isinstance(idea, str) or mode not in {"suggest", "rewrite"}:
+            return _error("bad_request", i18n)
+        if not isinstance(rule_strategy, str) or not isinstance(room_system, str):
             return _error("bad_request", i18n)
         if mode == "rewrite" and not idea.strip():
             return _error("bad_request", i18n)
@@ -1653,6 +1695,8 @@ async def _generate(
             services,
             idea.strip(),
             mode=mode,
+            rule_strategy=rule_strategy,
+            room_system=room_system,
             locale=generation_i18n.locale,
             chat_key=room_chat_key,
         )

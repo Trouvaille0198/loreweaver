@@ -251,7 +251,8 @@ role = "player"  # 或 "keeper"；默认为 "player"
 - `admin_list_rules` — 列出所有可发现的规则系统（Layer A）：
   `{type:"admin_list_rules"}`
 - `admin_generate` — 通过对应的 `agent.forge` 自扩展引擎，从自然语言描述创作并安装全新的技能/规则系统/模组（Layer B.3）；`kind:"module"` 的生成会安装进调用者自己的房间。`kind:"skill"`/`"rule"` 较快，同步以 `admin_generated` 应答；`kind:"module"`/`"pack"` 较慢（世界卡 + 可选配图 + 配套技能/规则包可能需要数分钟），改为**后台异步**——服务器先回 `admin_generate_started`，随后通过 `admin_generate_progress` 逐阶段推送进度，最后以 `admin_generated` 推送最终结果，全部发往发起请求的那条连接：
-  `{type:"admin_generate", kind:"skill"|"rule"|"module"|"pack", description:string, locale?:"en"|"zh", options?:{media?:string[], companion?:string[], extends?:string, system?:string}}`
+  `{type:"admin_generate", kind:"skill"|"rule"|"module"|"pack"|"module_prompt", description:string, locale?:"en"|"zh", request_id?:string, options?:{media?:string[], companion?:string[], extends?:string, system?:string}}`
+  `kind:"module_prompt"` 为仅限守秘人的提示词助手；此时 `description` 是 JSON 对象 `{idea:string, mode:"suggest"|"rewrite", rule_strategy?:string, room_system?:string}`，而不是普通的锻造描述。它只输出题材、基调、时间、地点以及所选房间规则的具体要求，不生成结局、线索、谜团或完整剧情，也不会解析、写入、安装或广播模组。`rule_strategy` 与 `room_system` 用于让提示词助手遵循当前选择的规则策略；`request_id` 会原样回传，客户端可用来忽略过期回复。
   `locale` 选择创作语言，缺省用连接/服务端语言。`kind:"pack"`（2.6）会把模组写成一个完整的原生世界卡并包进 `.lwpack` 内容包——引擎的标准完整模组形态（lorebook + 类型化状态量 + 可认领演员表 + 可选素材 + 随包技能/规则包）——经守秘人世界导入路径装进调用者房间。其 `options.media` 插图随包打进 `assets/`；`options.companion` 的技能/规则包会打进包的 `contents.skills`/`contents.rulepacks`（预建卡已由世界卡自身的 `pregens:` 承载）。`options.media` 和 `options.companion` 对 `kind:"module"` 与 `kind:"pack"` 都生效：守秘人按次勾选的额外内容——`media` 取自 `["cover","scenes","npcs","items"]`（经房间图像通道生成的模组插图，存入房间媒体库、不自动广播），`companion` 取自 `["skills","rulepacks","cards"]`（分别走各自既有生成器的 KP 技能、规则体系、可认领预建角色卡）。对 `kind:"pack"`，`options.extends` 要求生成一个继承指定基础系统的配套规则包，`options.system` 则让世界卡直接声明某个内置系统；二者互斥，对 `kind:"module"` 忽略。未知选项 id 会被忽略。额外内容绝不会让模组失败——`admin_generated.detail` 会列出生成了什么、或为何更少。
 
 服务器 → 客户端：

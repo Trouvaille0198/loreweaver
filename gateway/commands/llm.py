@@ -65,8 +65,8 @@ async def _saved_llm_credentials(services: Services, provider: str) -> dict[str,
     """Load target-scoped static credentials, with canonical alias fallback."""
     provider = (provider or "").casefold()
     canonical = canonical_subscription_provider(provider)
-    canonical_saved = await services.llm_credentials.get(canonical) if canonical != provider else {}
-    exact_saved = await services.llm_credentials.get(provider)
+    canonical_saved = await services.llm_profiles.get(canonical) if canonical != provider else {}
+    exact_saved = await services.llm_profiles.get(provider)
     return {**canonical_saved, **exact_saved}
 
 
@@ -100,7 +100,7 @@ def _subscription_login_locks(services: Services) -> dict[str, Any]:
 
 
 async def _install_subscription(services: Services, canonical: str, token: Any) -> None:
-    await services.llm_credentials.save_subscription(canonical, token)
+    await services.llm_profiles.save_subscription(canonical, token)
     await _refresh_active_subscription_clients(services, canonical)
 
 
@@ -152,7 +152,7 @@ def _refresh_supergrok_imagegen(services: Services) -> None:
     """Rebuild an active SuperGrok image client after its shared login changes."""
     from infra.imagegen import build_imagegen
 
-    services.imagegen = build_imagegen(services.settings, llm_credentials=services.llm_credentials)
+    services.imagegen = build_imagegen(services.settings, credentials=services.llm_profiles)
 
 
 class LlmCommands:
@@ -214,7 +214,7 @@ class LlmCommands:
             provider in CHATGPT_SUBSCRIPTION_PROXY_PROVIDER_NAMES and not info.get("base_url")
         )
         if oauth_path:
-            sub = await ctx.services.llm_credentials.load_subscription(provider)
+            sub = await ctx.services.llm_profiles.load_subscription(provider)
             if sub is not None:
                 from datetime import UTC, datetime
 
@@ -280,7 +280,7 @@ class LlmCommands:
             provider in CHATGPT_SUBSCRIPTION_PROXY_PROVIDER_NAMES and not base_url
         )
         if oauth_path:
-            sub = await ctx.services.llm_credentials.load_subscription(provider)
+            sub = await ctx.services.llm_profiles.load_subscription(provider)
             if sub is None:
                 return ctx.i18n.t("commands.model.login_required", provider=canonical_subscription_provider(provider))
 
@@ -471,7 +471,7 @@ class LlmCommands:
             if active_oauth:
                 _reconfigure_llm(ctx.services, {})
                 await ctx.services.runtime_config.clear()
-            await ctx.services.llm_credentials.forget_subscription(canonical)
+            await ctx.services.llm_profiles.forget_subscription(canonical)
         except Exception:
             return _model_mutation_failed(ctx, canonical)
 
@@ -498,7 +498,7 @@ class LlmCommands:
         merged["api_key"] = api_key
         try:
             _reconfigure_llm(ctx.services, merged)
-            await ctx.services.llm_credentials.replace_static(
+            await ctx.services.llm_profiles.replace_static(
                 provider,
                 api_key=api_key,
                 base_url=live.base_url or "",

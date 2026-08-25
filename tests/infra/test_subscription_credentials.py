@@ -268,7 +268,7 @@ async def test_supergrok_llm_and_imagegen_share_manager_and_logout_invalidates_b
                 base_url="https://stale-proxy.example/v1",
             )
         ),
-        llm_credentials=book,
+        credentials=book,
     )
 
     from infra.llm import OpenAILLM

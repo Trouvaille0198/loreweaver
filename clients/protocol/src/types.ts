@@ -722,10 +722,31 @@ export interface CharacterState {
   secondary_attributes?: Record<string, unknown>
   fields?: Record<string, unknown>
   equipment?: unknown[]
+  /** v2.6 additive: structured item detail (phase 2) for an item-detail section.
+   * `secret` items never reach this view. Absent when the server predates it. */
+  items?: ItemView[]
   background?: string
   notes?: string
   status_effects: string[]
   avatar?: MediaRef
+}
+
+/** One item a character holds — the structured detail behind `PartyMember.items`.
+ * `equipped_slot` set means the item is equipped (its bonus applies). `bonus` maps a
+ * sheet canonical (e.g. "attack") to the delta an equipped item grants — a client can
+ * aggregate it to show, per stat, which items give what. */
+export interface ItemView {
+  name?: string
+  kind?: string
+  slot?: string
+  description?: string
+  lore?: string
+  effect?: string
+  origin?: string
+  original_holder?: string
+  quantity?: number
+  equipped_slot?: string
+  bonus?: Record<string, number>
 }
 
 export interface PartyMember {
@@ -746,6 +767,7 @@ export interface PartyMember {
   secondary_attributes?: Record<string, unknown>
   fields?: Record<string, unknown>
   equipment?: unknown[]
+  items?: ItemView[]
   background?: string
   status_effects?: string[]
 }
@@ -1085,9 +1107,9 @@ export interface AdminImportLLMFrame {
     format: string
     version: number
     llm_profiles: Record<string, Record<string, string>>
-    llm_credentials: Record<string, Record<string, string>>
     runtime: Record<string, string>
     imagegen_credentials: Record<string, Record<string, string>>
+    imagegen_runtime: Record<string, string>
   }
 }
 
@@ -1099,9 +1121,9 @@ export interface AdminLLMExportFrame {
     format: string
     version: number
     llm_profiles: Record<string, Record<string, string>>
-    llm_credentials: Record<string, Record<string, string>>
     runtime: Record<string, string>
     imagegen_credentials: Record<string, Record<string, string>>
+    imagegen_runtime: Record<string, string>
   }
 }
 
