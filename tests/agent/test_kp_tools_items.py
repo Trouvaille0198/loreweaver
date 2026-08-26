@@ -62,6 +62,10 @@ async def test_grant_item_adds_to_any_member_owned_by_another_uid():
 
     assert "Bronze Key" in reply
     assert await _instance_names(services, ctx.chat_key, "Alice") == ["Bronze Key"]
+    notices = ctx.consume_item_lines()
+    assert [n["character"] for n in notices] == ["Alice"]
+    assert [n["item"] for n in notices] == ["Bronze Key"]
+    assert "Gave" in notices[0]["text"]
 
 
 async def test_grant_item_merges_same_owner_same_name_quantity():
@@ -161,12 +165,16 @@ async def test_transfer_item_moves_between_characters():
     await _seed(services, ctx.chat_key, _tpl("Bronze Key"))
     tools = CharacterTools(services)
     await tools.grant_item(ctx, "Alice", "Bronze Key")
+    ctx.consume_item_lines()  # 前置 grant 的通知
 
     reply = await tools.transfer_item(ctx, "Alice", "Bob", "Bronze Key")
 
     assert "Bronze Key" in reply
     assert await _instance_names(services, ctx.chat_key, "Alice") == []
     assert await _instance_names(services, ctx.chat_key, "Bob") == ["Bronze Key"]
+    notices = ctx.consume_item_lines()
+    assert [n["character"] for n in notices] == ["Bob"]
+    assert "Moved" in notices[0]["text"]
 
 
 async def test_transfer_item_rejects_same_source_and_target():
@@ -198,11 +206,15 @@ async def test_remove_item_removes_existing():
     tools = CharacterTools(services)
     await tools.grant_item(ctx, "Alice", "Sword")
     await tools.grant_item(ctx, "Alice", "Torch")
+    ctx.consume_item_lines()  # 前置 grant 的通知
 
     reply = await tools.remove_item(ctx, "Alice", "Sword")
 
     assert "Sword" in reply
     assert await _instance_names(services, ctx.chat_key, "Alice") == ["Torch"]
+    notices = ctx.consume_item_lines()
+    assert [n["item"] for n in notices] == ["Sword"]
+    assert "Removed" in notices[0]["text"]
 
 
 async def test_remove_item_reports_when_not_held():
@@ -220,11 +232,15 @@ async def test_use_item_consumes_an_entry():
     tools = CharacterTools(services)
     await tools.grant_item(ctx, "Alice", "Healing Potion")
     await tools.grant_item(ctx, "Alice", "Torch")
+    ctx.consume_item_lines()  # 前置 grant 的通知
 
     reply = await tools.use_item(ctx, "Alice", "Healing Potion")
 
     assert "used" in reply
     assert await _instance_names(services, ctx.chat_key, "Alice") == ["Torch"]
+    notices = ctx.consume_item_lines()
+    assert [n["item"] for n in notices] == ["Healing Potion"]
+    assert "used" in notices[0]["text"]
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +254,7 @@ async def test_equip_applies_bonus_and_unequip_drops_it():
     await _seed(services, ctx.chat_key, _tpl("Fencing Sword", kind="weapon", slot="main_hand", bonus={"attack": 2}))
     tools = CharacterTools(services)
     await tools.grant_item(ctx, "Alice", "Fencing Sword")
+    ctx.consume_item_lines()  # 前置 grant 的通知
 
     # Unequipped: no bonus.
     sheet = await services.characters.get_character("u1", ctx.chat_key, "Alice")
@@ -247,12 +264,18 @@ async def test_equip_applies_bonus_and_unequip_drops_it():
 
     await tools.equip_item(ctx, "Alice", "Fencing Sword")
 
+    notices = ctx.consume_item_lines()
+    assert [n["item"] for n in notices] == ["Fencing Sword"]
+    assert "equipped" in notices[0]["text"]
     sheet = await services.characters.get_character("u1", ctx.chat_key, "Alice")
     assert sheet.equipped_bonuses == {"attack": 2}
     assert sheet_value(sheet, pack, "attack") == base + 2
 
     await tools.unequip_item(ctx, "Alice", "Fencing Sword")
 
+    notices = ctx.consume_item_lines()
+    assert [n["item"] for n in notices] == ["Fencing Sword"]
+    assert "unequipped" in notices[0]["text"]
     sheet = await services.characters.get_character("u1", ctx.chat_key, "Alice")
     assert sheet.equipped_bonuses == {}
     assert sheet_value(sheet, pack, "attack") == base
@@ -264,10 +287,13 @@ async def test_equip_uses_declared_slot_when_unspecified():
     await _seed(services, ctx.chat_key, _tpl("Iron Shield", kind="armor", slot="off_hand"))
     tools = CharacterTools(services)
     await tools.grant_item(ctx, "Alice", "Iron Shield")
+    ctx.consume_item_lines()  # 前置 grant 的通知
 
     reply = await tools.equip_item(ctx, "Alice", "Iron Shield")
 
     assert "off_hand" in reply
+    notices = ctx.consume_item_lines()
+    assert "off_hand" in notices[0]["text"]
     instances = await instances_for_owner(services.documents, ctx.chat_key, "Alice")
     assert instances[0].data.get("equipped_slot") == "off_hand"
 
