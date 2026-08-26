@@ -1,5 +1,5 @@
 """Character sheets: the `.st` assignment DSL, creation (`.coc` / `.dnd` / `.genchar`),
-`.growth`, `.rename`, and pregen claiming (`.pc`)."""
+`.growth`, `.rename`, the player roster (`.characters`), and pregen claiming (`.pc`)."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from agent.services import Services
 from core.character_manager import (
     CharacterNameTakenError,
     CharacterSheet,
+    has_character,
 )
 from core.character_rules import render_validation_notice, validate_sheet
 from core.rulepacks import RulePack, load_rulepack
@@ -43,6 +44,10 @@ _SHEET_OP_SYMBOLS = {"set": "=", "add": "+=", "sub": "-="}
 # Deliberately locale-agnostic (checked regardless of `ctx.locale`), matching the
 # other reserved `.st` subcommand words above (`clr`/`del`/...).
 _SHEET_FINALIZE_WORDS = {"finalize", "定稿", "初始化"}
+
+_CHARACTER_LIST_WORDS = {"", "list", "ls", "show", "查看", "列表"}
+_CHARACTER_SWITCH_WORDS = {"switch", "use", "activate", "切换", "切換", "使用"}
+
 
 
 @dataclass(frozen=True)
@@ -273,7 +278,13 @@ def _render_sheet(ctx: CommandCtx, character: CharacterSheet, pack: RulePack) ->
         if value is None:
             value = sheet_value(character, pack, str(name))
         items.append(ctx.i18n.t("commands.sheet.item", name=name, value=value))
-    return ctx.i18n.t("commands.sheet.show", name=character.name, items=", ".join(items))
+    result = ctx.i18n.t("commands.sheet.show", name=character.name, items=", ".join(items))
+    # The character's backstory is part of who they are — show it on the card,
+    # not only in the keeper's roster line.
+    background = str(getattr(character, "background", "") or "").strip()
+    if background:
+        result = f"{result}\n{ctx.i18n.t('commands.sheet.background', background=background)}"
+    return result
 
 
 class SheetCommands:
@@ -343,6 +354,47 @@ class SheetCommands:
         notice = render_validation_notice(ctx.i18n, violations)
         return f"{result}\n{notice}" if notice else result
 
+    async def cmd_characters(self, ctx: CommandCtx) -> str:
+        """`.characters [list | switch <name>]` — list this player's sheets
+        and choose which owned sheet is active."""
+        tokens = ctx.args.strip().split(maxsplit=1)
+        sub = tokens[0].casefold() if tokens else ""
+        rest = tokens[1].strip() if len(tokens) > 1 else ""
+
+        if sub in _CHARACTER_LIST_WORDS:
+            characters = await ctx.services.characters.list_characters(ctx.user_id, ctx.chat_key)
+            if not characters:
+                return ctx.i18n.t("commands.characters.empty")
+            lines = [ctx.i18n.t("commands.characters.header", count=len(characters))]
+            lines.extend(
+                ctx.i18n.t(
+                    "commands.characters.item",
+                    name=str(character.get("name") or ""),
+                    system=str(character.get("system") or ""),
+                )
+                for character in characters
+            )
+            return "\n".join(lines)
+
+        if sub in _CHARACTER_SWITCH_WORDS:
+            if not rest:
+                return ctx.i18n.t("commands.characters.switch_usage")
+            sheets = await ctx.services.characters.list_character_sheets(ctx.user_id, ctx.chat_key)
+            character = next((sheet for sheet in sheets if sheet.name.casefold() == rest.casefold()), None)
+            if character is None:
+                return ctx.fail(ctx.i18n.t("commands.characters.not_found", name=rest))
+            await ctx.services.characters.set_active_character(ctx.user_id, ctx.chat_key, character.name)
+            if ctx.router.hub is not None:
+                await publish_state(ctx.router.hub, ctx.services, ctx.raw_ctx)
+            return ctx.i18n.t(
+                "commands.characters.switched",
+                name=character.name,
+                system=character.system,
+            )
+
+        return ctx.i18n.t("commands.characters.usage")
+
+
     async def cmd_growth(self, ctx: CommandCtx) -> str:
         """The pack-declared improvement check (`improvement_check` template):
         roll above the current value (or above the auto-success line) to grow
@@ -364,6 +416,40 @@ class SheetCommands:
             set_sheet_value(character, pack, canonical, new_value)
             await ctx.services.characters.save_character(ctx.user_id, ctx.chat_key, character)
         return ctx.i18n.t("commands.growth.result", name=canonical, roll=roll, gain=gain, value=new_value)
+
+    async def cmd_mem(self, ctx: CommandCtx) -> str:
+        """`.mem [character]` — a character's durable memory: the per-turn
+        experience log the Scribe kept, plus the folded life-summary a settlement
+        produced. Player-facing (any member): a character's memory records events
+        the table shared, so it is readable like a sheet. Defaults to the caller's
+        active character."""
+        from core.character_memory import CHARACTER_MEMORY_DOC_TYPE
+        from core.documents import KEEPER_VIEWER, PLAYER_VIEWER
+
+        name = ctx.args.strip()
+        if not name:
+            character = await ctx.services.characters.get_character(ctx.user_id, ctx.chat_key)
+            if not has_character(character):
+                return ctx.fail(ctx.i18n.t("commands.mem.usage"))
+            name = character.name
+        if not name:
+            return ctx.fail(ctx.i18n.t("commands.mem.usage"))
+        viewer = KEEPER_VIEWER if _is_keeper(ctx.raw_ctx) else PLAYER_VIEWER
+        view = await ctx.services.documents.get_view(ctx.chat_key, CHARACTER_MEMORY_DOC_TYPE, name, viewer)
+        if view is None:
+            return ctx.fail(ctx.i18n.t("commands.mem.empty", name=name))
+        entries = [entry for entry in view.get("entries") or [] if isinstance(entry, dict) and entry.get("text")]
+        summary = str(view.get("summary") or "").strip()
+        if not entries and not summary:
+            return ctx.fail(ctx.i18n.t("commands.mem.empty", name=name))
+        lines = [ctx.i18n.t("commands.mem.header", name=name)]
+        if summary:
+            lines.append(ctx.i18n.t("commands.mem.summary", text=summary))
+        shown = entries[-10:]
+        lines.extend(f"- {str(entry.get('text')).strip()}" for entry in shown)
+        if len(entries) > len(shown):
+            lines.append(ctx.i18n.t("commands.mem.count", total=len(entries), shown=len(shown)))
+        return "\n".join(lines)
 
     async def cmd_make_char(self, ctx: CommandCtx, pack: RulePack | None = None) -> str:
         """Create a sheet for `pack`'s system (the pack whose `make_char`
@@ -435,10 +521,10 @@ class SheetCommands:
         return ctx.i18n.t("commands.rename.changed", old=old_name, new=new_name)
 
     async def cmd_pc(self, ctx: CommandCtx) -> str:
-        """`.pc [list]|claim <name>|release [name]` — the room's pre-generated character
-        roster (`core.pregen_roster`): the cast a keeper's world imports ship. Listing and
-        claiming are PLAYER actions (claiming is the whole point); releasing someone
-        else's claim is keeper-only."""
+        """`.pc [list]|claim <name>|release [name]|info <name>` — the room's pre-generated
+        character roster (`core.pregen_roster`): the cast a keeper's world imports ship.
+        Listing and claiming are PLAYER actions (claiming is the whole point); releasing
+        someone else's claim is keeper-only; `info` shows any character's dossier."""
         from core.pregen_roster import pregen_claim, pregen_entries, pregen_release
 
         tokens = ctx.args.split()
@@ -446,6 +532,10 @@ class SheetCommands:
         rest = " ".join(tokens[1:]).strip()
         documents = ctx.services.documents
         chat_key = ctx.chat_key
+        if sub in {"info", "详情", "詳情"}:
+            if not rest:
+                return ctx.i18n.t("pregen.commands.info_usage")
+            return await self._pc_info(ctx, rest)
         if sub in {"claim", "认领", "認領"}:
             if not rest:
                 return ctx.i18n.t("pregen.commands.claim_usage")
@@ -490,6 +580,71 @@ class SheetCommands:
             if claimer:
                 line += ctx.i18n.t("pregen.commands.claimed_by_suffix", claimer=claimer)
             lines.append(line)
+        return "\n".join(lines)
+
+    async def _pc_info(self, ctx: CommandCtx, name: str) -> str:
+        """`.pc info <name>` — a character's dossier: module source, memory
+        (life summary + recent lines) and relationship tracks. Reads the same
+        player projections the browser character page uses, so the terminal and
+        the web agree on what a character is."""
+        from core.character_memory import CHARACTER_MEMORY_DOC_TYPE, project_character_memory
+        from core.documents import PLAYER_VIEWER
+        from core.relationships import TRACKS, RelationshipManager
+
+        documents = ctx.services.documents
+        chat_key = ctx.chat_key
+        lines: list[str] = []
+
+        # Module source — only pregen characters carry one.
+        try:
+            from core.pregen_roster import slug_for
+
+            source_doc = await documents.get(chat_key, "pregen", slug_for(name))
+            if source_doc is not None and source_doc.data.get("source"):
+                lines.append(ctx.i18n.t("pregen.commands.info_source", source=str(source_doc.data["source"])))
+        except Exception:  # noqa: BLE001 — a dossier is best-effort reading
+            pass
+
+        # Memory (player projection): summary + the most recent lines.
+        try:
+            memory_doc = await documents.get(chat_key, CHARACTER_MEMORY_DOC_TYPE, name)
+            if memory_doc is not None:
+                memory = project_character_memory(memory_doc, PLAYER_VIEWER) or {}
+                summary = str(memory.get("summary") or "").strip()
+                if summary:
+                    lines.append(ctx.i18n.t("pregen.commands.info_memory_summary", summary=summary))
+                entries = []
+                for entry in (memory.get("entries") or []):
+                    text = str(entry.get("text") if isinstance(entry, dict) else entry or "").strip()
+                    if text:
+                        entries.append(text)
+                entries = entries[-5:]
+                entries.reverse()
+                if entries:
+                    lines.append(ctx.i18n.t("pregen.commands.info_memory_entries", count=len(entries)))
+                    lines.extend(f"  • {entry}" for entry in entries)
+        except Exception:  # noqa: BLE001
+            pass
+
+        # Relationship tracks this character holds toward each entity.
+        try:
+            relationship_state = await RelationshipManager(ctx.services.store).load(chat_key)
+            for target, tracks in (relationship_state.get(name) or {}).items():
+                pairs: list[str] = []
+                for track_id, value in tracks.items():
+                    spec = TRACKS.get(track_id)
+                    if spec is None or value == spec.default:
+                        continue
+                    pairs.append(f"{ctx.i18n.t(spec.label_key)} {value:+d}")
+                if pairs:
+                    lines.append(
+                        ctx.i18n.t("pregen.commands.info_relationship", target=target, tracks=", ".join(pairs))
+                    )
+        except Exception:  # noqa: BLE001
+            pass
+
+        if not lines:
+            return ctx.i18n.t("pregen.commands.info_empty", name=name)
         return "\n".join(lines)
 
     def _pregen_claimer_name(self, ctx: CommandCtx, user_id: str) -> str:

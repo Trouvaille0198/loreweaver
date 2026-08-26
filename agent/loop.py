@@ -178,6 +178,7 @@ from agent.turn_checks import (
 )
 from agent.undo import capture as capture_snapshot
 from core.chronicle import estimate_tokens
+from core.documents import KEEPER_VIEWER
 from core.hooks import MAX_PANEL_EVENTS_PER_TURN
 from core.mvu_compat import mvu_apply_text
 from core.rulepacks import RulePack
@@ -856,6 +857,7 @@ async def _run_kp_turn_body(
     # entirely on the max_rounds fallback (reply is still None) and after a provider error
     # (returned early above).
     if reply is not None:
+        item_names = await _item_names_for_checks(services, ctx.chat_key)
         reply = await _run_turn_checks(
             ctx,
             services,
@@ -873,6 +875,7 @@ async def _run_kp_turn_body(
             temperature=services.settings.llm.temperature,
             on_tool_event=on_tool_event,
             llm=room_llm,
+            item_names=item_names,
         )
 
     if reply is None:  # max_rounds exhausted without ever reaching a plain-text reply
@@ -1541,6 +1544,7 @@ async def _run_turn_checks(
     hook_engine=None,
     temperature: float | None,
     on_tool_event: Callable[[dict], Awaitable[None]] | None = None,
+    item_names: frozenset[str] = frozenset(),
 ) -> str:
     """Run this room's end-of-turn check table in pure Stop form; return the final reply.
 
@@ -1571,7 +1575,9 @@ async def _run_turn_checks(
         for _ in range(check.max_rounds):
             if spent >= MAX_ROUNDS_PER_TURN:
                 return reply
-            if not awaiting_narration and not check.holds(TurnState(reply=reply, tool_trace=tool_trace)):
+            if not awaiting_narration and not check.holds(
+                TurnState(reply=reply, tool_trace=tool_trace, item_names=item_names)
+            ):
                 break
             instruction = check.instruction(
                 i18n,
@@ -1624,6 +1630,29 @@ async def _run_turn_checks(
             awaiting_narration = False
     _clear_llm_continuation(services, convo, llm=llm)
     return reply
+
+
+async def _item_names_for_checks(services: Services, chat_key: str) -> frozenset[str]:
+    """Load item names used to recognize a claimed item mutation."""
+    names: set[str] = set()
+    try:
+        for _document, view in await services.documents.list_views(chat_key, "item_catalog", KEEPER_VIEWER):
+            for item in view.get("items") or []:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("name"):
+                    names.add(str(item["name"]))
+                aliases = item.get("aliases")
+                if isinstance(aliases, str):
+                    names.add(aliases)
+                elif isinstance(aliases, list):
+                    names.update(str(alias) for alias in aliases if str(alias).strip())
+        for _document, view in await services.documents.list_views(chat_key, "item", KEEPER_VIEWER):
+            if view.get("name"):
+                names.add(str(view["name"]))
+    except Exception:
+        return frozenset()
+    return frozenset(names)
 
 
 def _check_fields(check_id: str, reply: str, tool_trace: list[dict], i18n) -> dict[str, str]:

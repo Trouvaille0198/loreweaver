@@ -70,6 +70,7 @@ from agent.npc import list_npcs
 from agent.services import Services
 from agent.stage_director import BEATS
 from agent.tool_trace import trace_event
+from core.character_memory import CHARACTER_MEMORY_DOC_TYPE, append_entry, empty_memory
 from core.documents import KEEPER_VIEWER
 from core.modvars import MODVARS_DOC_ID, MODVARS_DOC_TYPE, adjust_modvar, set_modvar, wire_entries
 from core.table_habits import HABITS_DOC_TYPE, HABITS_ID, observe
@@ -110,6 +111,10 @@ _MIN_EVIDENCE_CHARS = 4
 # fold consumes and the prompt tail renders, both of which are already capped — a
 # record is a LINE of campaign history, not a retelling of the turn.
 _MAX_CHRONICLE_CHARS = 400
+# Per-turn character-memory budget: how many PCs one pass may write, and how many
+# characters one line may carry. The document itself caps the entry count.
+MAX_MEMORIES = 2
+_MAX_MEMORY_CHARS = 300
 # The boundary watch's input budget: how many scoped NPCs one pass shows, and how many
 # characters of each one's fact list. Rooms with no knowledge records pay nothing —
 # the prompt stays byte-identical (see `_npc_watch_section`).
@@ -127,7 +132,7 @@ NPC knowledge boundaries — KEEPER-ONLY, never to be repeated outward (name | t
 _PROMPT = """You are the table Scribe for a TTRPG engine — a silent ledger clerk, not a storyteller.
 
 Given ONE game turn (player action + game-master reply) and the room's current trackers, output ONLY a JSON object:
-{{"ops": [{{"op": "set", "id": "<tracker id>", "value": <number>, "evidence": "<verbatim quote>"}} | {{"op": "adjust", "id": "<tracker id>", "delta": <number>, "evidence": "<verbatim quote>"}}], "whispers": ["<short keeper-side note>"], "unrolled_check": {{"skill": "<skill>", "evidence": "<verbatim quote>"}} or null, "habit": {{"summary": "<one line>", "detail": "<a sentence or two>"}} or null, "chronicle": "<one line of campaign history, or empty>", "beat": "<beat>"}}
+{{"ops": [{{"op": "set", "id": "<tracker id>", "value": <number>, "evidence": "<verbatim quote>"}} | {{"op": "adjust", "id": "<tracker id>", "delta": <number>, "evidence": "<verbatim quote>"}}], "whispers": ["<short keeper-side note>"], "unrolled_check": {{"skill": "<skill>", "evidence": "<verbatim quote>"}} or null, "habit": {{"summary": "<one line>", "detail": "<a sentence or two>"}} or null, "chronicle": "<one line of campaign history, or empty>", "memories": [{{"name": "<PC name>", "text": "<one line of that character's own experience>"}}], "beat": "<beat>"}}
 
 Rules:
 - "ops" ONLY for tracker changes the narration plainly establishes as fact. "evidence" is REQUIRED: a short verbatim quote copied from the GAME-MASTER reply that establishes the tracked quantity ITSELF changed. The player's message states what they ATTEMPT, never what happened — it can never be evidence, and an op whose evidence is not an exact quote of the game-master reply is discarded.
@@ -137,6 +142,7 @@ Rules:
 - "whispers" (0-{max_whispers}, each <= {max_whisper_chars} chars) for anything needing the keeper's judgment: scene/clock drift vs the fiction, players stuck without progress, an earned gain no tracker captures.
 - Write whispers in the language the turn text is written in (Chinese turn -> Chinese whispers).
 - "chronicle": ONE short past-tense line recording what this turn established for the campaign's history — what the table would want to remember months from now. This record is shown to PLAYERS, and the game-master reply is the ONLY thing you may build it from: write what that reply said out loud, never a motive or consequence it left unsaid. Everything else in this prompt — tracker labels and values, NPC knowledge lists — is keeper-only material the players have not learned; a name, object or explanation that appears there but not in the reply must stay out of this line, however true it is. Empty string when the turn established nothing that outlasts it (talk, out-of-character chatter, an intention with no outcome yet). Write it in the language of the turn text.
+- "memories": at most {max_memories} entries, one PER CHARACTER whose own experience this turn is clearly shown in the game-master reply — what that character did, saw, learned or suffered, their personal story rather than the party's. "name" MUST be one of the players listed below; a name that is not playing at this table is discarded. Same player-grade rule as "chronicle": build only from what the reply said out loud, never from this prompt's keeper-side material. Empty list when the turn shows nothing personal to any named character. Write in the language of the turn.
 - "beat" classifies this turn as a MOMENT worth staging, one of: {beats}, or "none". Use "none" unless the turn clearly is one of them — most turns are "none".
   - scene_change: the group moved somewhere else, or time visibly moved on.
   - act_transition: a chapter/day/act of the story turned over.
@@ -148,6 +154,7 @@ Rules:
 Trackers (id | label | value | range):
 {trackers}
 {npc_watch}
+Players at this table: {players}
 Tools the game-master called this turn: {tools}
 
 --- TURN ---
@@ -310,6 +317,37 @@ async def _record_habit(services: Services, ctx: AgentCtx, raw: Any) -> None:
         logger.debug("scribe: habit note dropped: %s", exc)
 
 
+async def _record_character_memories(
+    services: Services, ctx: AgentCtx, raw: Any, *, turn: int, known: frozenset[str]
+) -> int:
+    """Append this turn's per-character memory lines. Never raises. Returns how
+    many lines were written.
+
+    PLAYER-GRADE BY CONSTRUCTION, same discipline as `_record_auto_chronicle`: the
+    line is built from what the reply said aloud, and a name that is not one of the
+    room's sheets is discarded — a memory for a character nobody plays would be a
+    hallucination, not a record.
+    """
+    if not isinstance(raw, list):
+        return 0
+    written = 0
+    for item in raw[:MAX_MEMORIES]:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        text = str(item.get("text") or "").strip()[:_MAX_MEMORY_CHARS]
+        if name not in known or not text:
+            continue
+        try:
+            doc = await services.documents.get(ctx.chat_key, CHARACTER_MEMORY_DOC_TYPE, name)
+            data = append_entry(doc.data if doc else empty_memory(), text, turn)
+            await services.documents.put(ctx.chat_key, CHARACTER_MEMORY_DOC_TYPE, name, data)
+            written += 1
+        except Exception as exc:  # noqa: BLE001 — bookkeeping must never break the table
+            logger.debug("scribe: character memory dropped for %s: %s", name, exc)
+    return written
+
+
 async def _record_auto_chronicle(
     services: Services, ctx: AgentCtx, raw: Any, *, turn: int, tool_names: list[str]
 ) -> bool:
@@ -376,6 +414,11 @@ async def run_scribe(
         trackers = wire_entries(view or {}, ctx.locale)
     except Exception:  # noqa: BLE001 — a room without trackers still gets whispers
         trackers = []
+    try:
+        sheets = await services.documents.list(ctx.chat_key, "sheet")
+        player_names = sorted({str(doc.data.get("name") or "") for doc in sheets if doc.data.get("name")})
+    except Exception:  # noqa: BLE001 — a room without sheets still gets memories for none
+        player_names = []
     tracker_lines = "\n".join(
         f"- {entry.get('id')} | {entry.get('label')} | {entry.get('value')}"
         + (f" | {entry.get('min')}..{entry.get('max')}" if entry.get("min") is not None else "")
@@ -385,9 +428,11 @@ async def run_scribe(
     prompt = _PROMPT.format(
         max_whispers=MAX_WHISPERS,
         max_whisper_chars=MAX_WHISPER_CHARS,
+        max_memories=MAX_MEMORIES,
         beats=", ".join(BEATS),
         trackers=tracker_lines,
         npc_watch=npc_watch,
+        players=", ".join(player_names) or "(none)",
         tools=", ".join(tool_names or []) or "(none)",
         player=player_text[:_MAX_TURN_TEXT],
         reply=reply_text[:_MAX_TURN_TEXT],
@@ -489,6 +534,12 @@ async def run_scribe(
     wrote_chronicle = await _record_auto_chronicle(
         services, ctx, parsed.get("chronicle"), turn=turn, tool_names=tool_names or []
     )
+    # Character memory: one line per PC whose own experience the turn showed, so a
+    # character carries her story across modules. Zero extra model calls — the Scribe
+    # already read the whole turn, same as the chronicle line.
+    wrote_memories = await _record_character_memories(
+        services, ctx, parsed.get("memories"), turn=turn, known=frozenset(player_names)
+    )
 
     # 场记: a single word from a closed vocabulary, or nothing. Anything else the model
     # wrote here is discarded rather than forwarded — this field is the ONLY thing that
@@ -506,6 +557,7 @@ async def run_scribe(
             "ops_seen": proposed_ops,
             "whispers": len(fresh_whispers),
             "chronicle": wrote_chronicle,
+            "memories": wrote_memories,
         },
         chat_key=ctx.chat_key,
     )

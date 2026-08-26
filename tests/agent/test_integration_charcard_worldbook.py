@@ -337,6 +337,8 @@ async def test_world_import_seeds_item_catalog_from_native_items(tmp_path):
         "opening": "深夜，橱窗里的铜镜泛着青光。",
         "worldbook": [
             {
+                "id": "clue-bronze-mirror",
+                "title": "铜镜线索",
                 "keys": ["铜镜"],
                 "content": "一面会应允愿望的铜镜。",
                 "category": "clue",
@@ -349,6 +351,8 @@ async def test_world_import_seeds_item_catalog_from_native_items(tmp_path):
                 "kind": "gem",
                 "slot": "accessory",
                 "scope": "module",
+                "plot_role": "evidence",
+                "reveals": ["clue-bronze-mirror"],
                 "effect": "+1 to Spot Hidden",
                 "bonus": {"侦查": 1},
                 "quantity": 1,
@@ -374,6 +378,9 @@ async def test_world_import_seeds_item_catalog_from_native_items(tmp_path):
     template = by_name["青铜古镜"]
     assert template["bonus"] == {"侦查": 1}
     assert template["slot"] == "accessory"
+    assert template["plot_role"] == "evidence"
+    assert template["reveals"] == ["clue-bronze-mirror"]
+    assert template["reveal_targets"] == ["铜镜线索"]
     # Module-scoped items are stamped with THIS module's id (pack id when available);
     # universal items stay unbounded so they work in any module.
     assert template["module_id"]

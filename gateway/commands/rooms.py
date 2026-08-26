@@ -228,9 +228,9 @@ class RoomsCommands:
         return ctx.i18n.t("commands.bot.status")
 
     async def cmd_ai_length(self, ctx: CommandCtx) -> str:
-        """`.ai length [normal|brief]` — this room's AI reply-length mode. A bare
-        query is open to anyone; changing it shapes every reply the room's AI Keeper
-        produces, so writes require a keeper (same in-handler gate as `.bot`)."""
+        """`.ai length [normal|concise|brief]` — this room's AI reply-length mode. A
+        bare query is open to anyone; changing it shapes every reply the room's AI
+        Keeper produces, so writes require a keeper (same in-handler gate as `.bot`)."""
         words = ctx.args.split()
         if words and words[0].casefold() == "length":
             mode = " ".join(words[1:]).strip()
@@ -240,7 +240,7 @@ class RoomsCommands:
         if not mode:
             current = await get_ai_length(ctx.services.store, ctx.chat_key)
             return ctx.i18n.t("commands.ai.length_status", mode=current)
-        if mode not in ("normal", "brief"):
+        if mode not in ("normal", "concise", "brief"):
             return ctx.fail(ctx.i18n.t("commands.ai.bad_mode"))
         if not _is_keeper(ctx.raw_ctx):
             return ctx.fail(ctx.i18n.t("rooms.denied"))

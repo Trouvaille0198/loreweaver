@@ -28,6 +28,7 @@ from agent.kp_tools_mechanics import CharacterTools, DiceTools, InitiativeTools
 from agent.kp_tools_npc import NpcTools
 from agent.kp_tools_prep import PrepScriptTools
 from agent.kp_tools_relationships import RelationshipTools
+from agent.kp_tools_settle import SettleTools
 from agent.kp_tools_vars import ModuleVarTools, MvuStatTools
 from agent.kp_tools_worldbook import WorldbookTools
 from agent.services import Services
@@ -74,6 +75,7 @@ def build_kp_toolset(
         ModuleVarTools(services),
         MvuStatTools(services),
         ChronicleTools(services),
+        SettleTools(services),
     )
     prep_scripts._toolset_factory = lambda: toolset  # noqa: SLF001 — our own provider, closing the cycle
     return toolset

@@ -42,6 +42,7 @@ bad row never costs an author the whole bundle.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -72,6 +73,8 @@ MAX_LORECARD_ENTRY_CONTENT_BYTES = 128 * 1024
 MAX_LORECARD_VARIABLES = 256
 MAX_LORECARD_PREGENS = 8
 MAX_LORECARD_ITEMS = 32
+MAX_ITEM_REVEALS = 16
+MAX_ITEM_REVEAL_REF_CHARS = 160
 # Starter-gear detection. The module item pool holds things the party must FIND in the
 # world (a place, an NPC's hands) — never the investigators' personal starting gear.
 # When `origin`/`original_holder` reads like initial equipment (investigators carry
@@ -214,11 +217,12 @@ def parse_lorecard_bytes(data: bytes, filename: str = "") -> Lorecard:
 def _parse_pregens(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
     """Native pregen-cast list → normalized entries the world importer registers.
 
-    Shape: ``[{name, concept|blurb?, occupation?, notes?, skills?: {canonical: int}}]``.
+    Shape: ``[{name, occupation?, background|notes?, skills?: {canonical: int}}]``.
     ``occupation`` (the character's job, e.g. "Detective" / "考古研究员") lands in the
-    sheet's occupation field when the system declares one. Sheets are built downstream
-    from the target system's DEFAULTS plus these overrides — deterministic, no LLM —
-    so a module ships a claimable multi-investigator cast."""
+    sheet's occupation field when the system declares one; ``background`` (the persona
+    paragraph, legacy name ``notes``) lands in the sheet's background. Sheets are built
+    downstream from the target system's DEFAULTS plus these overrides — deterministic,
+    no LLM — so a module ships a claimable multi-investigator cast."""
     if raw is None:
         return ()
     if not isinstance(raw, list):
@@ -236,9 +240,17 @@ def _parse_pregens(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
         if not name:
             warnings.append(f"pregens[{index}]: ignored (missing name)")  # i18n-exempt: author diagnostic, wrapped in a localized import summary
             continue
-        blurb = _text(item.get("concept") or item.get("blurb")).strip()[:200]
+        # The roster one-liner (`blurb`) is derived from the persona paragraph's
+        # first sentence — one field of truth, no separate `concept`. Legacy
+        # hand-authored packs may still spell it `concept`/`blurb`.
+        blurb = _first_sentence(_text(item.get("background") or item.get("notes")).strip()) or _text(
+            item.get("concept") or item.get("blurb")
+        ).strip()
+        blurb = blurb[:200]
         occupation = _text(item.get("occupation")).strip()[:60]
-        notes = _text(item.get("notes")).strip()[:400]
+        # `background` is the forge's persona paragraph (history/personality/voice/
+        # secret); hand-authored packs may use the legacy `notes` name instead.
+        notes = _text(item.get("background") or item.get("notes")).strip()[:400]
         skills: dict[str, int] = {}
         skills_raw = item.get("skills")
         if isinstance(skills_raw, dict):
@@ -258,7 +270,8 @@ def _parse_items(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
     """Native item-catalog list → normalized templates the room importer seeds.
 
     Shape: ``[{name, kind?, slot?, scope?, description?, effect?, lore?, origin?,
-    original_holder?, quantity?, bonus?: {canonical: int}}]``. ``name`` is the only
+    original_holder?, quantity?, bonus?: {canonical: int}, plot_role?, reveals?}]``.
+    ``name`` is the only
     required field; a missing name drops the entry with a warning. ``slot`` names the
     equip slot the item occupies when equipped (empty = not equippable), and ``bonus``
     is the equipped mechanical delta map (sheet canonical -> int) that the engine
@@ -270,7 +283,10 @@ def _parse_items(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
     investigator) are skipped with a warning — the item pool is for things the party
     must find in the world, not what they begin with.
 
-    ``scope`` marks whether the item is ``universal`` (works in ANY module — a
+    ``plot_role`` describes the item's narrative role, while ``reveals`` lists
+    clue ids or clue names that become known when the party actually obtains the
+    item. The item remains a physical entity; the linked clue is the information
+    it carries. ``scope`` marks whether the item is ``universal`` (works in ANY module — a
     handgun, a healing salve, a toolkit) or ``module`` (bound to the module it
     ships with — a quest artifact, a plot device). The importer stamps module
     items with the room's active module id; an item whose module no longer
@@ -326,6 +342,27 @@ def _parse_items(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
             quantity = max(1, int(quantity)) if quantity is not None else 1
         except (TypeError, ValueError):
             quantity = 1
+        reveals_raw = item.get("reveals")
+        if isinstance(reveals_raw, str):
+            reveals_values = [reveals_raw]
+        elif isinstance(reveals_raw, list):
+            reveals_values = reveals_raw
+        else:
+            reveals_values = []
+        # ``clue`` was the original analysis/card spelling. Keep accepting it at
+        # the boundary so existing modules gain the new runtime behavior without
+        # needing a rewrite.
+        legacy_clue = _text(item.get("clue")).strip()
+        if not reveals_values and legacy_clue:
+            reveals_values = [legacy_clue]
+        reveals = [
+            _text(value).strip()[:MAX_ITEM_REVEAL_REF_CHARS]
+            for value in reveals_values[:MAX_ITEM_REVEALS]
+            if _text(value).strip()
+        ]
+        plot_role = _text(item.get("plot_role")).strip()[:40]
+        if reveals and not plot_role:
+            plot_role = "evidence"
         out.append(
             {
                 "name": name,
@@ -340,6 +377,8 @@ def _parse_items(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
                 "quantity": quantity,
                 "bonus": bonus,
                 "secret": bool(item.get("secret", False)),
+                "plot_role": plot_role,
+                "reveals": reveals,
             }
         )
     return tuple(out)
@@ -380,7 +419,15 @@ def _parse_entry(raw: Any, index: int, label: str, warnings: list[str]) -> dict[
         warnings.append(f"{where}: skipped (empty content)")  # i18n-exempt: author diagnostic, wrapped in a localized import summary
         return None
 
-    title = _text(raw.get("title")).strip() or "Untitled Lore"
+    title = _text(raw.get("title") or raw.get("comment") or raw.get("name")).strip()
+    if not title:
+        # Native pack authors are expected to provide `title`, but older generated
+        # cards omitted it. Derive a readable snapshot title instead of exposing
+        # the storage fallback "Untitled Lore" to players.
+        title = next((line.strip() for line in content.splitlines() if line.strip()), "")
+        title = title.lstrip("# ").strip()[:120]
+    if not title:
+        title = f"Lore entry {index + 1}"
     # A typed `condition` becomes a leading `@@if` decorator line: that is the ONLY form
     # `core.worldbook._normalize_import_entry` maps back onto `LoreEntry.condition`, and it is
     # exactly what the studio's SillyTavern export writes. Whitespace is collapsed because a
@@ -487,8 +534,6 @@ def _parse_hooks(entries: Any, warnings: list[str]) -> tuple[str, ...]:
 # ---------------------------------------------------------------------------
 # Coercion helpers — total functions, defensive against author/attacker garbage
 # ---------------------------------------------------------------------------
-
-
 def _fail(label: str, message: str) -> ValueError:
     return ValueError(f"{label}: {message}" if label else message)
 
@@ -501,6 +546,17 @@ def _text(value: Any) -> str:
     if isinstance(value, (dict, list, tuple, set)):
         return ""
     return str(value)
+
+
+_SENTENCE_BREAK_RE = re.compile(r"[。！？!?；;\n]")
+
+
+def _first_sentence(text: str) -> str:
+    """The first sentence of `text` (split on CJK/ASCII sentence punctuation or
+    newlines) — the roster one-liner derived from the persona paragraph."""
+    if not text:
+        return ""
+    return _SENTENCE_BREAK_RE.split(text.strip(), maxsplit=1)[0].strip()
 
 
 def _text_list(value: Any) -> list[str]:

@@ -118,7 +118,6 @@ async def build_room_state(
     if characters:
         state["characters"] = characters
 
-
     systems = _rule_systems()
     if systems:
         state["systems"] = systems
@@ -258,7 +257,11 @@ async def _character_payload(
     # Character prose and the pack-declared secondary surfaces are private to
     # the owning player's sheet. They are additive wire fields: old clients
     # ignore them, while a character page can show the complete card without
-    # making a second command round-trip.
+    # making a second command round-trip. The portrait rides the same MediaRef
+    # shape the party roster uses, so a client's one avatar renderer serves both.
+    avatar = getattr(sheet, "avatar", None)
+    if isinstance(avatar, dict):
+        payload["avatar"] = avatar
     for key in ("background", "notes"):
         value = getattr(sheet, key, "")
         if isinstance(value, str) and value.strip():
@@ -266,15 +269,71 @@ async def _character_payload(
     equipment = getattr(sheet, "equipment", [])
     if isinstance(equipment, list) and equipment:
         payload["equipment"] = list(equipment)
+    items = getattr(sheet, "items", [])
+    if isinstance(items, list) and items:
+        payload["items"] = list(items)
     secondary = getattr(sheet, "secondary_attributes", {})
     if isinstance(secondary, dict) and secondary:
         payload["secondary_attributes"] = dict(secondary)
     fields = sheet.field_values()
     if fields:
         payload["fields"] = fields
-    avatar = getattr(sheet, "avatar", None)
-    if isinstance(avatar, dict):
-        payload["avatar"] = avatar
+    # The module source of a claimed pregen (which scenario this character came
+    # from), read off the roster document — only pregen characters carry one.
+    try:
+        from core.pregen_roster import slug_for
+
+        pregen_doc = await services.documents.get(chat_key, "pregen", slug_for(sheet.name))
+        if pregen_doc is not None and pregen_doc.data.get("source"):
+            payload["source"] = str(pregen_doc.data["source"])[:200]
+    except Exception:
+        pass
+    # Character memory (player projection): the settled life-summary plus the
+    # most recent experience lines, newest first. The wire sends a bounded tail —
+    # the raw log is capped at 100 entries and the state frame must stay small.
+    try:
+        from core.character_memory import CHARACTER_MEMORY_DOC_TYPE, project_character_memory
+
+        memory_doc = await services.documents.get(chat_key, CHARACTER_MEMORY_DOC_TYPE, sheet.name)
+        if memory_doc is not None:
+            memory = project_character_memory(memory_doc, PLAYER_VIEWER) or {}
+            memory_payload: dict[str, Any] = {}
+            summary = str(memory.get("summary") or "").strip()
+            if summary:
+                memory_payload["summary"] = summary
+            raw_entries = []
+            for entry in (memory.get("entries") or []):
+                text = str(entry.get("text") if isinstance(entry, dict) else entry or "").strip()
+                if text:
+                    raw_entries.append(text)
+            entries = raw_entries[-10:]
+            entries.reverse()  # newest first, like a journal
+            if entries:
+                memory_payload["entries"] = entries
+            if memory_payload:
+                payload["memory"] = memory_payload
+    except Exception:
+        pass
+    # The relationship tracks THIS character holds toward each named entity —
+    # only non-default values ride the wire, labeled server-side by the caller.
+    try:
+        from core.relationships import TRACKS, RelationshipManager
+
+        relationship_state = await RelationshipManager(services.store).load(chat_key)
+        relationships: list[dict[str, Any]] = []
+        for target, tracks in (relationship_state.get(sheet.name) or {}).items():
+            entries: list[dict[str, Any]] = []
+            for track_id, value in tracks.items():
+                spec = TRACKS.get(track_id)
+                if spec is None or value == spec.default:
+                    continue
+                entries.append({"track": str(track_id), "value": int(value)})
+            if entries:
+                relationships.append({"target": str(target), "tracks": entries})
+        if relationships:
+            payload["relationships"] = relationships
+    except Exception:
+        pass
     return payload
 
 

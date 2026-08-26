@@ -295,6 +295,12 @@ async def test_admin_room_settings_get_and_set_ai_length():
     assert reply == {"type": "admin_room_settings", "room": "arkham", "ai_length": "normal"}
 
     reply = await admin.dispatch(
+        "keeper", "arkham", {"type": "admin_set_room_settings", "ai_length": "concise"}, i18n
+    )
+    assert reply["type"] == "admin_room_settings" and reply["ai_length"] == "concise"
+    assert await services.store.state_get(chat_key, "ai_length") == "concise"
+
+    reply = await admin.dispatch(
         "keeper", "arkham", {"type": "admin_set_room_settings", "ai_length": "brief"}, i18n
     )
     assert reply["type"] == "admin_room_settings" and reply["ai_length"] == "brief"

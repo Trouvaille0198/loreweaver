@@ -157,8 +157,17 @@ async def run_turn(
         elif origin is not None and echo_exclude is None:
             # Keep the TUI caller's local echo, but never broadcast raw command arguments
             # such as attachment paths, provider endpoints, or keys to room peers.
+            action_event.private = True
             await origin.deliver(action_event)
         reply = await command_router.dispatch_reply(ctx, text)
+        # Some player-facing commands intentionally become a normal Keeper turn.
+        # The handler only prepares this normalized request; entering the turn pipeline
+        # here preserves locking, prompt assembly, tools, replay, usage, Scribe, and
+        # companion pacing instead of starting an untracked model call in the command.
+        if reply is not None and reply.turn_message is not None:
+            text = reply.turn_message
+            matched_spec = None
+            reply = None
     command_reply = reply.text if reply is not None else None
     command_events = reply.events if reply is not None else ()
     if command_reply is not None:

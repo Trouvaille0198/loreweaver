@@ -1198,6 +1198,9 @@ def test_pack_module_schema_and_prompts_advertise_pregen_skills() -> None:
     if the schema or prompts stop asking for them, the feature silently degrades."""
     assert '"skills"' in forge_module._PACK_MODULE_CARD_SCHEMA
     assert '"name_en"' in forge_module._PACK_MODULE_CARD_SCHEMA
+    # One field of truth: the schema no longer asks for a separate one-line
+    # `concept` — the roster one-liner is derived from `background`.
+    assert '"concept"' not in forge_module._PACK_MODULE_CARD_SCHEMA
     root = Path(__file__).resolve().parents[2]
     for locale, needle in (("en", "skill-point budget"), ("zh", "技能点预算")):
         data = json.loads((root / "locales" / locale / "agent.json").read_text(encoding="utf-8"))

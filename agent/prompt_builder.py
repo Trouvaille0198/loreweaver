@@ -150,6 +150,25 @@ async def habit_index(services, chat_key: str) -> list[str]:
         return []
     return index_lines(document.data) if document is not None else []
 
+async def _character_memory_lines(services, chat_key: str) -> list[str]:
+    """One recent experience line per PC, newest first (`[]` when none). Best-effort:
+    a missing or broken memory document contributes nothing."""
+    from core.character_memory import CHARACTER_MEMORY_DOC_TYPE
+
+    try:
+        docs = await services.documents.list(chat_key, CHARACTER_MEMORY_DOC_TYPE)
+    except Exception:  # noqa: BLE001
+        return []
+    lines: list[str] = []
+    for doc in sorted(docs, key=lambda d: str(d.id)):
+        entries = [entry for entry in doc.data.get("entries") or [] if isinstance(entry, dict) and entry.get("text")]
+        if not entries:
+            continue
+        latest = str(entries[-1]["text"]).strip()
+        if latest:
+            lines.append(f"- {str(doc.id)}: {latest[:200]}")
+    return lines
+
 
 async def build_system_prompt_parts(
     ctx: AgentCtx, services: Services, *, advance_timers: bool = True
@@ -262,15 +281,17 @@ async def build_system_prompt_parts(
         await inject_interaction_style_prompt(ctx, i18n),
     ]
     # The room's AI reply-length mode (the `ai_length` store flag, managed by
-    # `gateway.ops`): "brief" folds a brevity directive into the style layer, and
-    # "normal" (the default, or any unknown value) contributes nothing — the head
-    # stays byte-identical. Read inline off the store, same layering rule as the
-    # preset/skills blocks below (never import `gateway.ops`).
+    # `gateway.ops`): "concise"/"brief" fold a brevity directive into the style
+    # layer, and "normal" (the default, or any unknown value) contributes nothing —
+    # the head stays byte-identical. Read inline off the store, same layering rule
+    # as the preset/skills blocks below (never import `gateway.ops`).
     try:
         ai_mode = str(await services.store.state_get(ctx.chat_key, "ai_length") or "").strip().casefold()
     except Exception:
         ai_mode = ""
-    if ai_mode == "brief":
+    if ai_mode == "concise":
+        stable.append(i18n.t("prompt.style.concise"))
+    elif ai_mode == "brief":
         stable.append(i18n.t("prompt.style.brief"))
     # The knowledge pool is a stored document — genuinely constant between turns. The
     # vector-search FALLBACK for a room with no initialized module is retrieval-driven
@@ -291,6 +312,10 @@ async def build_system_prompt_parts(
     skill_bodies = await _enabled_skill_bodies(ctx, services)
     if skill_bodies:
         stable.append(i18n.t("prompt.skills_header") + "\n\n" + "\n\n".join(skill_bodies))
+    # The settlement ritual: the AI-KP recognises a clear ending and reminds the
+    # keeper to run `.settle` — it never triggers settlement itself (the keeper
+    # decides when the story ends, and only the keeper's `.settle apply` lands it).
+    stable.append(i18n.t("prompt.settlement_notice"))
 
     # The campaign summary closes the head — the last thing before the replayed turns
     # it summarises, which is where narrative continuity reads best, and the position
@@ -315,6 +340,15 @@ async def build_system_prompt_parts(
     relationship_lines = await RelationshipManager(services.store).describe(ctx.chat_key, i18n)
     if relationship_lines:
         volatile.append(i18n.t("prompt.relationships_header") + "\n" + "\n".join(relationship_lines))
+    # Character memory: each PC's MOST RECENT experience line (their own story, as
+    # the Scribe recorded it). One line per character keeps narrative continuity —
+    # the keeper knows what this character personally lived through — without
+    # turning the per-turn prompt into a memory dump; the full log stays in `.mem`
+    # and the settlement reads it whole. Volatile (grows as the campaign runs);
+    # a room with no memory documents contributes nothing, byte-identical prompt.
+    memory_lines = await _character_memory_lines(services, ctx.chat_key)
+    if memory_lines:
+        volatile.append(i18n.t("prompt.character_memories") + "\n" + "\n".join(memory_lines))
 
     # M20 E procedural memory: how THIS table plays. INDEX ONLY — the one-line summaries
     # ride every turn, the details do not. A habits document allowed to grow into the

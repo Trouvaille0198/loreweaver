@@ -613,6 +613,9 @@ async def test_initialize_seeds_item_catalog_from_analysis_items():
     assert bell["kind"] == "quest"
     assert bell["effect"] == "+1 STR"
     assert bell["origin"] == "the salt & anchor"
+    assert bell["plot_role"] == "evidence"
+    assert bell["reveals"] == ["human teeth in the lens"]
+    assert bell["reveal_targets"] == ["human teeth in the lens"]
     # No `scope` declared -> fails closed to module-scoped, stamped with the module id,
     # so the artifact only works while this module is the room's active one.
     assert bell["scope"] == "module"

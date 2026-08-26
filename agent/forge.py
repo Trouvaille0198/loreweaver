@@ -1499,7 +1499,8 @@ async def _module_cards_pass(services: Services, ctx: AgentCtx, content: str, mo
                 ctx.chat_key,
                 sheet,
                 source=f"forge-module:{module_id}",
-                blurb=concept["description"][:200],
+                blurb=re.split(r"[。！？!?；;\n]", concept["description"].strip(), maxsplit=1)[0].strip()[:200]
+                or concept["description"][:200],
             )
         except Exception:  # one bad concept must not sink the rest of the cast
             continue
@@ -1594,6 +1595,8 @@ _PACK_MODULE_CARD_SCHEMA = """{
     "tags": ["free-form keywords"],
     "worldbook": [
         {
+            "id": "stable id for a clue entry, e.g. 'clue-bronze-mirror' (required when an item references it)",
+            "title": "short display title for this entry (especially important for clue entries)",
             "content": "a lore entry the keeper uses to run the module (setting, NPC, clue, truth, or a keeper-only secret: an ending plan, an NPC knowledge boundary)",
             "keys": ["trigger keywords that pull this entry into the keeper's context"],
             "secret": true,
@@ -1609,13 +1612,14 @@ _PACK_MODULE_CARD_SCHEMA = """{
             "minimum": 0,
             "maximum": 10,
             "options": ["only for enum kind, list the allowed values"],
-            "description": "what this tracker tracks"
-        }
-    ],
     "pregens": [
         {
             "name": "a claimable investigator",
-            "concept": "one-line character concept",
+            "background": "2-4 sentences of persona: their history, personality, manner of speech, and a secret or flaw — the first sentence also serves as the roster one-liner",
+            "occupation": "the character's job or occupation (e.g. 'Detective', 'Archaeologist', 'journalist'); empty if genuinely unemployed",
+            "skills": {"Spot Hidden": 60, "Fast Talk": 45, "Library Use": 50}
+        }
+    ],
             "occupation": "the character's job or occupation (e.g. 'Detective', 'Archaeologist', 'journalist'); empty if genuinely unemployed",
             "skills": {"Spot Hidden": 60, "Fast Talk": 45, "Library Use": 50}
         }
@@ -1631,6 +1635,8 @@ _PACK_MODULE_CARD_SCHEMA = """{
             "lore": "background story — ONLY for notable items, else leave empty",
             "origin": "WHERE the item is found in the world: a place or an NPC's hands (e.g. 'in the Fog Manor cellar', 'the ferryman's coat'). NEVER the investigators' starting gear — what they begin with is character equipment, not a module item",
             "original_holder": "the NPC or group holding it first (e.g. 'the ferryman'); leave empty for loose items; NEVER an investigator or player character",
+            "plot_role": "equipment|evidence|quest|prop - the item's role in the scenario",
+            "reveals": ["stable clue ids or clue names that become known when the party obtains this item"],
             "bonus": {"SheetCanonical": 1, "AnotherCanonical": -1},
             "quantity": 1
         }

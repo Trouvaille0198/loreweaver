@@ -738,10 +738,31 @@ export interface CharacterState {
   /** v2.6 additive: structured item detail (phase 2) for an item-detail section.
    * `secret` items never reach this view. Absent when the server predates it. */
   items?: ItemView[]
-  background?: string
-  notes?: string
-  status_effects: string[]
-  avatar?: MediaRef
+  /** The module a claimed pregen came from (`pregen.source`), e.g.
+   * "forge-module:the-snow-demon-villa". Absent for player-made characters. */
+  source?: string
+  /** Character memory (player projection): the settled life-summary plus a
+   * bounded tail of experience lines, newest first. Additive wire field —
+   * absent when the server predates it or the character has no memory yet. */
+  memory?: CharacterMemoryState
+  /** The relationship tracks THIS character holds toward each named entity —
+   * non-default values only. Additive; absent when the server predates it. */
+  relationships?: RelationshipEntry[]
+}
+
+export interface CharacterMemoryState {
+  summary?: string
+  entries?: string[]
+}
+
+export interface RelationshipEntry {
+  target: string
+  tracks: RelationshipTrackValue[]
+}
+
+export interface RelationshipTrackValue {
+  track: string
+  value: number
 }
 
 /** One item a character holds — the structured detail behind `PartyMember.items`.
@@ -760,6 +781,9 @@ export interface ItemView {
   quantity?: number
   equipped_slot?: string
   bonus?: Record<string, number>
+  /** True when the owner shelved this item (out of the active inventory, the
+   * wire name lists and the bonus aggregation; restorable). Additive. */
+  archived?: boolean
 }
 
 export interface PartyMember {
@@ -857,6 +881,10 @@ export interface RuleSystemEntry {
 export interface StateFrame {
   type: typeof FrameType.State
   character?: CharacterState
+  // v2.5 additive: every readable character sheet owned by this viewer in this
+  // room. The active sheet is also present in `character` for older clients.
+  characters?: CharacterState[]
+
   // The room's resolved rule system, distinct from the complete systems list.
   room_system?: string
   party: PartyMember[]

@@ -17,8 +17,10 @@ from agent.items import (
 from agent.kp_tools_mechanics import CharacterTools
 from agent.services import build_services
 from core.character_manager import CharacterSheet
+from core.documents import MODULE_POOL_ID, PLAYER_VIEWER
 from core.rulepacks import load_rulepack
 from core.sheets import sheet_value
+from core.worldbook import LoreEntry
 from infra.config import Settings
 from infra.embeddings import FakeEmbeddings
 from infra.llm import FakeLLM
@@ -66,6 +68,58 @@ async def test_grant_item_adds_to_any_member_owned_by_another_uid():
     assert [n["character"] for n in notices] == ["Alice"]
     assert [n["item"] for n in notices] == ["Bronze Key"]
     assert "Gave" in notices[0]["text"]
+
+
+async def test_grant_item_reveals_linked_worldbook_evidence():
+    services, ctx = _build()
+    await _make_character(services, ctx.chat_key, "u1", "Alice")
+    await services.worldbook.add(
+        ctx.chat_key,
+        LoreEntry(
+            id="",
+            title="Ledger evidence",
+            content="The ledger names the missing sailors.",
+            keys=["ledger-evidence"],
+            category="clue",
+        ),
+    )
+    await _seed(
+        services,
+        ctx.chat_key,
+        _tpl("The Ledger", plot_role="evidence", reveals=["ledger-evidence"]),
+    )
+
+    await CharacterTools(services).grant_item(ctx, "Alice", "The Ledger")
+
+    from agent.clue_log import get_clue_log
+
+    clues = await get_clue_log(services.documents, ctx.chat_key)
+    assert [clue["title"] for clue in clues] == ["Ledger evidence"]
+
+
+async def test_grant_item_unlocks_linked_text_module_evidence():
+    services, ctx = _build()
+    await _make_character(services, ctx.chat_key, "u1", "Alice")
+    await services.documents.put_singleton(
+        ctx.chat_key,
+        "module_pool",
+        {
+            "keeper": {"clues": [{"name": "Missing ledger", "description": "The ledger is forged."}]},
+            "player": {"clues": []},
+        },
+    )
+    await _seed(
+        services,
+        ctx.chat_key,
+        _tpl("The Ledger", plot_role="evidence", reveals=["Missing ledger"]),
+    )
+
+    await CharacterTools(services).grant_item(ctx, "Alice", "The Ledger")
+
+    player_pool = await services.documents.get_view(
+        ctx.chat_key, "module_pool", MODULE_POOL_ID, PLAYER_VIEWER
+    )
+    assert [clue["name"] for clue in player_pool["clues"]] == ["Missing ledger"]
 
 
 async def test_grant_item_merges_same_owner_same_name_quantity():
@@ -585,3 +639,26 @@ async def test_improvise_item_uses_catalog_template_when_name_exists():
     assert data["effect"] == "伤害 1d8，可撬开固定物。"
     assert data["bonus"] == {"attack": 1}
     assert data["scope"] == ""  # template scope inherited verbatim, not improv's universal
+
+
+async def test_improvise_item_uses_catalog_template_for_an_alias():
+    """A translated or alternate catalog name remains the designed item."""
+    services, ctx = _build()
+    await _make_character(services, ctx.chat_key, "u1", "Alice")
+    await _seed(
+        services,
+        ctx.chat_key,
+        _tpl("The Sunken Bell", aliases=["沉钟", "Sunken Bell"], kind="quest", bonus={"spot_hidden": 1}),
+    )
+    tools = CharacterTools(services)
+
+    reply = await tools.improvise_item(ctx, "Alice", "沉钟", "从水下捞出的铃铛", bonus="spot_hidden=2")
+
+    assert "improvised" not in reply
+    instances = await instances_for_owner(services.documents, ctx.chat_key, "Alice")
+    assert len(instances) == 1
+    assert instances[0].data["name"] == "The Sunken Bell"
+    assert instances[0].data["kind"] == "quest"
+    assert instances[0].data["bonus"] == {"spot_hidden": 1}
+    notices = ctx.consume_item_lines()
+    assert notices[0]["item"] == "The Sunken Bell"

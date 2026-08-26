@@ -174,8 +174,8 @@ async def test_a_companion_sub_turn_alone_never_runs_the_scribe():
 # ---------------------------------------------------------------------------
 
 # AGENTS.md ("Per-turn model-call budget") states the worst case for ONE player
-# turn: 3 fold + 12 rounds + 5 end-of-turn check rounds + 1 context-overflow retry
-# = 21 per KP turn, plus 1 Scribe + 1 Director beat, plus 6 companion sub-turns of
+# turn: 3 fold + 12 rounds + 6 end-of-turn check rounds + 1 context-overflow retry
+# = 22 per KP turn, plus 1 Scribe + 1 Director beat, plus 6 companion sub-turns of
 # (1 actor + 21). This pins the SHAPE of that bound as well as the ceiling itself: a
 # turn costs a fixed keeper cost plus a per-companion cost, and never more than the
 # ceiling.
@@ -187,7 +187,7 @@ async def test_a_companion_sub_turn_alone_never_runs_the_scribe():
 # `batches_spent`), which is why the fold half of the sum is unchanged.
 # The arithmetic, executable rather than asserted, so a future change has to edit the
 # terms and not just the total.
-KP_TURN_WORST_CASE = 3 + 12 + 5 + 1  # fold batches + tool rounds + check rounds + overflow retry
+KP_TURN_WORST_CASE = 3 + 12 + 6 + 1  # fold batches + tool rounds + check rounds + overflow retry
 COMPANION_SUB_TURNS = 6  # gateway.director.MAX_COMPANION_TURNS
 DOCUMENTED_CEILING = (
     1  # the Scribe pass
@@ -398,9 +398,9 @@ def test_the_documented_ceiling_matches_the_number_AGENTS_md_publishes():
     AGENTS.md is where a contributor reads the bound before adding a model-driven lane;
     this constant is what CI enforces. They drift the moment nobody checks.
     """
-    assert DOCUMENTED_CEILING == 155
-    assert KP_TURN_WORST_CASE == 21
+    assert DOCUMENTED_CEILING == 162
+    assert KP_TURN_WORST_CASE == 22
     agents_md = (Path(__file__).resolve().parents[2] / "AGENTS.md").read_text(encoding="utf-8")
-    budget_paragraph = agents_md.split("## Per-turn model-call budget", 1)[1].split("\n## ", 1)[0]
-    assert "~155 model calls" in budget_paragraph
+    budget_paragraph = agents_md.split("## 单回合模型调用预算", 1)[1].split("\n## ", 1)[0]
+    assert "**~162 次模型调用**" in budget_paragraph
     assert f"= **{KP_TURN_WORST_CASE}**" in budget_paragraph

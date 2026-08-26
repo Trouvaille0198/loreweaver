@@ -559,11 +559,11 @@ async def _room_settings_frame(services: Services, room: str) -> dict[str, Any]:
 
 async def _set_room_settings(services: Services, caller_room: str, frame: dict[str, Any], i18n: I18n) -> dict[str, Any]:
     """Apply a `admin_set_room_settings` write: only `ai_length` is settable, and only
-    the two known modes (`normal`/`brief`) — anything else is refused without writing."""
+    the known modes (`normal`/`concise`/`brief`) — anything else is refused without writing."""
     chat_key = chat_key_for_room(caller_room)
     if "ai_length" in frame:
         mode = str(frame.get("ai_length") or "").strip().casefold()
-        if mode not in ("normal", "brief"):
+        if mode not in ("normal", "concise", "brief"):
             return _error("bad_request", i18n)
         await set_ai_length(services.store, chat_key, mode)
     return await _room_settings_frame(services, caller_room)

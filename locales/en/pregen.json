@@ -18,5 +18,11 @@
   "pregen.commands.release_unknown": "No pre-generated character named “{name}” (see .pc list).",
   "pregen.commands.release_usage": "Usage: .pc release <name>",
   "pregen.commands.released": "Released “{name}” — it is claimable again (the played copy was discarded; the next claimant starts fresh).",
-  "pregen.commands.usage": "Usage: .pc [list] | .pc claim <name> | .pc release <name>"
+  "pregen.commands.usage": "Usage: .pc [list] | .pc claim <name> | .pc release <name> | .pc info <name>",
+  "pregen.commands.info_usage": "`.pc info <name>` — show a character's dossier (module source, memory, relationships)",
+  "pregen.commands.info_source": "From module: {source}",
+  "pregen.commands.info_memory_summary": "Life summary: {summary}",
+  "pregen.commands.info_memory_entries": "Recent experiences ({count}):",
+  "pregen.commands.info_relationship": "{target}: {tracks}",
+  "pregen.commands.info_empty": "No dossier info for “{name}” yet."
 }

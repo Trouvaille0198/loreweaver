@@ -310,6 +310,7 @@ class CommandRouter(
                 ["角色列表", "我的角色", "角色清单"],
                 None,
                 "commands.help.characters",
+                private_reply=True,
             ),
 
             CommandSpec(
@@ -528,11 +529,9 @@ class CommandRouter(
                 {"name": "settle"},
                 "commands.help.settle",
                 # Settlement writes character growth: an operational, keeper-only control,
-                # same tier as `.module`/`.room`.
+                # same tier as `.module`/`.room`. The proposal AND the outcome are table
+                # news — broadcast like any other turn, so a refresh keeps them in the log.
                 required_level=int(PrivilegeLevel.GROUP_ADMIN),
-                # The proposal carries keeper judgments (`keeper_note`); it is feedback
-                # for the invoking keeper, never table content — same posture as `.chronicle`.
-                private_reply=True,
             ),
             CommandSpec(
                 "recap",

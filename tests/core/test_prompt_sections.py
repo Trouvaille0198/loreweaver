@@ -124,8 +124,8 @@ def test_summarize_knowledge_item_spoiler_free_extras_join_with_chinese_semicolo
 
 
 async def test_inject_trpg_system_prompt_is_localized_and_nonempty_en():
-    # The system section is identity + operating rules ONLY: the per-tool catalog
-    # deliberately lives in the function-calling schemas, never restated in prose.
+    # Per-tool signatures stay in function-calling schemas; cross-tool workflow rules
+    # belong in the system section.
     ctx = _Ctx(chat_key="chat1")
     result = await inject_trpg_system_prompt(ctx, EN)
     assert result
@@ -133,6 +133,7 @@ async def test_inject_trpg_system_prompt_is_localized_and_nonempty_en():
     assert EN.t("prompt.system.guidelines_header") in result
     assert EN.t("prompt.system.guidelines") in result
     assert "roll_dice(expression)" not in result  # no hand-written tool catalog
+    assert EN.t("prompt.item_discipline") in result
 
 
 async def test_inject_trpg_system_prompt_is_localized_and_nonempty_zh():
@@ -140,6 +141,7 @@ async def test_inject_trpg_system_prompt_is_localized_and_nonempty_zh():
     result = await inject_trpg_system_prompt(ctx, ZH)
     assert result
     assert ZH.t("prompt.system.intro") in result
+    assert ZH.t("prompt.item_discipline") in result
     assert "世界一致性" in result
     assert "roll_dice(expression)" not in result
 
@@ -343,6 +345,35 @@ async def test_inject_game_state_prompt_seeded_state_zh_localized():
     assert "【战情面板】" in result
     assert "爱丽丝" in result
     assert ZH.t("common.none") in result
+
+
+async def test_inject_game_state_prompt_roster_shows_claimed_persona_background():
+    """A claimed pregen's `background` (the module's persona paragraph) renders on
+    the keeper's roster panel, truncated to one line — the keeper needs to know WHO
+    the player is, not just their meters. Without a background, no stray suffix."""
+    store = Store(":memory:")
+    ctx = _Ctx(chat_key="chat-bg", user_id="u1")
+    await _seed_game_state_store(store, ctx.chat_key, ctx.user_id)
+    long_persona = "Raised in a burnt-out lighthouse; " * 5  # ~155 chars
+    manager = _FakeCharacterManager(
+        roster=[
+            {
+                "name": "Alice",
+                "system": "CoC",
+                "resources": [{"label": "HP", "value": 10, "max": 12}],
+                "status_effects": [],
+                "background": long_persona,
+            },
+            {"name": "Bob", "system": "CoC", "resources": [], "status_effects": []},
+        ]
+    )
+
+    result = await inject_game_state_prompt(ctx, manager, store, EN)
+
+    assert "Persona:" in result
+    assert long_persona[:80] in result
+    # Bob has no persona: his line renders without any background suffix.
+    assert "Bob: None | Status: None" in result
 
 
 async def test_inject_game_state_prompt_solo_character_shows_generic_meters():

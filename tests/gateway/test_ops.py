@@ -197,16 +197,19 @@ async def test_bot_flag_is_tri_state_and_unset_means_on() -> None:
         store.close()
 
 
-async def test_ai_length_defaults_to_normal_and_accepts_brief() -> None:
-    """The `ai_length` flag is a two-mode room setting: unset/unknown reads as
-    "normal" (so a corrupt flag never changes a room's behavior) and only the two
-    known modes can be written."""
+async def test_ai_length_defaults_to_normal_and_accepts_known_modes() -> None:
+    """The `ai_length` flag is a three-mode room setting: unset/unknown reads as
+    "normal" (so a corrupt flag never changes a room's behavior) and only the known
+    modes can be written."""
     from gateway.ops import AI_LENGTH_VALUES, get_ai_length, set_ai_length
 
     store = Store(":memory:")
     chat_key = "tui:group:len"
     try:
         assert await get_ai_length(store, chat_key) == "normal"
+
+        await set_ai_length(store, chat_key, "concise")
+        assert await get_ai_length(store, chat_key) == "concise"
 
         await set_ai_length(store, chat_key, "brief")
         assert await get_ai_length(store, chat_key) == "brief"
@@ -219,7 +222,7 @@ async def test_ai_length_defaults_to_normal_and_accepts_brief() -> None:
 
         with pytest.raises(ValueError):
             await set_ai_length(store, chat_key, "verbose")
-        assert AI_LENGTH_VALUES == ("normal", "brief")
+        assert AI_LENGTH_VALUES == ("normal", "concise", "brief")
     finally:
         store.close()
 

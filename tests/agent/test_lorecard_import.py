@@ -42,7 +42,12 @@ def _bundle() -> dict:
         "author_notes": "fixture",
         "tags": ["investigation"],
         "pregens": [
-            {"name": "林晚照", "concept": "记者", "skills": {"侦查": 60}},
+                        {
+                "name": "林晚照",
+                "concept": "记者",
+                "background": "前军阀参谋的女儿，家道中落后靠笔杆子谋生，藏着一个不愿提起的姓氏。",
+                "skills": {"侦查": 60},
+            },
         ],
         "variables": [
             {
@@ -128,11 +133,22 @@ async def test_world_import_lands_specs_secret_lore_and_cast(tmp_path):
     # A persona-less MODULE bundle must NOT put itself on the claimable roster
     # (F4, K3 live test: ".pc claim <a bronze dial>"); the declared `pregens:`
     # cast registers instead, deterministic sheets with declared skill overrides.
-    from core.pregen_roster import pregen_entries
+    from core.pregen_roster import pregen_claim, pregen_entries
 
     roster = await pregen_entries(services.documents, "lorecard-world")
     assert [entry["name"] for entry in roster] == ["林晚照"]
-    assert roster[0]["blurb"] == "记者"
+    # The roster one-liner derives from the persona paragraph's first sentence.
+    assert roster[0]["blurb"] == "前军阀参谋的女儿，家道中落后靠笔杆子谋生，藏着一个不愿提起的姓氏"
+    # The persona paragraph lands ON the sheet itself (not just the roster entry):
+    # a player who claims the pregen can read and play it, and the keeper's roster
+    # panel can cite it.
+    status, sheet = await pregen_claim(
+        services.documents, "lorecard-world", "林晚照", "player-1", services.characters
+    )
+    assert status == "ok" and sheet is not None
+    assert sheet.background == "前军阀参谋的女儿，家道中落后靠笔杆子谋生，藏着一个不愿提起的姓氏。"
+    active = await services.characters.get_character("player-1", "lorecard-world")
+    assert active.background == sheet.background
 
 
 async def test_world_import_seeds_a_keeper_only_brief(tmp_path):

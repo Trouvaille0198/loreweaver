@@ -175,7 +175,10 @@ async def test_build_system_prompt_with_no_relationship_state_is_byte_identical_
             ctx, services.characters, i18n, default_system=services.settings.default_rulepack
         ),
         await inject_interaction_style_prompt(ctx, i18n),
+        # With a ready module pool the document context rides the stable head, and the
+        # settlement reminder follows it (the head's order: ... style, pool, settlement).
         document_context,
+        i18n.t("prompt.settlement_notice"),
         world_lore,
         await inject_game_state_prompt(ctx, services.characters, services.store, i18n),
     ]
@@ -266,9 +269,10 @@ async def test_build_system_prompt_without_module_variables_has_no_modvars_heade
 
 
 async def test_build_system_prompt_folds_brief_directive_only_when_room_asks_for_it():
-    """`ai_length=brief` folds the brevity directive into the stable head; the default
-    (unset, or an explicit "normal") leaves the prompt byte-identical — the setting is
-    off unless a keeper turned it on."""
+    """`ai_length=concise`/`brief` fold their brevity directive into the stable head;
+    the default (unset, or an explicit "normal") leaves the prompt byte-identical —
+    the setting is off unless a keeper turned it on. Each mode injects exactly its own
+    directive, never the other's."""
     services = _services("en")
     chat_key = "chat-prompt-builder-ai-length"
     ctx = AgentCtx(chat_key=chat_key, user_id="u1", locale="en")
@@ -276,15 +280,58 @@ async def test_build_system_prompt_folds_brief_directive_only_when_room_asks_for
 
     baseline = await build_system_prompt(ctx, services)
     assert i18n.t("prompt.style.brief") not in baseline
+    assert i18n.t("prompt.style.concise") not in baseline
+
+    await services.store.state_set(chat_key, "ai_length", "concise")
+    concise = await build_system_prompt(ctx, services)
+    assert i18n.t("prompt.style.concise") in concise
+    assert i18n.t("prompt.style.brief") not in concise  # never the other mode's directive
+    assert i18n.t("prompt.style.narrative") in concise  # the style layer still leads
+    parts = await build_system_prompt_parts(ctx, services)
+    assert i18n.t("prompt.style.concise") in parts.stable
+    assert i18n.t("prompt.style.concise") not in parts.volatile
 
     await services.store.state_set(chat_key, "ai_length", "brief")
     brief = await build_system_prompt(ctx, services)
     assert i18n.t("prompt.style.brief") in brief
-    assert i18n.t("prompt.style.narrative") in brief  # the style layer still leads
-    parts = await build_system_prompt_parts(ctx, services)
-    assert i18n.t("prompt.style.brief") in parts.stable
-    assert i18n.t("prompt.style.brief") not in parts.volatile
+    assert i18n.t("prompt.style.concise") not in brief
 
     await services.store.state_set(chat_key, "ai_length", "normal")
     back = await build_system_prompt(ctx, services)
     assert back == baseline
+
+
+async def test_system_prompt_carries_the_settlement_reminder():
+    """The AI-KP knows the settlement ritual exists and may REMIND the keeper when
+    the story clearly ends — but must never trigger settlement itself."""
+    services = _services("en")
+    ctx = AgentCtx(chat_key="chat-settle-reminder", user_id="u1", locale="en")
+    await _seed_ready_keeper_pool(services, ctx.chat_key)
+
+    prompt = await build_system_prompt(ctx, services)
+    i18n = services.i18n.with_locale("en")
+
+    assert i18n.t("prompt.settlement_notice") in prompt
+    assert "NEVER trigger settlement yourself" in prompt
+
+
+async def test_system_prompt_carries_each_characters_latest_memory():
+    """The keeper sees each PC's most recent experience line — narrative continuity
+    from the character's own story — and a room without memories stays unchanged."""
+    services = _services("en")
+    chat_key = "chat-memory-prompt"
+    ctx = AgentCtx(chat_key=chat_key, user_id="u1", locale="en")
+    from core.character_memory import CHARACTER_MEMORY_DOC_TYPE
+
+    await services.documents.put(
+        chat_key, CHARACTER_MEMORY_DOC_TYPE, "Vera",
+        {"entries": [{"text": "Vera traced the watermark to the chapel.", "turn": 3}], "summary": "", "keeper": ""},
+    )
+
+    prompt = await build_system_prompt(ctx, services)
+
+    assert "Vera traced the watermark to the chapel." in prompt
+
+    # A room with no memory documents contributes nothing.
+    plain = await build_system_prompt(AgentCtx(chat_key="chat-no-mem", user_id="u1", locale="en"), services)
+    assert "Character memories" not in plain

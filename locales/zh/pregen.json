@@ -18,5 +18,11 @@
   "pregen.commands.release_unknown": "没有叫「{name}」的预设角色（用 .pc list 查看）。",
   "pregen.commands.release_usage": "用法：.pc release <名字>",
   "pregen.commands.released": "已释放「{name}」——可再次认领（游玩副本已丢弃，下一位认领者从净卡开始）。",
-  "pregen.commands.usage": "用法：.pc [list] | .pc claim <名字> | .pc release <名字>"
+  "pregen.commands.usage": "用法：.pc [list] | .pc claim <名字> | .pc release <名字> | .pc info <名字>",
+  "pregen.commands.info_usage": "`.pc info <名字>` — 查看角色的档案（剧本来源、记忆、关系）",
+  "pregen.commands.info_source": "来自剧本：{source}",
+  "pregen.commands.info_memory_summary": "人生总结：{summary}",
+  "pregen.commands.info_memory_entries": "近期经历（{count} 条）：",
+  "pregen.commands.info_relationship": "{target}：{tracks}",
+  "pregen.commands.info_empty": "「{name}」还没有任何档案信息。"
 }

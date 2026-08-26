@@ -189,11 +189,18 @@ class GatewayRunner:
 
     async def _answer_standalone(self, ctx: AgentCtx, text: str) -> ChatMessage | None:
         """Resolve one direct reply for a single-channel adapter such as the CLI."""
-        command_reply = await self.command_router.dispatch(ctx, text)
+        command_reply = await self.command_router.dispatch_reply(ctx, text)
         if command_reply is not None:
-            resolved = self.command_router.resolve(text, ctx.locale)
-            private = bool(resolved and resolved[0].private_reply)
-            return ChatMessage(text=command_reply, markdown=False, private=private)
+            if command_reply.turn_message is not None:
+                text = command_reply.turn_message
+            elif command_reply.text is not None:
+                resolved = self.command_router.resolve(text, ctx.locale)
+                private = bool(resolved and resolved[0].private_reply)
+                return ChatMessage(text=command_reply.text, markdown=False, private=private)
+            else:
+                # A silent command (for example `.poke`) handled the input without
+                # producing a direct response; never feed its raw syntax to the KP.
+                return None
 
         toolset = self.toolset or build_kp_toolset(self.services)
         result = await run_kp_turn(

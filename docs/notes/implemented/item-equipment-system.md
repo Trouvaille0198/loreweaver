@@ -72,11 +72,13 @@ it is a fork extension, not a fix.
   grants buffs, consumes, or otherwise changes sheet state. This is the concept
   the engine currently lacks entirely.
 
-The two are **independent** and may overlap: a magic sword can be BOTH a clue
-(the plot reveals the wielder's identity) and an item (grants +2 attack) — but
-they are separate slots, and the item's worth is its mechanical buff, not its
-place in a mystery. Design never reduces an item to a clue, and never makes a
-clue the vehicle for buffs.
+The two are **independent** and may overlap: a magic sword can be an item that
+also carries evidence about its former owner. The item remains the physical,
+mechanical entity; the clue remains the information the party learns. Catalog
+templates express that relationship with `plot_role` and `reveals`, and genuine
+item acquisition registers those linked clues through the normal discovery path.
+Design never reduces an item to a clue, and never makes a clue the vehicle for
+buffs.
 
 ## Shared pattern: discover-to-hold state transfer
 
@@ -123,7 +125,8 @@ contract — same machine-format rationale as every other category):
         "effect": "the mechanical effect (e.g. '+2 attack', 'heals 1d4', '+1 to Spot Hidden') - leave empty for purely narrative items",
         "origin": "the scene or NPC where it is found - be specific (a scene name, an NPC name)",
         "original_holder": "who held it before, if the module states it",
-        "clue": "the narrative significance it reveals, if any (links to a clue/truth name)"
+        "plot_role": "equipment|evidence|quest|prop",
+        "reveals": ["stable clue ids or clue names that become known when obtained"]
     }
 ]
 ```
@@ -136,9 +139,10 @@ And an analysis-instruction note, so the model extracts the right things:
 > who ends up holding it is decided in play, not by the script. Make
 > `origin`/`original_holder` concrete, straight from the module text. Only
 > notable/powerful items get a `lore`; ordinary items make do with
-> `description`. An item's `clue` field links to a clue/truth entry when the
-> item carries plot significance — but the item is NOT a clue; it is a thing
-> with an effect.
+> `description`. An item's `plot_role` describes its scenario role and its
+> `reveals` list links to clue/truth entries that become known when the item is
+> genuinely obtained — but the item is NOT a clue; it is a physical thing with
+> an effect or narrative presence.
 
 The markdown fallback extracts an `物品`/`item` section exactly as it already
 does `线索`/`clue` and `真相`/`truth`.
@@ -150,8 +154,9 @@ does `线索`/`clue` and `真相`/`truth`.
   one to a specific character. Pre-assigning who ends up with an item would
   spoil the reveal and discard the state-transfer semantics that make the
   runtime grant meaningful (D1).
-- **Item linkage mirrors the clue DAG.** Each item may name a `clue`/`truth` it
-  connects to, weaving into the module structure rather than a flat list.
+- **Item linkage mirrors the clue DAG.** Each item may list clue ids/names in
+  `reveals`, weaving physical evidence into the module structure rather than
+  treating every evidence-bearing object as a second clue entry.
 
 ### Layer 1 — item catalog: rulepack data
 

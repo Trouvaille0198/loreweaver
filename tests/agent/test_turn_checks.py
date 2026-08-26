@@ -24,6 +24,7 @@ from agent.turn_checks import (
     MAX_ROUNDS_PER_TURN,
     TurnState,
     dice_rolled,
+    reply_claims_item_action,
     reply_states_a_roll,
     rolled_values,
     scene_title_lines,
@@ -67,6 +68,16 @@ class _StateProvider:
     async def game_clock(self, ctx: AgentCtx, action: str, value: str = "") -> str:
         """Show, set, or advance the in-game clock."""
         return f"clock {action} {value}"
+
+
+class _ItemProvider:
+    """An item mutation tool that emits the same success event as production tools."""
+
+    @tool
+    async def grant_item(self, ctx: AgentCtx, character: str, item_id: str) -> str:
+        """Commit an item to a character."""
+        ctx.emit_item_grant(character, item_id, f"Granted {item_id} to {character}")
+        return f"Granted {item_id} to {character}"
 
 
 _TITLE_REPLY = "🌉 Tokyo Port · Pier 5 | 10:15 pm\nThe sea wind mixes diesel and rust as the cranes sweep overhead."
@@ -210,6 +221,13 @@ def test_dice_rolled_keys_off_deterministic_dice_tools_only():
     assert not dice_rolled([])
 
 
+def test_item_claim_detector_requires_an_action_and_item():
+    assert reply_claims_item_action("Alice receives the Bronze Key.", frozenset({"Bronze Key"}))
+    assert reply_claims_item_action("Alice receives the 沉钟.", frozenset({"沉钟"}))
+    assert reply_claims_item_action("把神秘护符给了 Alice。")
+    assert not reply_claims_item_action("The Bronze Key is on the table.", frozenset({"Bronze Key"}))
+
+
 def test_scene_title_detector_hits_and_misses():
     assert scene_title_lines("🌉 東京港·大井埠頭五号泊位 | 晚 10:15")
     assert scene_title_lines("码头仓库区 ｜ 深夜")
@@ -321,6 +339,24 @@ async def test_a_clean_reply_runs_no_checks_at_all():
     await run_kp_turn(_ctx(), services, Toolset(_DiceProvider()), "I wait under the awning.")
 
     assert len(llm.calls) == 1
+
+
+async def test_item_claim_is_reasked_until_a_mutation_tool_commits_it():
+    llm = FakeLLM(
+        script=[
+            assistant_text("Alice receives the Bronze Key."),
+            assistant_tools(tool_call("grant_item", character="Alice", item_id="Bronze Key")),
+            assistant_text("Alice receives the Bronze Key."),
+        ]
+    )
+    services = _services(llm)
+
+    result = await run_kp_turn(_ctx(), services, Toolset(_ItemProvider()), "Give Alice the key.")
+
+    assert len(llm.calls) == 2
+    assert result.reply == "Alice receives the Bronze Key."
+    assert result.tool_trace[0]["name"] == "grant_item"
+    assert result.tool_trace[0]["item_lines"]
 
 
 async def test_a_turn_that_rolled_and_kept_numbers_out_of_prose_runs_no_checks():
@@ -471,5 +507,6 @@ def test_a_pack_without_a_table_gets_the_engine_default():
     assert [check.condition for check in turn_checks_for(None)] == [
         "dice_forged",
         "dice_contradicts",
+        "item_forged",
         "stale_scene_hud",
     ]

@@ -2240,6 +2240,10 @@ async def test_ai_length_command_query_and_keeper_set():
     assert status == i18n.t("commands.ai.length_status", mode="normal")
     assert await services.store.state_get(cli.chat_key, "ai_length") is None  # query writes nothing
 
+    set_reply = await router.dispatch(cli, ".ai length concise")
+    assert set_reply == i18n.t("commands.ai.length_set", mode="concise")
+    assert await services.store.state_get(cli.chat_key, "ai_length") == "concise"
+
     set_reply = await router.dispatch(cli, ".ai length brief")
     assert set_reply == i18n.t("commands.ai.length_set", mode="brief")
     assert await services.store.state_get(cli.chat_key, "ai_length") == "brief"

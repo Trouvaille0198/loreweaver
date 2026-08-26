@@ -12,6 +12,7 @@ single exception) and the equipped-bonus aggregation (D3) live here once.
 
 from __future__ import annotations
 
+import unicodedata
 from typing import Any
 from uuid import uuid4
 
@@ -50,12 +51,28 @@ async def get_item_catalog(documents: DocumentStore, chat_key: str) -> list[dict
 
 
 async def catalog_template(documents: DocumentStore, chat_key: str, name: str) -> dict | None:
-    """One catalog template by (case-insensitive) name, or None."""
-    folded = name.casefold()
+    """One catalog template by normalized name or alias, or None."""
+    key = item_name_key(name)
+    if not key:
+        return None
     for entry in await get_item_catalog(documents, chat_key):
-        if isinstance(entry, dict) and str(entry.get("name", "")).casefold() == folded:
+        if not isinstance(entry, dict):
+            continue
+        names = [entry.get("name")]
+        aliases = entry.get("aliases")
+        if isinstance(aliases, str):
+            names.append(aliases)
+        elif isinstance(aliases, list):
+            names.extend(aliases)
+        if any(item_name_key(value) == key for value in names):
             return entry
     return None
+
+
+def item_name_key(value: Any) -> str:
+    """Normalize names for catalog identity without doing fuzzy matching."""
+    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return "".join(char for char in normalized if char.isalnum())
 
 
 async def ensure_catalog(documents: DocumentStore, chat_key: str, templates: list[dict]) -> None:
@@ -72,6 +89,80 @@ async def ensure_catalog(documents: DocumentStore, chat_key: str, templates: lis
             merged.append(tpl)
             names.add(name.casefold())
     await documents.put_singleton(chat_key, "item_catalog", {"items": merged})
+
+
+def normalize_item_links(template: dict, *, clue_ref_map: dict[str, str] | None = None) -> dict:
+    """Normalize the item's physical/evidence relationship at an import boundary.
+
+    ``reveals`` contains author-facing clue ids or names. ``reveal_targets`` is the
+    runtime lookup form: native-card stable ids are translated to the title/key that
+    survives worldbook installation, while text-module clue names pass through.
+    ``clue`` remains a backward-compatible single-reference alias.
+    """
+    result = dict(template)
+    raw_reveals = result.get("reveals")
+    if isinstance(raw_reveals, str):
+        raw_refs = [raw_reveals]
+    elif isinstance(raw_reveals, list):
+        raw_refs = raw_reveals
+    else:
+        raw_refs = []
+    legacy_clue = str(result.get("clue") or "").strip()
+    if not raw_refs and legacy_clue:
+        raw_refs = [legacy_clue]
+    refs = [str(ref).strip()[:160] for ref in raw_refs[:16] if str(ref).strip()]
+
+    mapping = clue_ref_map or {}
+    folded_mapping = {str(key).casefold(): str(value) for key, value in mapping.items()}
+    targets = [folded_mapping.get(ref.casefold(), ref) for ref in refs]
+    role = str(result.get("plot_role") or "").strip()[:40]
+    if refs and not role:
+        role = "evidence"
+    result["plot_role"] = role
+    result["reveals"] = refs
+    result["reveal_targets"] = targets
+    return result
+
+
+def item_reveal_refs(template: dict) -> list[str]:
+    """Return runtime clue references, accepting catalogs written before normalization."""
+    raw_refs = template.get("reveal_targets") or template.get("reveals")
+    if isinstance(raw_refs, str):
+        raw_refs = [raw_refs]
+    if not isinstance(raw_refs, list):
+        raw_refs = []
+    if not raw_refs and template.get("clue"):
+        raw_refs = [template["clue"]]
+    return [str(ref).strip() for ref in raw_refs if str(ref).strip()]
+
+
+async def reveal_linked_clues(services: Any, ctx: Any, template: dict) -> None:
+    """Register evidence linked to a catalog item after genuine acquisition.
+
+    Worldbook clues use the discovered-clue log. Text-module clues use the module
+    knowledge pool. Both paths are idempotent and best-effort: an item grant must
+    not fail merely because a stale optional clue reference cannot be resolved.
+    """
+    refs = item_reveal_refs(template)
+    if not refs:
+        return
+    from agent.clue_log import find_worldbook_clue, reveal_clue
+
+    for ref in refs:
+        try:
+            entry = await find_worldbook_clue(services.worldbook, ctx.chat_key, ref)
+            if entry is not None:
+                await reveal_clue(services.documents, ctx.chat_key, **entry)
+                continue
+            # ModuleInitializer stores text modules in a separate keeper/player pool.
+            # Import lazily to keep the item helper independent from the KP tool graph.
+            from agent.kp_tools_knowledge import ModuleTools
+
+            await ModuleTools(services).unlock_for_player(ctx, "clues", ref)
+        except Exception:
+            # A stale link is authoring data, not a reason to roll back an item the
+            # table has actually acquired.
+            continue
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +277,12 @@ def _instance_data(owner: str, template: dict, qty: int) -> dict[str, Any]:
         "original_holder": str(template.get("original_holder") or ""),
         "secret": bool(template.get("secret", False)),
         "improvised": bool(template.get("improvised", False)),
+        "archived": bool(template.get("archived", False)),
+        "plot_role": str(template.get("plot_role") or ""),
+        "reveals": list(template.get("reveals") or []) if isinstance(template.get("reveals"), list) else [],
+        "reveal_targets": list(template.get("reveal_targets") or [])
+        if isinstance(template.get("reveal_targets"), list)
+        else [],
     }
 
 
@@ -222,6 +319,8 @@ async def grant_instance(
     )
 
 
+
+
 async def set_equipped(
     documents: DocumentStore, chat_key: str, instance_id: str, slot: str | None
 ) -> Document | None:
@@ -234,6 +333,21 @@ async def set_equipped(
         chat_key, "item", instance_id, {**doc.data, "equipped_slot": slot}
     )
 
+async def set_archived(
+    documents: DocumentStore, chat_key: str, instance_id: str, archived: bool
+) -> Document | None:
+    """Set an instance's archived flag — True shelves it (out of the active
+    inventory, the wire views and the bonus aggregation; the equip slot is
+    cleared so a shelved item can never keep granting its bonus), False brings
+    it back. Returns the updated doc, or None if the instance is gone."""
+    doc = await documents.get(chat_key, "item", instance_id)
+    if doc is None:
+        return None
+    data = {**doc.data, "archived": bool(archived)}
+    if archived:
+        data["equipped_slot"] = None
+    return await documents.put(chat_key, "item", instance_id, data)
+
 
 def render_held_items(items: list[Document]) -> list[str]:
     """Render a character's held items as display strings (for the sheet's
@@ -243,6 +357,8 @@ def render_held_items(items: list[Document]) -> list[str]:
     for doc in items:
         data = doc.data
         if data.get("secret"):
+            continue
+        if data.get("archived"):
             continue
         name = str(data.get("name", "")).strip()
         if not name:
@@ -270,6 +386,7 @@ _ITEM_VIEW_FIELDS = (
     "equipped_slot",
     "bonus",
     "improvised",
+    "archived",
 )
 
 
@@ -281,6 +398,10 @@ def render_item_views(items: list[Document]) -> list[dict[str, Any]]:
         data = doc.data
         if data.get("secret"):
             continue
+        # Archived items ride the views with their `archived` flag so a client
+        # can group them under a "shelved" section — they stay out of the plain
+        # name list (`render_held_items`) and the bonus aggregation, but the
+        # owner's character page can list and restore them.
         out.append({key: data.get(key) for key in _ITEM_VIEW_FIELDS})
     return out
 
@@ -316,6 +437,8 @@ def aggregate_equipped_bonuses(
     for doc in items:
         data = doc.data
         if data.get("equipped_slot") is None:
+            continue
+        if data.get("archived"):
             continue
         if not item_active(active_module, data):
             continue
