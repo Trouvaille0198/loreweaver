@@ -754,17 +754,30 @@ class SessionCore:
                     await self._handle_avatar_set(member, frame)
                 return
             if is_admin_frame(kind):
-                if kind in {
-                    "admin_delete_room",
-                    "admin_export_room",
-                    "admin_import_room",
-                    "admin_delete_room_data",
-                    # A reset mutates the same documents/room_state a mid-flight turn's
-                    # tool calls are writing — it belongs behind the room lock with the
-                    # other destructive ops (it was the one omission from this set).
-                    "admin_reset_room",
-                    "admin_generate",
-                }:
+                # Read-only admin frames (module/worldbook list & detail) never take the
+                # room lock: they only read files, documents and room state, so a long
+                # locked lane — a KP turn, a `.settle` model call — must not freeze the
+                # keeper's library page in "processing…". Writes and destructive ops stay
+                # behind the lock (they mutate what a mid-flight turn is writing).
+                _admin_write_kinds = frozenset(
+                    {
+                        "admin_delete_room",
+                        "admin_export_room",
+                        "admin_import_room",
+                        "admin_delete_room_data",
+                        # A reset mutates the same documents/room_state a mid-flight turn's
+                        # tool calls are writing — it belongs behind the room lock with the
+                        # other destructive ops (it was the one omission from this set).
+                        "admin_reset_room",
+                    }
+                )
+                _generate_read_kinds = frozenset(
+                    {"module_list", "module_detail", "worldbook_list", "worldbook_detail"}
+                )
+                _is_admin_write = kind in _admin_write_kinds or (
+                    kind == "admin_generate" and str(frame.get("kind") or "") not in _generate_read_kinds
+                )
+                if _is_admin_write:
                     async with self.hub.turn_lock(member.session_key):
                         if not self._refresh_member_authorization(member):
                             await member.send_frame(error_frame("forbidden", i18n))
@@ -1147,6 +1160,19 @@ class SessionCore:
             return
 
         try:
+            resolved = self.command_router.resolve(text, member.locale)
+            if resolved is not None and resolved[0].canonical == "recap":
+                await run_turn(
+                    self.hub,
+                    self.services,
+                    self._ctx_for(member),
+                    text,
+                    command_router=self.command_router,
+                    toolset=self.toolset,
+                    censor=self.censor,
+                    origin=member,
+                )
+                return
             # Serialize the WHOLE turn per room (F8): two connections in the same room must not
             # interleave their read-modify-write of the shared per-room state. `run_turn` publishes
             # a companion sub-turn inline (re-entering `run_turn`, not this choke), so no re-lock.

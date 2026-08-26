@@ -284,6 +284,7 @@
   "kp_tools.item.bad_args": "❌ character and item are required",
   "kp_tools.item.bad_qty": "❌ qty must be a positive integer",
   "kp_tools.item.character_not_found": "❌ No character \"{name}\" in this room",
+  "kp_tools.item.already_held": "❌ {character} already holds {item} ×{held} — this is not a consumable, so a duplicate cannot be granted. Handovers use transfer_item, losses use remove_item; do not call this tool again for the same item.",
   "kp_tools.item.failed": "❌ Item operation failed: {error}",
   "kp_tools.item.granted": "✅ Gave {character} the {item}",
   "kp_tools.item.not_found": "❌ {name} holds no \"{item}\"",

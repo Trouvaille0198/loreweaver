@@ -73,22 +73,6 @@ MAX_ROUNDS_PER_TURN = 6
 # every pack-declared subsystem tool joins at runtime.
 _BASE_DICE_TOOL_NAMES = frozenset({"skill_check", "roll_dice"})
 
-_ITEM_ACTION_RE = re.compile(
-    r"(?:\b(?:gave|grant(?:ed)?|receiv(?:e|es|ed)|obtain(?:ed)?|pick(?:ed)?\s+up|"  # i18n-exempt: regex with CJK match words, never user-facing
-    r"add(?:ed)?|equip(?:ped)?|use(?:d)?|consume(?:d)?|"  # no bare `hand`: the noun ("shaky hand") matched
-    r"drop(?:ped)?|remove(?:d)?)\b|"
-    r"给(?:了|过)?|送给|交给|转交|获得|拿到|捡到|拾起|收下|装备|使用|消耗|"
-    r"丢弃|扔掉|移除|持有|拿着)",
-    re.IGNORECASE,
-)
-_ITEM_WORD_RE = re.compile(
-    r"(?:\b(?:item|gear|equipment|inventory|backpack|key|potion|amulet|weapon|"  # i18n-exempt: regex with CJK match words, never user-facing
-    r"shield|sword|map|ledger|token|torch|badge|ring|necklace|scroll)\b|"
-    r"物品|道具|装备|物品栏|背包|钥匙|药水|护符|武器|盾|剑|刀|地图|账本|信件|"
-    r"令牌|火把|徽章|戒指|项链|卷轴)",
-    re.IGNORECASE,
-)
-
 # Tools that update the deterministic HUD-backed scene/focus and game-clock state.
 _STATE_BOOKKEEPING_TOOL_NAMES = frozenset({"kp_note", "game_clock"})
 
@@ -318,14 +302,23 @@ def _stale_scene_hud(state: TurnState) -> bool:
 
 
 def reply_claims_item_action(reply: str, item_names: frozenset[str] = frozenset()) -> bool:
-    """True when prose presents an item mutation as already completed."""
+    """True when the reply mentions a tracked item — the forged-item gate's coarse prefilter.
+
+    Deliberately NOT a verb dictionary: verbs are an open set in both languages
+    ("扯出/抢回/缴获" will always escape an enumeration — 2026-08-27 沈铁's mirror was
+    re-granted three times exactly because "一把将铜镜扯了出来" slipped the old list).
+    The gate therefore matches only the CLOSED set of names the room actually tracks
+    (catalog templates + live item documents). Whether a mention really claims a change
+    is a semantic question the check round's own LLM answers — the gate's only job is to
+    guarantee the model gets asked whenever a tracked item appears in the reply. NPC
+    dialogue and scenery mentions trip the gate too, by design; the instruction tells
+    the model to confirm "no change" and move on (one bounded check round, no new lane).
+    """
     text = reply or ""
-    if not text or not _ITEM_ACTION_RE.search(text):
+    if not text:
         return False
     lowered = text.casefold()
-    if any(name.strip().casefold() in lowered for name in item_names if name.strip()):
-        return True
-    return bool(_ITEM_WORD_RE.search(text))
+    return any(name.strip().casefold() in lowered for name in item_names if name.strip())
 
 
 def _item_mutation_done(tool_trace: list[dict]) -> bool:

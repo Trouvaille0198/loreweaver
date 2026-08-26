@@ -284,6 +284,7 @@
   "kp_tools.item.bad_args": "❌ 需要角色名和物品名",
   "kp_tools.item.bad_qty": "❌ 数量必须是正整数",
   "kp_tools.item.character_not_found": "❌ 本房间没有角色「{name}」",
+  "kp_tools.item.already_held": "❌ {character} 已持有 {item} ×{held}——这不是消耗品，不能重复授予。转手请用 transfer_item，丢失请用 remove_item；不要对同一件物品再次调用本工具。",
   "kp_tools.item.failed": "❌ 物品操作失败: {error}",
   "kp_tools.item.granted": "✅ 已给 {character} {item}",
   "kp_tools.item.not_found": "❌ {name} 身上没有「{item}」",

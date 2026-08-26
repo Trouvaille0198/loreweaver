@@ -52,6 +52,7 @@ uv run python -m app --doctor  # 体检 locales/rulepacks/skills 发现
 ## AI 代理工作约定
 - **叶子并行、合并串行。** 独立的新模块可以并行地单独构建 + 测试；对共享文件（`build_kp_toolset`、`services`、`commands`、`prompt_builder`）的接线是一次小心、顺序的通过。
 - **测试策略。** 开发新功能默认不跑 pytest——太浪费时间。本地验证用最小相关的 lint（`uv run ruff check <改动路径>`）和类型检查；测试交给 CI 兜底。只有用户明确要求、或高风险改动（生命周期/锁/provider/回放/协议）才跑测试，且只跑你模块的最小聚焦测试，绝不跑全套。
+- 开发的时候不要写测试代码，浪费时间
 - **绝不前台跑阻塞服务器**（`python -m app --serve`、`--web`、开发服务器）——会挂住。用测试验证（它们自旋临时的进程内服务器）；实在要跑就后台 + `timeout` + `kill`。
 - **决策记录：** 在提出某机制前先查 `docs/notes/rejected/`——驳回是绑定的；非平凡改动要在同一 PR 里加或更新 `docs/notes/` 里的一条记录。
 - **做生命周期/锁/provider/重放相关的事之前，** 先读 `docs/defensive-patterns.md`——付过学费的规则都在那。

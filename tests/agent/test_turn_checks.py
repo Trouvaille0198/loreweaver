@@ -16,6 +16,7 @@ about that lives:
 from __future__ import annotations
 
 from agent.context import AgentCtx
+from agent.items import ensure_catalog
 from agent.loop import run_kp_turn
 from agent.services import build_services
 from agent.tools import Toolset, tool
@@ -221,11 +222,21 @@ def test_dice_rolled_keys_off_deterministic_dice_tools_only():
     assert not dice_rolled([])
 
 
-def test_item_claim_detector_requires_an_action_and_item():
+def test_item_claim_detector_keys_off_tracked_item_names_only():
+    """No verb dictionary: the gate matches the closed set of tracked item names, and
+    the check round's LLM decides whether the prose actually claims a change."""
     assert reply_claims_item_action("Alice receives the Bronze Key.", frozenset({"Bronze Key"}))
     assert reply_claims_item_action("Alice receives the 沉钟.", frozenset({"沉钟"}))
-    assert reply_claims_item_action("把神秘护符给了 Alice。")
-    assert not reply_claims_item_action("The Bronze Key is on the table.", frozenset({"Bronze Key"}))
+    assert reply_claims_item_action("把神秘护符给了 Alice。", frozenset({"神秘护符"}))
+    # The 沈铁 mirror bug: "一把将铜镜扯了出来" escaped the old verb list — a
+    # tracked name alone must trip the gate, whatever the verb says.
+    assert reply_claims_item_action("一把将铜镜扯了出来。", frozenset({"铜镜"}))
+    # Scenery/NPC mentions trip the gate on purpose: the model confirms "no change"
+    # instead of a regex pretending to understand verbs.
+    assert reply_claims_item_action("The Bronze Key is on the table.", frozenset({"Bronze Key"}))
+    # Nothing tracked is mentioned — the gate stays quiet.
+    assert not reply_claims_item_action("雨声很大，街对面站着衙役。", frozenset({"铜镜"}))
+    assert not reply_claims_item_action("", frozenset({"铜镜"}))
 
 
 def test_scene_title_detector_hits_and_misses():
@@ -350,6 +361,9 @@ async def test_item_claim_is_reasked_until_a_mutation_tool_commits_it():
         ]
     )
     services = _services(llm)
+    # The gate matches only tracked names (the verb list is gone), so the room
+    # must actually track the item for the claim to be re-asked.
+    await ensure_catalog(services.documents, "checks-room", [{"name": "Bronze Key"}])
 
     result = await run_kp_turn(_ctx(), services, Toolset(_ItemProvider()), "Give Alice the key.")
 
@@ -357,6 +371,24 @@ async def test_item_claim_is_reasked_until_a_mutation_tool_commits_it():
     assert result.reply == "Alice receives the Bronze Key."
     assert result.tool_trace[0]["name"] == "grant_item"
     assert result.tool_trace[0]["item_lines"]
+
+
+async def test_item_check_none_protocol_keeps_the_original_prose():
+    """The check round's confirmation is an answer to the engine, never table text:
+    replying NONE keeps the original narration and keeps the internal confirmation
+    out of the player-visible reply (the 沈铁 mirror "（物品核对……）" leak)."""
+    llm = FakeLLM(script=[assistant_text("Alice keeps the Bronze Key safe."), assistant_text("NONE")])
+    services = _services(llm)
+    await ensure_catalog(services.documents, "checks-room", [{"name": "Bronze Key"}])
+
+    result = await run_kp_turn(_ctx(), services, Toolset(_ItemProvider()), "What about the Bronze Key?")
+
+    assert len(llm.calls) == 2  # main round + one item check round
+    assert result.reply == "Alice keeps the Bronze Key safe."
+    assert not result.reply.casefold().startswith("none")
+    # The confirmation is not lost — it rides the keeper-only draft lane.
+    assert "item_forged" in result.discarded_draft
+    assert "NONE" in result.discarded_draft
 
 
 async def test_a_turn_that_rolled_and_kept_numbers_out_of_prose_runs_no_checks():

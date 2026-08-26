@@ -235,6 +235,23 @@ async def inject_game_state_prompt(ctx: Any, character_manager: Any, store: Stor
                             effects=eff_str,
                         )
                     )
+                    # The party's held items (non-secret views only): without this the
+                    # keeper cannot see that a character already holds an artifact and
+                    # re-grants it on every plot beat — the duplicate grants that
+                    # stacked 沈铁's single mirror into ×3.
+                    held = member.get("items")
+                    if isinstance(held, list) and held:
+                        shown = []
+                        for it in held[:4]:
+                            label = str(it.get("name") or it.get("template_id") or "?")
+                            try:
+                                qty = int(it.get("quantity"))
+                            except (TypeError, ValueError):
+                                qty = 0
+                            shown.append(f"{label}×{qty}" if qty > 1 else label)
+                        if len(held) > 4:
+                            shown.append("…")
+                        lines.append(i18n.t("prompt.game_state.roster_items", items=", ".join(shown)))
                 # These investigators are CLAIMED and in play: the roster is who the
                 # players already are, not a menu. Without this line the KP re-ran the
                 # "choose your character" ceremony at every session start even though

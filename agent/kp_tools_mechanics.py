@@ -52,6 +52,7 @@ from agent.items import (
     render_item_views,
     reveal_linked_clues,
     set_equipped,
+    template_is_consumable,
     validate_improvised_bonus,
 )
 from agent.module_lifecycle import active_module
@@ -565,6 +566,7 @@ Args:
 Rules:
 - Call ONLY when the item is genuinely in that character's hands in the story - never pre-award, never for narration alone.
 - The item MUST be in the room's catalog; you cannot invent a template.
+- A character who already holds this item cannot be granted it again (non-consumables are unique per holder; the tool refuses duplicates). Handovers use transfer_item, losses use remove_item - never re-grant an item that is simply moving around.
 - Narrate that the character now holds it after granting."""
         i18n = self.services.i18n.with_locale(ctx.locale)
         try:
@@ -586,6 +588,10 @@ Rules:
             active = await active_module(self.services, ctx.chat_key)
             if not item_active(active, template):
                 return i18n.t("kp_tools.item.module_mismatch", item=item_id)
+            existing = await find_instance(self.services.documents, ctx.chat_key, character, item_id)
+            if existing is not None and not template_is_consumable(template):
+                held = int(existing.data.get("quantity", 1))
+                return i18n.t("kp_tools.item.already_held", character=character, item=item_id, held=held)
             await grant_instance(self.services.documents, ctx.chat_key, character, template, int(qty))
             await reveal_linked_clues(self.services, ctx, template)
             await _refresh_character_bonuses(self.services, ctx, character, owner)
@@ -594,6 +600,8 @@ Rules:
         except CharacterDataError:
             return i18n.t("kp_tools.character.data_error")
         except Exception as exc:
+            return i18n.t("kp_tools.item.failed", error=str(exc))
+
             return i18n.t("kp_tools.item.failed", error=str(exc))
 
     @tool(prep_only=True)  # keeper's off-catalog improv lane is prep-phase work
@@ -611,6 +619,7 @@ Rules:
 - Improvised items are a LIGHT channel: narrative trinkets, small rewards, consumables. NEVER use it for strong gear or scenario-critical artifacts - those must exist in the room's catalog (use grant_item).
 - If `name` already exists in the room's catalog, the real catalog template is granted instead (its kind/effect/bonus win over this call's bonus) - improvising a designed item's name must never degrade it.
 - The bonus cap is enforced; oversized bonuses are refused.
+- A character who already holds the item cannot be granted it again (the tool refuses duplicates; a second dose of a consumable is granted via qty, not by calling twice). Handovers use transfer_item, losses use remove_item - never re-grant an item that is simply moving around.
 - Narrate that the character now holds it after granting."""
         i18n = self.services.i18n.with_locale(ctx.locale)
         try:
@@ -635,6 +644,10 @@ Rules:
                 if not item_active(active, template):
                     return i18n.t("kp_tools.item.module_mismatch", item=name)
                 canonical_name = str(template.get("name") or name).strip()
+                existing = await find_instance(self.services.documents, ctx.chat_key, character, canonical_name)
+                if existing is not None and not template_is_consumable(template):
+                    held = int(existing.data.get("quantity", 1))
+                    return i18n.t("kp_tools.item.already_held", character=character, item=canonical_name, held=held)
                 await grant_instance(self.services.documents, ctx.chat_key, character, template, int(qty))
                 await reveal_linked_clues(self.services, ctx, template)
                 await _refresh_character_bonuses(self.services, ctx, character, owner)
@@ -652,6 +665,10 @@ Rules:
             if error:
                 return i18n.t(f"kp_tools.item.improv_{error}")
             template = improvised_template(name, description=description or "", bonus=bonus_map)
+            existing = await find_instance(self.services.documents, ctx.chat_key, character, name)
+            if existing is not None:
+                held = int(existing.data.get("quantity", 1))
+                return i18n.t("kp_tools.item.already_held", character=character, item=name, held=held)
             await grant_instance(self.services.documents, ctx.chat_key, character, template, int(qty))
             await _refresh_character_bonuses(self.services, ctx, character, owner)
             ctx.emit_item_grant(character, name, i18n.t("kp_tools.item.improvised_granted", character=character, item=name))

@@ -50,6 +50,12 @@ async def get_item_catalog(documents: DocumentStore, chat_key: str) -> list[dict
     return items if isinstance(items, list) else []
 
 
+def item_name_key(value: Any) -> str:
+    """Normalize names for catalog identity without doing fuzzy matching."""
+    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return "".join(char for char in normalized if char.isalnum())
+
+
 async def catalog_template(documents: DocumentStore, chat_key: str, name: str) -> dict | None:
     """One catalog template by normalized name or alias, or None."""
     key = item_name_key(name)
@@ -69,10 +75,18 @@ async def catalog_template(documents: DocumentStore, chat_key: str, name: str) -
     return None
 
 
-def item_name_key(value: Any) -> str:
-    """Normalize names for catalog identity without doing fuzzy matching."""
-    normalized = unicodedata.normalize("NFKC", str(value or "")).casefold()
-    return "".join(char for char in normalized if char.isalnum())
+CONSUMABLE_KINDS = frozenset({"consumable", "potion", "drug", "food", "medical"})
+
+
+def template_is_consumable(template: dict) -> bool:
+    """True when a catalog template is a consumable (repeat grants legitimately merge quantity).
+
+    Non-consumables (misc/weapon/quest/gem/tool/armor/…) are unique per holder:
+    the AI grant verbs refuse a second grant, because a story artifact can never
+    legitimately appear twice in one inventory. The CLI's keeper lane keeps the
+    raw merge semantics — a human keeper may intentionally hand out a duplicate.
+    """
+    return str(template.get("kind") or "").strip().casefold() in CONSUMABLE_KINDS
 
 
 async def ensure_catalog(documents: DocumentStore, chat_key: str, templates: list[dict]) -> None:
