@@ -69,6 +69,15 @@ async def build_room_state(
     state: dict[str, Any] = {"type": "state", "party": party, "initiative": initiative, "online": 0}
     state["room_system"] = (await services.room_rulepack(ctx)).system
 
+    # `.share` publishes a player-facing module link: the public face rides the
+    # state frame so ANY member (no keeper admin round trip) can render the page.
+    module_share = await services.store.state_get(ctx.chat_key, "module_share")
+    if module_share:
+        try:
+            state["module_share"] = json.loads(module_share)
+        except (TypeError, ValueError):
+            pass
+
     if sheet is not None:
         state["character"] = await _character_payload(services, ctx.chat_key, sheet, ctx.locale)
 
@@ -105,6 +114,10 @@ async def build_room_state(
     )
     if pregens:
         state["pregens"] = pregens
+    characters = await _owned_characters(services, ctx, locale=ctx.locale)
+    if characters:
+        state["characters"] = characters
+
 
     systems = _rule_systems()
     if systems:
@@ -264,6 +277,27 @@ async def _character_payload(
         payload["avatar"] = avatar
     return payload
 
+
+async def _owned_characters(
+    services: Services, ctx: AgentCtx, *, locale: str | None = None
+) -> list[dict[str, Any]]:
+    """The full character roster owned by this state-frame recipient.
+
+    Sheets are filtered by owner before they are serialized. The payload uses the
+    same pack-shaped projection as the active `state.character`, including private
+    notes because this list is only sent to the owning viewer.
+    """
+    try:
+        sheets = await services.characters.list_character_sheets(ctx.uid(), ctx.chat_key)
+    except Exception:
+        return []
+    payloads: list[dict[str, Any]] = []
+    for sheet in sheets:
+        try:
+            payloads.append(await _character_payload(services, ctx.chat_key, sheet, locale))
+        except Exception:
+            continue
+    return payloads
 
 def _wire_attributes(sheet: CharacterSheet) -> dict[str, Any]:
     """`state.character.attributes`: the sheet's CHARACTERISTICS, in the pack's order.
