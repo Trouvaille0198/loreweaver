@@ -1,12 +1,16 @@
-"""The `.summary` command oracle: a player-safe, LLM-generated campaign recap.
+"""The `.summary` command oracle: a keeper-only, non-blocking LLM campaign recap.
 
-Written in the same style as `test_chronicle_commands.py`. The DoD surfaces: an
-empty room yields a localized notice WITHOUT calling the model; a room with
-material hands ONLY player projections to the authoring LLM and renders its
-recap; keeper annotations cannot reach the prompt or the reply.
+Written in the style of `test_image_command.py`: the model call runs in a
+tracked background task OUTSIDE the room's turn lock, the command returns a
+"started" notice immediately, and the recap lands as a room system message.
+The DoD surfaces: players are denied; the recap is assembled ONLY from player
+projections (keeper annotations cannot reach the prompt or the reply); the
+empty-room notice and failures surface as system messages without blocking.
 """
 
 from __future__ import annotations
+
+import asyncio
 
 from agent.chronicle import CAMPAIGN_SUMMARY_DOC_TYPE, CAMPAIGN_SUMMARY_ID, CHRONICLE_DOC_TYPE
 from agent.context import AgentCtx
@@ -23,6 +27,14 @@ RECAP = (
     "Where we are: the party is searching the flooded chapel. "
     "Story so far: the bell ringer was freed."
 )
+
+
+class _Hub:
+    def __init__(self) -> None:
+        self.events = []
+
+    async def publish(self, session_key, event, *, exclude=None):
+        self.events.append((session_key, event, exclude))
 
 
 def _services(*, llm: FakeLLM | None = None):
@@ -75,57 +87,83 @@ async def _seed_material(services) -> None:
     )
 
 
-async def test_summary_empty_room_gives_a_localized_notice_without_calling_the_model():
+async def _settle(router: CommandRouter) -> None:
+    """Wait for the dispatch's background `.summary` task to finish.
+
+    FakeLLM completes without real IO, so the tracked-task set drains within a
+    few event-loop ticks; poll it instead of assuming timing.
+    """
+    tasks = getattr(router, "_summary_background_tasks", None)
+    for _ in range(200):
+        if not tasks:
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("background summary task did not settle")
+
+
+async def test_summary_is_keeper_only():
     services = _services()
     router = CommandRouter(services)
     i18n = services.i18n.with_locale("en")
 
     reply = await router.dispatch(_player_ctx(), ".summary")
 
-    assert reply == i18n.t("commands.summary.empty")
-    assert not services.llm.calls, "no material means no model call"
+    assert reply == i18n.t("commands.summary.denied")
+    assert not services.llm.calls, "a denied player must not trigger a model call"
 
 
-async def test_summary_hands_only_player_projections_to_the_llm_and_renders_its_recap():
+async def test_summary_returns_started_and_publishes_the_recap_as_a_system_message():
     llm = FakeLLM(script=[assistant_text(RECAP)])
     services = _services(llm=llm)
-    router = CommandRouter(services)
+    hub = _Hub()
+    router = CommandRouter(services, hub=hub)
     await _seed_material(services)
+    i18n = services.i18n.with_locale("en")
 
-    reply = await router.dispatch(_player_ctx(), ".summary")
+    reply = await router.dispatch(_keeper_ctx(), ".summary")
 
-    assert RECAP in reply, "the model's recap is the reply"
+    assert reply == i18n.t("commands.summary.started"), "the command never blocks"
+    await _settle(router)
+
+    system_events = [event for _, event, _ in hub.events if event.kind == "system"]
+    assert system_events[0].text == i18n.t("commands.summary.generating"), "spinner line first"
+    assert system_events[-1].text == RECAP, "the recap lands as a room system message"
+
     assert len(llm.calls) == 1
     prompt = "\n".join(str(message.get("content", "")) for message in llm.calls[0][0])
     assert "freed the bell ringer" in prompt, "the rolling summary feeds the recap"
     assert "camped by the pier" in prompt, "the chronicle tail feeds the recap"
     assert "search the chapel" in prompt, "the conversation tail feeds the recap"
     assert SENTINEL not in prompt, "keeper annotations never reach the model"
-    assert SENTINEL not in reply, "the reply is player-safe too"
+    assert SENTINEL not in system_events[-1].text, "the reply is player-safe too"
 
 
-async def test_summary_works_for_the_keeper_and_accepts_the_chinese_verb():
-    llm = FakeLLM(script=[assistant_text(RECAP), assistant_text(RECAP)])
-    services = _services(llm=llm)
-    router = CommandRouter(services)
-    await _seed_material(services)
+async def test_summary_empty_room_publishes_the_empty_notice():
+    services = _services()
+    hub = _Hub()
+    router = CommandRouter(services, hub=hub)
+    i18n = services.i18n.with_locale("en")
 
-    keeper_reply = await router.dispatch(_keeper_ctx(), ".summary")
-    assert RECAP in keeper_reply
+    await router.dispatch(_keeper_ctx(), ".summary")
+    await _settle(router)
 
-    zh_reply = await router.dispatch(_player_ctx(), ".概括")
-    assert RECAP in zh_reply
+    system_events = [event for _, event, _ in hub.events if event.kind == "system"]
+    assert system_events[-1].text == i18n.t("commands.summary.empty")
+    assert not services.llm.calls, "no material means no model call"
 
 
-async def test_summary_reports_a_failed_generation():
+async def test_summary_publishes_the_failed_notice_when_the_model_errors():
     def _boom(messages, tools):
         raise RuntimeError("provider down")
 
     services = _services(llm=FakeLLM(responder=_boom))
-    router = CommandRouter(services)
+    hub = _Hub()
+    router = CommandRouter(services, hub=hub)
     i18n = services.i18n.with_locale("en")
     await _seed_material(services)
 
-    reply = await router.dispatch(_player_ctx(), ".summary")
+    await router.dispatch(_keeper_ctx(), ".summary")
+    await _settle(router)
 
-    assert reply == i18n.t("commands.summary.failed")
+    system_events = [event for _, event, _ in hub.events if event.kind == "system"]
+    assert system_events[-1].text == i18n.t("commands.summary.failed")
