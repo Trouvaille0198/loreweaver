@@ -274,6 +274,10 @@ class GatewayRunner:
 
         if command is not None and command[0].private_reply and not adapter.supports_private_reply(source):
             return ChatMessage(text=get_i18n(locale).t("runner.private_reply_unavailable"))
+        if command is not None and command[0].canonical == "recap":
+            # `recap` reads player-projected documents only; do not make a fast
+            # read wait behind the room's long AI turn.
+            return await self._answer_standalone(hub_ctx, text)
 
         # On the shared-room path the toolset is wired with the hub + router so the KP's
         # `companion_act` tool can drive a live companion turn (M10).

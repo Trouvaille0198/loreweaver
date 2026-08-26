@@ -376,6 +376,36 @@ async def test_inject_game_state_prompt_roster_shows_claimed_persona_background(
     assert "Bob: None | Status: None" in result
 
 
+async def test_inject_game_state_prompt_roster_shows_held_items():
+    """The keeper's roster panel carries each member's held items (name + stacked
+    quantity), so the AI can see that a character already holds an artifact and
+    never re-grants it on a later plot beat."""
+    store = Store(":memory:")
+    ctx = _Ctx(chat_key="chat-items", user_id="u1")
+    await _seed_game_state_store(store, ctx.chat_key, ctx.user_id)
+    manager = _FakeCharacterManager(
+        roster=[
+            {
+                "name": "Alice",
+                "system": "CoC",
+                "resources": [],
+                "status_effects": [],
+                "items": [
+                    {"name": "The Bronze Mirror", "quantity": 1},
+                    {"name": "Ration", "quantity": 3},
+                ],
+            },
+            {"name": "Bob", "system": "CoC", "resources": [], "status_effects": [], "items": []},
+        ]
+    )
+
+    result = await inject_game_state_prompt(ctx, manager, store, EN)
+
+    assert EN.t("prompt.game_state.roster_items", items="The Bronze Mirror, Ration×3") in result
+    # Bob holds nothing: no items suffix on his line.
+    assert EN.t("prompt.game_state.roster_line", name="Bob", meters="None", effects="None") in result
+
+
 async def test_inject_game_state_prompt_solo_character_shows_generic_meters():
     """No party roster yet: the lone active character's own pack-declared resource
     meters render via `core.rulepacks`/`core.sheets` directly -- `core.prompt_sections`

@@ -123,9 +123,10 @@ async def test_grant_item_unlocks_linked_text_module_evidence():
 
 
 async def test_grant_item_merges_same_owner_same_name_quantity():
+    # Consumables legitimately stack: a second grant merges into the held quantity.
     services, ctx = _build()
     await _make_character(services, ctx.chat_key, "u1", "Alice")
-    await _seed(services, ctx.chat_key, _tpl("Ration"))
+    await _seed(services, ctx.chat_key, _tpl("Ration", kind="consumable"))
     tools = CharacterTools(services)
 
     await tools.grant_item(ctx, "Alice", "Ration", qty=2)
@@ -134,6 +135,25 @@ async def test_grant_item_merges_same_owner_same_name_quantity():
     instances = await instances_for_owner(services.documents, ctx.chat_key, "Alice")
     assert len(instances) == 1
     assert instances[0].data.get("quantity") == 5
+
+
+async def test_grant_item_rejects_duplicate_non_consumable():
+    """A non-consumable is unique per holder: a second grant of the same item is
+    refused and reports the held quantity, so the AI cannot stack one story
+    artifact into a pile (the 沈铁 铜镜 ×3 bug)."""
+    services, ctx = _build()
+    await _make_character(services, ctx.chat_key, "u1", "Alice")
+    await _seed(services, ctx.chat_key, _tpl("Bronze Key"))
+    tools = CharacterTools(services)
+
+    first = await tools.grant_item(ctx, "Alice", "Bronze Key")
+    assert "Gave" in first
+    second = await tools.grant_item(ctx, "Alice", "Bronze Key")
+
+    assert "already holds" in second
+    instances = await instances_for_owner(services.documents, ctx.chat_key, "Alice")
+    assert len(instances) == 1
+    assert instances[0].data.get("quantity") == 1
 
 
 async def test_grant_item_rejects_item_not_in_catalog():
@@ -505,16 +525,20 @@ async def test_improvise_item_with_small_bonus():
     assert instances[0].data["bonus"] == {"spot_hidden": 1}
 
 
-async def test_improvise_item_merges_quantity():
+async def test_improvise_item_rejects_duplicate():
+    """Improvised items are unique per holder too: a second improvise of the same
+    name is refused and the held quantity stays put."""
     services, ctx = _build()
     await _make_character(services, ctx.chat_key, "u1", "Alice")
     tools = CharacterTools(services)
 
-    await tools.improvise_item(ctx, "Alice", "治疗药水", qty=3)
-    await tools.improvise_item(ctx, "Alice", "治疗药水", qty=2)
+    first = await tools.improvise_item(ctx, "Alice", "治疗药水", qty=3)
+    assert "Gave" in first
+    second = await tools.improvise_item(ctx, "Alice", "治疗药水", qty=2)
 
+    assert "already holds" in second
     instances = await instances_for_owner(services.documents, ctx.chat_key, "Alice")
-    assert len(instances) == 1 and instances[0].data.get("quantity") == 5
+    assert len(instances) == 1 and instances[0].data.get("quantity") == 3
 
 
 async def test_improvise_item_rejects_oversized_bonus():

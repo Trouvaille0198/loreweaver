@@ -2838,6 +2838,39 @@ async def test_admin_list_skills_reflects_the_callers_room_and_enable_toggles_it
         await server.close()
 
 
+async def test_readonly_admin_generate_skips_the_room_lock(tmp_path):
+    """`module_list`/`worldbook_list` (and their detail views) are pure reads: while the
+    room lock is held — a KP turn or a `.settle` model call — the keeper's library page
+    must still answer instead of hanging in "processing…"."""
+    import time
+
+    settings = Settings(
+        locale="en", data_dir=str(tmp_path), llm=LLMSettings(provider="openai", chat_model="gpt-4o")
+    )
+    services = build_services(settings, llm=FakeLLM(script=[]), embeddings=FakeEmbeddings(64))
+    keystore = Keystore()
+    keeper_key = keystore.add(room="arkham", name="Keeper", role="keeper")
+    server = TuiServer(services, keystore, port=0)
+    # Production wires the module/worldbook admin surface only in the web carrier
+    # (serve_both.py); mount it the same way so module_list routes like in prod.
+    from module_admin import install_module_admin
+
+    server.admin = install_module_admin(server.admin)
+    url = await _start(server)
+    try:
+        ws, *_ = await _connect_and_join(url, keeper_key, "Keeper")
+        async with server.hub.turn_lock(session_key_for_room("arkham")):
+            t0 = time.monotonic()
+            reply = await _send_generate(
+                ws, {"type": "admin_generate", "kind": "module_list", "description": "{}"}
+            )
+            elapsed = time.monotonic() - t0
+        assert reply["type"] == "admin_generated"
+        assert elapsed < 2.0, f"read-only admin frame waited on the room lock ({elapsed:.2f}s)"
+    finally:
+        await server.close()
+
+
 async def test_admin_generate_authors_and_installs_skill_rule_and_module(tmp_path):
     """`admin_generate` for each `kind` runs the matching `agent.forge` engine end to end (a real
     `TuiServer` + FakeLLM-scripted responses, mirroring `tests/agent/test_forge*.py`'s fixtures),
