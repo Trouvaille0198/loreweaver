@@ -98,17 +98,30 @@ def append_entry(data: dict[str, Any], text: str, turn: int) -> dict[str, Any]:
     return {**data, "entries": entries}
 
 
-def append_playthrough_entry(data: dict[str, Any], text: str, turn: int) -> dict[str, Any]:
-    """Append ONE scenario memory — the character's arc across the playthrough
-    that just settled (`.settle apply`): what they went through, what they did.
-    Tagged ``kind: "playthrough"`` so player-facing surfaces can show the
-    scenario-level memories without the raw per-turn Scribe journal. Pure."""
-    entries = list(data.get("entries", []))
+def append_playthrough_entry(
+    data: dict[str, Any], text: str, turn: int, *, scenario: str = ""
+) -> dict[str, Any]:
+    """Record ONE scenario memory — the character's experience across the
+    playthrough that just settled (`.settle apply`). Tagged
+    ``kind: "playthrough"`` and keyed by ``scenario`` so player-facing surfaces
+    can show the scenario-level memories without the raw per-turn journal, and
+    a re-settle of the same scenario REPLACES the old entry instead of stacking
+    a duplicate. Pure."""
+    entries = [
+        entry
+        for entry in (data.get("entries") or [])
+        if not (
+            isinstance(entry, dict)
+            and entry.get("kind") == "playthrough"
+            and entry.get("scenario") == scenario
+        )
+    ]
     entries.append(
         {
             "text": str(text).strip()[:_MAX_ENTRY_CHARS],
             "turn": int(turn),
             "kind": "playthrough",
+            "scenario": str(scenario)[:60],
         }
     )
     if len(entries) > MAX_ENTRIES:

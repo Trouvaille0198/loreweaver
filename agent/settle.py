@@ -66,7 +66,7 @@ From the evidence below — the skill checks each character actually attempted (
 
 1. "growth": the skills this character EARNED an improvement check on — genuinely exercised this campaign: attempted repeatedly, pushed through failure, or landed a critical when it mattered. At most 3 per character. Names must be skills on that character's sheet (or its aliases).
 2. "attribute_changes": a small, rule-fair attribute delta the campaign's events justify (training, injury, revelation, horror) — at most 2 per character, delta typically ±1..±2. Names must be attributes on the sheet. NEVER touch HP/SAN/MP — those are resources, not growth.
-3. "memory_fold": this character's PLAYTHROUGH memory — ONE short paragraph (max 600 chars) telling what they went through and did in this scenario: the main things that happened to them, what they did, saw, learned or suffered. A narrative of their experience, written in the language of the scenario, not a character summary.
+3. "memory_fold": this character's PLAYTHROUGH memory — ONE self-contained paragraph (max 600 chars) that reads as a durable MEMORY, not a story excerpt: it must make sense to someone with no context of this scenario. Open with the character's name and the scenario; then state the main things they went through and did, and how it ended. Written in the language of the scenario. NEVER use context-dependent phrasing ("this time", "no longer", "he became") that only means something inside the scenario; no pronouns for scenario-only people without identifying them; no fragments.
 4. "background": an updated backstory that ABSORBS this campaign's arc — KEEP every original trait from the sheet's `backstory` (origin, family, occupation, personality, ties) and weave this campaign's events into it, so the character's past is extended, never replaced. Null when unchanged, max 800 chars.
 5. "keeper_note": a keeper-only note about the character's growth (max 400 chars), or "".
 
@@ -427,7 +427,12 @@ async def apply_settlement(services: Services, chat_key: str, settlement: Settle
                 except Exception:  # noqa: BLE001 — a missing module name is cosmetic
                     pass
                 prefix = f"【{scenario}】" if scenario else ""
-                data = append_playthrough_entry(memory_doc.data, f"{prefix}{char.memory_fold}", await chronicle_turn(services.store, chat_key))
+                data = append_playthrough_entry(
+                    memory_doc.data,
+                    f"{prefix}{char.memory_fold}",
+                    await chronicle_turn(services.store, chat_key),
+                    scenario=scenario,
+                )
                 # The keeper's growth note still lands on the document, just not
                 # folded into a rolling summary.
                 note = str(char.keeper_note or "").strip()

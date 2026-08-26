@@ -174,8 +174,30 @@ async def test_apply_settlement_folds_memories_and_updates_background():
         "Vera uncovered the sunken bell's secret.",
     ]
     assert memory.data["entries"][1]["kind"] == "playthrough"
+    assert memory.data["entries"][1].get("scenario", "") == ""
     assert "sunken bell" not in memory.data["summary"]
     assert memory.data["keeper"] == "she doubts the mayor"
+
+    # Re-settling the same scenario REPLACES the playthrough memory instead of
+    # stacking a duplicate.
+    result = await apply_settlement(
+        services,
+        ROOM,
+        Settlement(
+            characters=(
+                CharacterSettlement(
+                    name="Vera",
+                    memory_fold="Vera found the bell and sealed the chapel.",
+                ),
+            )
+        ),
+    )
+    assert result.outcomes[0].folded
+    memory = await services.documents.get(ROOM, CHARACTER_MEMORY_DOC_TYPE, "Vera")
+    assert [entry["text"] for entry in memory.data["entries"]] == [
+        "she found the ledger",
+        "Vera found the bell and sealed the chapel.",
+    ]
     sheet = await services.characters.get_character("u1", ROOM)
     assert sheet.background == "A librarian who survived the chapel."
 
