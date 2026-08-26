@@ -209,7 +209,7 @@ def render_frame(event: Event) -> dict[str, Any] | None:
     frames; a `player_action` echo renders as a `narrative{speaker:"player"}`.
     """
     if event.kind == "player_action":
-        return {
+        frame: dict[str, Any] = {
             "type": "narrative",
             # The stable id is the persisted record id (`origin_id`): the join replay
             # renders the same id, so a reconnect REPLACES this line in place instead
@@ -221,6 +221,12 @@ def render_frame(event: Event) -> dict[str, Any] | None:
             "text": event.text,
             "format": event.fmt,
         }
+        # A command echo is unicast to its author only (raw arguments — attachment
+        # paths, provider endpoints, keys — never reach the room): mark it so a
+        # client can show the line as visible to this seat alone.
+        if event.private:
+            frame["private"] = True
+        return frame
     if event.kind == "narrative":
         frame: dict[str, Any] = {
             "type": "narrative",
@@ -231,6 +237,11 @@ def render_frame(event: Event) -> dict[str, Any] | None:
         }
         if event.name:
             frame["name"] = event.name
+        # A `private` line (sensitive command reply, failed-turn feedback) is
+        # unicast to one connection; the flag lets a client mark it as visible
+        # to this seat only, never as table content.
+        if event.private:
+            frame["private"] = True
         return frame
     if event.kind == "narrative_delta":
         delta: dict[str, Any] = {
@@ -262,15 +273,20 @@ def render_frame(event: Event) -> dict[str, Any] | None:
         # v1.8 module-panel frames: the event data IS the wire frame (type included),
         # already validated + per-viewer filtered by `gateway.panels`.
         return dict(event.data)
-    if event.kind == "presence":
-        return {"type": "presence", **event.data}
+    if event.kind == "system":
+        frame = {"type": "system", "level": event.data.get("level", ""), "text": event.text}
+        # `spinner: false` is an explicit stop signal (retire the pending line);
+        # absent = no spinner semantics at all.
+        if "spinner" in event.data:
+            frame["spinner"] = bool(event.data.get("spinner"))
         # `.poke` nudges: the target client matches `poke.target_user`/`poke.target_name`
         # against its own identity and shows the "poked you" notice (additive, ignored by
         # clients that predate it).
         if "poke" in event.data:
             frame["poke"] = event.data["poke"]
         return frame
-        return frame
+    if event.kind == "presence":
+        return {"type": "presence", **event.data}
     if event.kind == "turn_status":
         return {"type": "turn_status", **event.data}
     if event.kind == "media":
@@ -291,7 +307,14 @@ def parse_frame(raw: Any) -> dict[str, Any] | None:
 
 
 def error_frame(code: str, i18n: I18n) -> dict[str, Any]:
-    return {"type": "error", "code": code, "message": i18n.t(f"tui.error.{code}")}
+    return {
+        "type": "error",
+        "code": code,
+        "message": i18n.t(f"tui.error.{code}"),
+        # Every refusal is unicast to the connection that caused it — feedback
+        # for this seat, never table content.
+        "private": True,
+    }
 
 
 # Fire-and-forget sends need a strong reference or the loop may collect them mid-flight.
@@ -309,7 +332,9 @@ def notify_turn_queued(member: Any, i18n: I18n) -> None:
 
     async def _send() -> None:
         try:
-            await member.send_frame({"type": "system", "level": "info", "text": i18n.t(TURN_QUEUED_KEY)})
+            await member.send_frame(
+                {"type": "system", "level": "info", "text": i18n.t(TURN_QUEUED_KEY), "private": True}
+            )
         except Exception:
             logger.debug("Could not deliver the turn-queued notice", exc_info=True)
 
@@ -989,7 +1014,9 @@ class SessionCore:
         except AvatarError as exc:
             await member.send_frame(error_frame(exc.code, i18n))
             return
-        await member.send_frame({"type": "system", "level": "info", "text": i18n.t("tui.avatar.set_done")})
+        await member.send_frame(
+            {"type": "system", "level": "info", "text": i18n.t("tui.avatar.set_done"), "private": True}
+        )
         await publish_state(self.hub, self.services, self._ctx_for(member))
 
     def drop_pending_media(self, member: Any) -> None:
