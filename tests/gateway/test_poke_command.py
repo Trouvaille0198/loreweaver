@@ -110,11 +110,40 @@ async def test_poke_self_uses_the_self_text():
     router = CommandRouter(services, hub=hub)
     i18n = services.i18n.with_locale("en")
     await _seed_party(services, claimed_by="Player One", owner="p1")
-    # The poking player's own active character is 阿理; poke their own 阿理? No —
-    # make the actor's active character the target so the self branch fires.
+    # Make the poking player's active character the target so the self branch fires.
     await services.store.state_set(ROOM, "active_character.p1", "陈武")
 
     await router.dispatch(_ctx(), ".poke 陈武")
 
     _, event, _, _ = hub.events[0]
     assert event.text == i18n.t("commands.poke.self", actor="陈武")
+
+
+async def test_poke_turn_never_falls_through_to_the_ai_keeper():
+    """A silent command turn (`.poke` returns no reply text — its event IS the
+    whole turn) must not re-enter the KP pipeline with the raw command line.
+    Regression: `gateway.turn.run_turn` used to treat a matched-but-replyless
+    command as "nothing happened" and run an AI round on ".poke <name>".
+    A scriptless FakeLLM makes any AI call raise, so the assert below doubles
+    as the proof that no KP consultation happened."""
+    from agent.kp_tools import build_kp_toolset
+    from gateway.hub import RoomHub
+    from gateway.turn import run_turn
+
+    llm = FakeLLM(script=[])
+    services = build_services(Settings(), llm=llm, embeddings=FakeEmbeddings(64))
+    hub = RoomHub()
+    router = CommandRouter(services, hub=hub)
+    await _seed_party(services, claimed_by="Player Two", owner="u2")
+
+    result = await run_turn(
+        hub,
+        services,
+        _ctx(),
+        ".poke 陈武",
+        command_router=router,
+        toolset=build_kp_toolset(services),
+    )
+
+    assert result is None, "a command turn yields no KP result"
+    assert not llm.calls, "the AI Keeper must never be consulted for a poke"

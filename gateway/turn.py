@@ -206,6 +206,11 @@ async def run_turn(
         else:
             await hub.publish(ctx.chat_key, reply_event)
     else:
+        # A matched command that returns NO reply text (a silent command such as
+        # `.poke`, which broadcasts its own event via `ctx.router.hub`) has HANDLED
+        # the turn — never fall through to the AI Keeper with the raw command line.
+        if matched_spec is not None and reply is not None:
+            return None
         # `.bot off` (gateway.commands.rooms.cmd_bot_toggle) mutes the AI Keeper for this
         # room: the player message above is still echoed to everyone (a human-Keeper
         # table keeps chatting, dice commands keep working), but no KP turn runs.
