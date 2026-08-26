@@ -1467,6 +1467,16 @@ def _record_call(
             {"name": line.get("name", ""), "text": _capped_tool_result(str(line.get("text", "")), ctx.locale)}
             for line in npc_lines
         ]
+    item_lines = ctx.consume_item_lines()
+    if item_lines:
+        trace_entry["item_lines"] = [
+            {
+                "character": line.get("character", ""),
+                "item": line.get("item", ""),
+                "text": _capped_tool_result(str(line.get("text", "")), ctx.locale),
+            }
+            for line in item_lines
+        ]
     tool_trace.append(trace_entry)
     conversation.append({"role": "tool", "tool_call_id": call.id, "content": tool_result})
     return trace_entry

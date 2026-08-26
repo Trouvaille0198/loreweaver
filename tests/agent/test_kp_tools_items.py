@@ -470,6 +470,40 @@ async def test_improvise_item_rejects_malformed_bonus():
     assert await _instance_names(services, ctx.chat_key, "Alice") == []
 
 
+async def test_improvise_item_emits_public_grant_notice():
+    """The grant lands on the ctx notice channel (→ system narrative on the wire)
+    so the table sees who now holds what even if the model's narration skips it."""
+    services, ctx = _build()
+    await _make_character(services, ctx.chat_key, "u1", "Alice")
+    tools = CharacterTools(services)
+
+    reply = await tools.improvise_item(ctx, "Alice", "神秘护符", "石质护符，刻着看不懂的符文")
+
+    assert "improvised" in reply
+    notices = ctx.consume_item_lines()
+    assert len(notices) == 1
+    assert notices[0]["character"] == "Alice"
+    assert notices[0]["item"] == "神秘护符"
+    assert "improvised" in notices[0]["text"]
+
+
+async def test_improvise_item_emits_grant_notice_for_catalog_template():
+    """The catalog branch (improvising a designed item's name) announces the grant
+    just like the off-catalog branch — both land items in a character's hands."""
+    services, ctx = _build()
+    await _make_character(services, ctx.chat_key, "u1", "Alice")
+    await _seed(services, ctx.chat_key, _tpl("撬棍", kind="weapon", slot="weapon"))
+    tools = CharacterTools(services)
+
+    reply = await tools.improvise_item(ctx, "Alice", "撬棍", "顺手捡的")
+
+    assert "Gave" in reply
+    notices = ctx.consume_item_lines()
+    assert len(notices) == 1
+    assert notices[0]["character"] == "Alice"
+    assert notices[0]["item"] == "撬棍"
+
+
 async def test_improvise_item_unknown_character():
     services, ctx = _build()
     tools = CharacterTools(services)

@@ -705,6 +705,33 @@ def _npc_events(entry: dict[str, Any], i18n: I18n) -> list[Event]:
     return events
 
 
+def _item_events(entry: dict[str, Any]) -> list[Event]:
+    """The item-grant notices one tool call put in front of the table.
+
+    Built ONLY from the notices the tool EMITTED (`AgentCtx.emit_item_grant`,
+    recorded on the trace as `item_lines`) — the same rule dice and NPC frames
+    follow: never reconstructed from the tool's return string. The text is
+    already localized at the call site; a grant becomes a system-authored
+    narrative line so the table sees who now holds what even when the model's
+    narration skips it. A keeper-only tool call has no public consequences at
+    all.
+    """
+    if entry.get("keeper_only") or entry.get("suppressed"):
+        return []
+    lines = entry.get("item_lines")
+    if not isinstance(lines, list):
+        return []
+    events: list[Event] = []
+    for line in lines:
+        if not isinstance(line, dict):
+            continue
+        text = str(line.get("text") or "")
+        if not text.strip():
+            continue
+        events.append(Event.narrative(speaker="system", text=text, fmt="plain"))
+    return events
+
+
 def _public_tool_events(entry: dict[str, Any], actor: str, i18n: I18n) -> list[Event]:
     """Everything ONE tool call puts in front of the whole table, in table order.
 
@@ -712,7 +739,7 @@ def _public_tool_events(entry: dict[str, Any], actor: str, i18n: I18n) -> list[E
     two lists that drifted apart would show a reconnecting player a different scene
     than the one everyone else watched.
     """
-    return [*_dice_events(entry, actor), *_npc_events(entry, i18n)]
+    return [*_dice_events(entry, actor), *_npc_events(entry, i18n), *_item_events(entry)]
 
 
 # The public tool events of recent turns, kept for join replay. Windowed by TURN, not by

@@ -191,6 +191,31 @@ def test_npc_lines_are_built_from_what_the_tool_emitted_not_from_its_result() ->
     assert _public_tool_events(keeper, "Nora", i18n) == []
 
 
+def test_item_events_are_built_from_what_the_tool_emitted_not_from_its_result() -> None:
+    i18n = get_i18n("en")
+    granted = {
+        "name": "improvise_item",
+        "arguments": {"character": "Alice", "name": "神秘护符"},
+        "result": "✅ Gave Alice an improvised 神秘护符",
+        "item_lines": [{"character": "Alice", "item": "神秘护符", "text": "✅ Gave Alice an improvised 神秘护符"}],
+    }
+    (event,) = _public_tool_events(granted, "Nora", i18n)
+    assert event.kind == "narrative"
+    assert event.speaker == "system"
+    assert event.text == "✅ Gave Alice an improvised 神秘护符"
+    assert event.fmt == "plain"
+
+    # A hook vetoed the call: the trace carries the refusal as RESULT and `suppressed`.
+    vetoed = {"name": "improvise_item", "result": "Tool improvise_item was refused by a room hook: not now", "suppressed": True}
+    assert _public_tool_events(vetoed, "Nora", i18n) == []
+    # An error result is text the model reads — no emitted notice, no public event.
+    errored = {"name": "improvise_item", "arguments": {"character": "Ghost", "name": "石头"}, "result": "❌ No character found matching Ghost"}
+    assert _public_tool_events(errored, "Nora", i18n) == []
+    # And a keeper-only call has no public consequences at all.
+    keeper = {**granted, "keeper_only": True}
+    assert _public_tool_events(keeper, "Nora", i18n) == []
+
+
 async def test_speak_as_npc_emits_its_line_on_success_only() -> None:
     """The tool's own contract, end to end: a voiced line lands on the ctx channel; a
     missing NPC returns its message and emits nothing."""
