@@ -354,7 +354,15 @@ class RoomsCommands:
             "target_user": target_user,
         }
         if ctx.router.hub is not None:
+            member_count = len(ctx.router.hub.rooms.get(ctx.chat_key, ()))
             await ctx.router.hub.publish(ctx.chat_key, event)
+            logger.warning(
+                "poke: published to %d members (text=%r)",
+                member_count,
+                event.text,
+            )
+        else:
+            logger.warning("poke: no hub to publish to (chat_key=%s)", ctx.chat_key)
         return None
 
     async def cmd_undo(self, ctx: CommandCtx) -> str:
