@@ -573,9 +573,6 @@ class SheetCommands:
         for entry in entries:
             key = "pregen.commands.line_claimed" if entry.get("claimed_by") else "pregen.commands.line_free"
             line = ctx.i18n.t(key, name=entry.get("name", ""), system=entry.get("system", ""))
-            blurb = str(entry.get("blurb", "")).strip()
-            if blurb:
-                line += ctx.i18n.t("pregen.commands.blurb_suffix", blurb=blurb)
             claimer = self._pregen_claimer_name(ctx, str(entry.get("claimed_by") or ""))
             if claimer:
                 line += ctx.i18n.t("pregen.commands.claimed_by_suffix", claimer=claimer)

@@ -31,9 +31,11 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from agent.chronicle import chronicle_turn
+from agent.module_lifecycle import active_module as room_active_module
 from agent.services import Services
 from core.character_manager import CharacterSheet
-from core.character_memory import CHARACTER_MEMORY_DOC_TYPE, fold_entries
+from core.character_memory import CHARACTER_MEMORY_DOC_TYPE, append_playthrough_entry
 from core.character_rules import validate_sheet
 from core.rulepacks import load_rulepack
 from core.sheets import set_sheet_value, sheet_value
@@ -64,14 +66,14 @@ From the evidence below — the skill checks each character actually attempted (
 
 1. "growth": the skills this character EARNED an improvement check on — genuinely exercised this campaign: attempted repeatedly, pushed through failure, or landed a critical when it mattered. At most 3 per character. Names must be skills on that character's sheet (or its aliases).
 2. "attribute_changes": a small, rule-fair attribute delta the campaign's events justify (training, injury, revelation, horror) — at most 2 per character, delta typically ±1..±2. Names must be attributes on the sheet. NEVER touch HP/SAN/MP — those are resources, not growth.
-3. "memory_fold": fold that character's memory entries into ONE short life-summary paragraph (max 600 chars) — their arc across this campaign, what they became.
+3. "memory_fold": this character's PLAYTHROUGH memory — ONE short paragraph (max 600 chars) telling what they went through and did in this scenario: the main things that happened to them, what they did, saw, learned or suffered. A narrative of their experience, written in the language of the scenario, not a character summary.
 4. "background": an updated backstory that ABSORBS this campaign's arc — KEEP every original trait from the sheet's `backstory` (origin, family, occupation, personality, ties) and weave this campaign's events into it, so the character's past is extended, never replaced. Null when unchanged, max 800 chars.
 5. "keeper_note": a keeper-only note about the character's growth (max 400 chars), or "".
 
 Rules:
 - You propose; the engine rolls dice and validates. Never decide dice outcomes, never invent mechanics.
 - Be conservative: a character who never touched a skill earns nothing.
-- A character with no memory entries still gets a memory_fold that summarizes their arc from the checks and chronicle; empty when there is no arc.
+- A character with no memory entries still gets a memory_fold from the checks and chronicle; empty when they were not part of the scenario.
 - "name" must match a sheet below exactly.
 - Output ONLY a JSON object:
 {{"characters": [{{"name": "<exact sheet name>", "growth": ["<skill>"], "attribute_changes": [{{"field": "<attribute>", "delta": <int>}}], "memory_fold": "<paragraph>", "background": "<text>" or null, "keeper_note": "<text>"}}]}}"""
@@ -414,8 +416,23 @@ async def apply_settlement(services: Services, chat_key: str, settlement: Settle
 
             folded = False
             memory_doc = await services.documents.get(chat_key, CHARACTER_MEMORY_DOC_TYPE, char.name)
-            if memory_doc is not None:
-                data = fold_entries(memory_doc.data, char.memory_fold, char.keeper_note)
+            if memory_doc is not None and char.memory_fold:
+                # One PLAYTHROUGH memory per settled scenario: the character's
+                # experience this run, tagged so player surfaces can show it as
+                # scenario-level "剧本回忆" without the raw per-turn journal.
+                scenario = ""
+                try:
+                    module = await room_active_module(services, chat_key)
+                    scenario = str((module or {}).get("name") or "").strip()
+                except Exception:  # noqa: BLE001 — a missing module name is cosmetic
+                    pass
+                prefix = f"【{scenario}】" if scenario else ""
+                data = append_playthrough_entry(memory_doc.data, f"{prefix}{char.memory_fold}", await chronicle_turn(services.store, chat_key))
+                # The keeper's growth note still lands on the document, just not
+                # folded into a rolling summary.
+                note = str(char.keeper_note or "").strip()
+                if note:
+                    data = {**data, "keeper": note}
                 await services.documents.put(chat_key, CHARACTER_MEMORY_DOC_TYPE, char.name, data)
                 folded = True
 

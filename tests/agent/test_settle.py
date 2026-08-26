@@ -167,8 +167,14 @@ async def test_apply_settlement_folds_memories_and_updates_background():
     outcome = result.outcomes[0]
     assert outcome.folded and outcome.background
     memory = await services.documents.get(ROOM, CHARACTER_MEMORY_DOC_TYPE, "Vera")
-    assert [entry["text"] for entry in memory.data["entries"]] == ["she found the ledger"]
-    assert "sunken bell" in memory.data["summary"]
+    # The per-turn journal is kept, and ONE playthrough memory is appended —
+    # scenario-level, tagged, NOT folded into a rolling summary.
+    assert [entry["text"] for entry in memory.data["entries"]] == [
+        "she found the ledger",
+        "Vera uncovered the sunken bell's secret.",
+    ]
+    assert memory.data["entries"][1]["kind"] == "playthrough"
+    assert "sunken bell" not in memory.data["summary"]
     assert memory.data["keeper"] == "she doubts the mayor"
     sheet = await services.characters.get_character("u1", ROOM)
     assert sheet.background == "A librarian who survived the chapel."

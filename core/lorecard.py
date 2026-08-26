@@ -251,6 +251,12 @@ def _parse_pregens(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
         # `background` is the forge's persona paragraph (history/personality/voice/
         # secret); hand-authored packs may use the legacy `notes` name instead.
         notes = _text(item.get("background") or item.get("notes")).strip()[:400]
+        if not notes:
+            # A card that spells its persona only as the legacy one-liner
+            # (`concept`/`blurb`) still deserves a readable sheet background —
+            # the detail dialog shows the full persona paragraph, never a
+            # separate blurb field, so fold the one-liner in as the fallback.
+            notes = _text(item.get("concept") or item.get("blurb")).strip()[:400]
         skills: dict[str, int] = {}
         skills_raw = item.get("skills")
         if isinstance(skills_raw, dict):

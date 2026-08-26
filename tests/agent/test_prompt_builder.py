@@ -85,6 +85,23 @@ async def test_build_system_prompt_includes_keeper_discipline_and_joins_all_sect
     assert "\n\n" in prompt
 
 
+async def test_build_system_prompt_pins_silent_player_boundary_in_attribution():
+    """A speaking player's declared action never lands on a present-but-silent
+    character: the attribution block must carry the boundary in BOTH locales, so
+    the model neither decides a silent player's action nor throws the decision
+    at them (observed failure: the KP kept asking the unspoken 白苏 to act)."""
+    for locale, needle in (
+        ("en", "whose player has NOT spoken this scene"),
+        ("zh", "这一场景还没有发言的玩家角色"),
+    ):
+        services = _services(locale)
+        ctx = AgentCtx(chat_key=f"chat-attribution-{locale}", user_id="u1", locale=locale)
+        prompt = await build_system_prompt(ctx, services)
+        assert needle in prompt, f"{locale}: silent-player clause missing from attribution"
+        # The freshness block no longer invites a spoken line for silent characters.
+        assert "descriptive beat" in prompt if locale == "en" else "描写性的片段" in prompt
+
+
 async def test_build_system_prompt_is_localized_per_ctx_locale():
     services = _services("en")  # process-wide default is en; ctx below asks for zh
     chat_key = "chat-prompt-builder-zh"

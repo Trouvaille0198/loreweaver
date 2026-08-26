@@ -288,9 +288,11 @@ async def _character_payload(
             payload["source"] = str(pregen_doc.data["source"])[:200]
     except Exception:
         pass
-    # Character memory (player projection): the settled life-summary plus the
-    # most recent experience lines, newest first. The wire sends a bounded tail —
-    # the raw log is capped at 100 entries and the state frame must stay small.
+    # Character memory (player projection): the scenario-level PLAYTHROUGH
+    # memories (`.settle apply` writes one per completed scenario, tagged).
+    # The raw per-turn Scribe journal stays server-side (it feeds the
+    # settlement lane and the AI's character context); the wire carries only
+    # the tagged playthrough entries, newest first, bounded tail.
     try:
         from core.character_memory import CHARACTER_MEMORY_DOC_TYPE, project_character_memory
 
@@ -298,15 +300,12 @@ async def _character_payload(
         if memory_doc is not None:
             memory = project_character_memory(memory_doc, PLAYER_VIEWER) or {}
             memory_payload: dict[str, Any] = {}
-            summary = str(memory.get("summary") or "").strip()
-            if summary:
-                memory_payload["summary"] = summary
-            raw_entries = []
-            for entry in (memory.get("entries") or []):
-                text = str(entry.get("text") if isinstance(entry, dict) else entry or "").strip()
-                if text:
-                    raw_entries.append(text)
-            entries = raw_entries[-10:]
+            raw_entries = [
+                str(entry.get("text") or "").strip()
+                for entry in (memory.get("entries") or [])
+                if isinstance(entry, dict) and entry.get("kind") == "playthrough"
+            ]
+            entries = [text for text in raw_entries if text][-10:]
             entries.reverse()  # newest first, like a journal
             if entries:
                 memory_payload["entries"] = entries
@@ -662,11 +661,16 @@ async def _pregens(
     claimant_name_resolver: Callable[[str], str] | None = None,
     locale: str = "en",
 ) -> list[dict[str, Any]]:
-    """The claimable pregen cast, v1.9 additive: one ``{name, blurb, claimed_by}`` per entry,
-    insertion-ordered, consumed from the `pregen` documents' PLAYER projection (the cast
-    list is table talk; the pristine sheet payload is what the projection withholds).
-    Omitted (never an empty list) for roster-less rooms. Best-effort like the rest of
-    this snapshot.
+    """The claimable pregen cast, v1.9 additive: one ``{name, claimed_by, …sheet}`` per
+    entry, insertion-ordered, consumed from the `pregen` documents' PLAYER projection
+    (the cast list is table talk). Omitted (never an empty list) for roster-less rooms.
+    Best-effort like the rest of this snapshot.
+
+    Each entry carries the pregen's PUBLIC sheet fields — attributes / skills / fields /
+    background / avatar — so the roster can open the same detail dialog a claimed party
+    member opens, without a claim. The derived one-liner (`blurb`) and the pristine
+    sheet internals (equipment, items, notes) deliberately do NOT ride the wire: they
+    are claim-time copies, not cast-table data.
 
     `claimed_by` goes out as the claiming member's DISPLAY NAME: clients render it
     verbatim ("已被 {name} 认领") and compare it against ``welcome.you.name`` to mark
@@ -707,9 +711,22 @@ async def _pregens(
         if not name:
             continue
         entry = {"name": name, "claimed_by": wire_claimer(view)}
-        blurb = str(view.get("blurb", "")).strip()
-        if blurb:
-            entry["blurb"] = blurb
+        # Public sheet fields, mirroring the `PartyMember` shape a claimed character
+        # already exposes (protocol types.ts): enough to render the detail dialog.
+        sheet = (_doc.data or {}).get("sheet") if isinstance(getattr(_doc, "data", None), dict) else None
+        if isinstance(sheet, dict):
+            for key in (
+                "system",
+                "attributes",
+                "secondary_attributes",
+                "skills",
+                "fields",
+                "background",
+                "avatar",
+            ):
+                value = sheet.get(key)
+                if value not in (None, "", {}):
+                    entry[key] = value
         entries.append(entry)
     return entries
 

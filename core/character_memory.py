@@ -98,6 +98,24 @@ def append_entry(data: dict[str, Any], text: str, turn: int) -> dict[str, Any]:
     return {**data, "entries": entries}
 
 
+def append_playthrough_entry(data: dict[str, Any], text: str, turn: int) -> dict[str, Any]:
+    """Append ONE scenario memory — the character's arc across the playthrough
+    that just settled (`.settle apply`): what they went through, what they did.
+    Tagged ``kind: "playthrough"`` so player-facing surfaces can show the
+    scenario-level memories without the raw per-turn Scribe journal. Pure."""
+    entries = list(data.get("entries", []))
+    entries.append(
+        {
+            "text": str(text).strip()[:_MAX_ENTRY_CHARS],
+            "turn": int(turn),
+            "kind": "playthrough",
+        }
+    )
+    if len(entries) > MAX_ENTRIES:
+        entries = entries[-MAX_ENTRIES:]
+    return {**data, "entries": entries}
+
+
 def fold_entries(data: dict[str, Any], summary_line: str, keeper_note: str = "") -> dict[str, Any]:
     """Settlement fold: append the folded life-summary paragraph and store the
     keeper margin. The raw per-turn entries are KEPT — the fold adds a summary,

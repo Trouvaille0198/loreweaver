@@ -20,6 +20,7 @@ from agent.context import AgentCtx, LocalFs
 from agent.kp_tools_knowledge import DocumentTools
 from agent.module_lifecycle import active_module
 from core.documents import KEEPER_VIEWER, MODULE_POOL_ID
+from core.skills import parse_skill_text
 from core.worldbook import LORE_DOC_TYPE
 from core.yaml_safety import safe_load_no_aliases
 from infra.media_store import ALLOWED_MEDIA_MIMES, MediaStore
@@ -309,7 +310,13 @@ class ModuleAdminService:
             pregens.extend(
                 {
                     "name": str(p.get("name", "")),
-                    "concept": str(p.get("concept") or p.get("blurb") or ""),
+                    # Field contract matches core.lorecard._parse_pregens (the authoritative
+                    # parser): `background` is the forge's persona paragraph, `notes` its legacy
+                    # name, and `concept`/`blurb` only legacy hand-authored spellings. First
+                    # non-empty wins, so a forge pack and a hand-written pack render alike.
+                    "concept": str(
+                        p.get("background") or p.get("notes") or p.get("concept") or p.get("blurb") or ""
+                    ),
                     "avatar": str(p.get("avatar") or ""),
                 }
                 for p in (card.get("pregens") or [])
@@ -374,9 +381,16 @@ class ModuleAdminService:
             if not skill_file.is_file():
                 continue
             try:
-                skills.append({"name": skill_id, "content": skill_file.read_text(encoding="utf-8")[:8000]})
+                skill_text = skill_file.read_text(encoding="utf-8")[:8000]
             except OSError:
                 continue
+            # The directory id is the stable install handle; the human title lives in the
+            # SKILL.md frontmatter `name` (e.g. a forge-authored "瘴雨巫蛊"). Show that.
+            try:
+                display_name = parse_skill_text(skill_id, skill_text).name
+            except Exception:  # noqa: BLE001 — unparseable frontmatter falls back to the id
+                display_name = skill_id
+            skills.append({"name": display_name or skill_id, "content": skill_text})
 
         content_parts = [part for part in (description, scenario, opening) if part]
         content = "\n\n".join(content_parts)
