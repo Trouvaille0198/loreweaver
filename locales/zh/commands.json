@@ -322,5 +322,10 @@
   "commands.summary.failed": "概括生成失败，请稍后再试。",
   "commands.summary.denied": "只有守秘人可以生成战役概括。",
   "commands.summary.generating": "正在概括战役进度…",
-  "commands.summary.started": "概括生成中——完成后会显示在这里。"
+  "commands.summary.started": "概括生成中——完成后会显示在这里。",
+  "commands.help.poke": "拍一拍队伍成员——全房可见，被拍者会收到提示。",
+  "commands.poke.usage": "用法：.poke <角色名>",
+  "commands.poke.unknown": "队伍里没有叫「{name}」的角色。",
+  "commands.poke.done": "{actor} 拍了拍 {target}",
+  "commands.poke.self": "{actor} 拍了拍自己"
 }

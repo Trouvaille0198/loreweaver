@@ -322,5 +322,10 @@
   "commands.summary.failed": "The recap could not be generated right now — try again in a moment.",
   "commands.summary.denied": "Only the keeper can generate a campaign recap.",
   "commands.summary.generating": "Summarizing the campaign…",
-  "commands.summary.started": "The recap is being generated — it will appear here when ready."
+  "commands.summary.started": "The recap is being generated — it will appear here when ready.",
+  "commands.help.poke": "Poke a party member — the room sees it, the target gets a nudge.",
+  "commands.poke.usage": "Usage: .poke <character>",
+  "commands.poke.unknown": "No party member named \"{name}\".",
+  "commands.poke.done": "{actor} poked {target}",
+  "commands.poke.self": "{actor} poked themselves"
 }

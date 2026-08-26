@@ -390,6 +390,14 @@ class CommandRouter(
             CommandSpec("skill", self.cmd_skill, ["skill"], ["skill"], None, "commands.help.skill"),
             CommandSpec("phase", self.cmd_phase, ["phase"], ["phase", "阶段", "階段"], None, "commands.help.phase"),
             CommandSpec("dev", self.cmd_dev, ["dev"], ["dev"], None, "commands.help.dev", keeper_help=True),
+            CommandSpec(
+                "poke",
+                self.cmd_poke,
+                ["poke"],
+                ["poke", "拍一拍", "拍拍"],
+                None,
+                "commands.help.poke",
+            ),
             CommandSpec("undo", self.cmd_undo, ["undo"], ["undo", "撤销", "撤銷"], None, "commands.help.undo", keeper_help=True),
             CommandSpec("save", self.cmd_save, ["save"], ["save", "存档", "存檔"], None, "commands.help.save", keeper_help=True),
             CommandSpec(
