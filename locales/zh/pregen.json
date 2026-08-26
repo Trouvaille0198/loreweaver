@@ -20,7 +20,6 @@
   "pregen.commands.usage": "用法：.pc [list] | .pc claim <名字> | .pc release <名字> | .pc info <名字>",
   "pregen.commands.info_usage": "`.pc info <名字>` — 查看角色的档案（剧本来源、记忆、关系）",
   "pregen.commands.info_source": "来自剧本：{source}",
-  "pregen.commands.info_memory_summary": "人生总结：{summary}",
   "pregen.commands.info_memory_entries": "近期经历（{count} 条）：",
   "pregen.commands.info_relationship": "{target}：{tracks}",
   "pregen.commands.info_empty": "「{name}」还没有任何档案信息。"

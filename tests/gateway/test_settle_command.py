@@ -245,7 +245,8 @@ async def test_mem_shows_a_characters_memory_and_reports_empty_without_one():
 
     reply = await router.dispatch(_player_ctx(), ".mem Vera")
     assert "she found the ledger" in reply
-    assert "life so far" in reply
+    # The retired folded life-summary is not shown anymore.
+    assert "life so far" not in reply
     assert "secret" not in reply  # the keeper margin never reaches a player
 
     empty = await router.dispatch(_player_ctx(), ".mem")

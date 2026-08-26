@@ -419,10 +419,10 @@ class SheetCommands:
 
     async def cmd_mem(self, ctx: CommandCtx) -> str:
         """`.mem [character]` — a character's durable memory: the per-turn
-        experience log the Scribe kept, plus the folded life-summary a settlement
-        produced. Player-facing (any member): a character's memory records events
-        the table shared, so it is readable like a sheet. Defaults to the caller's
-        active character."""
+        experience log the Scribe kept plus the playthrough memories a settle
+        produced. Player-facing (any member): a character's memory records
+        events the table shared, so it is readable like a sheet. Defaults to
+        the caller's active character."""
         from core.character_memory import CHARACTER_MEMORY_DOC_TYPE
         from core.documents import KEEPER_VIEWER, PLAYER_VIEWER
 
@@ -439,12 +439,9 @@ class SheetCommands:
         if view is None:
             return ctx.fail(ctx.i18n.t("commands.mem.empty", name=name))
         entries = [entry for entry in view.get("entries") or [] if isinstance(entry, dict) and entry.get("text")]
-        summary = str(view.get("summary") or "").strip()
-        if not entries and not summary:
+        if not entries:
             return ctx.fail(ctx.i18n.t("commands.mem.empty", name=name))
         lines = [ctx.i18n.t("commands.mem.header", name=name)]
-        if summary:
-            lines.append(ctx.i18n.t("commands.mem.summary", text=summary))
         shown = entries[-10:]
         lines.extend(f"- {str(entry.get('text')).strip()}" for entry in shown)
         if len(entries) > len(shown):
@@ -602,14 +599,12 @@ class SheetCommands:
         except Exception:  # noqa: BLE001 — a dossier is best-effort reading
             pass
 
-        # Memory (player projection): summary + the most recent lines.
+        # Memory (player projection): the most recent lines (playthrough
+        # memories + journal). The retired folded life-summary is not shown.
         try:
             memory_doc = await documents.get(chat_key, CHARACTER_MEMORY_DOC_TYPE, name)
             if memory_doc is not None:
                 memory = project_character_memory(memory_doc, PLAYER_VIEWER) or {}
-                summary = str(memory.get("summary") or "").strip()
-                if summary:
-                    lines.append(ctx.i18n.t("pregen.commands.info_memory_summary", summary=summary))
                 entries = []
                 for entry in (memory.get("entries") or []):
                     text = str(entry.get("text") if isinstance(entry, dict) else entry or "").strip()

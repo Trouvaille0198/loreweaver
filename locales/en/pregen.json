@@ -20,7 +20,6 @@
   "pregen.commands.usage": "Usage: .pc [list] | .pc claim <name> | .pc release <name> | .pc info <name>",
   "pregen.commands.info_usage": "`.pc info <name>` — show a character's dossier (module source, memory, relationships)",
   "pregen.commands.info_source": "From module: {source}",
-  "pregen.commands.info_memory_summary": "Life summary: {summary}",
   "pregen.commands.info_memory_entries": "Recent experiences ({count}):",
   "pregen.commands.info_relationship": "{target}: {tracks}",
   "pregen.commands.info_empty": "No dossier info for “{name}” yet."
