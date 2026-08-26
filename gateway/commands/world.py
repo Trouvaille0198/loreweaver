@@ -15,6 +15,7 @@ from gateway.commands.sheet import _resolve_system_token
 from gateway.commands.types import CommandCtx
 from gateway.hub import Event
 from gateway.turn import publish_state
+from infra.room_facets import STORAGE_ROOM_STATE, RoomStateFacet
 
 logger = logging.getLogger(__name__)
 
@@ -794,3 +795,17 @@ class WorldCommands:
             return ctx.i18n.t(done_key)
 
         return ctx.i18n.t("commands.chronicle.usage")
+
+
+# --- Room lifecycle (M23 WS1) -----------------------------------------------
+ROOM_FACETS = (
+    RoomStateFacet(
+        name="module_share",
+        owner="gateway.commands.world",
+        reset_scope="story",
+        # The `.share` link is a public face of the CURRENT module — it dies with
+        # the story/module it points at, never leaking across campaigns.
+        state_keys=frozenset({"module_share"}),
+        storages=frozenset({STORAGE_ROOM_STATE}),
+    ),
+)

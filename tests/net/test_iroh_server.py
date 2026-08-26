@@ -116,6 +116,10 @@ class _FakeServices:
     settings = _FakeSettings()
     imagegen = None
 
+    async def imagegen_for_room(self, chat_key: str):
+        """Per-room imagegen probe the welcome frame now consults."""
+        return self.imagegen
+
 
 class _SpyHub:
     def __init__(self) -> None:
@@ -127,6 +131,7 @@ class _SpyHub:
 
 class _FakeCore:
     def __init__(self, *, join_timeout: float = 1.0, authorized: bool = True, keys: dict | None = None) -> None:
+        self.p2p_ticket: str | None = None
         entries = keys if keys is not None else {"good": KeyEntry(key="good", room="room", name="Alice", role="player")}
         self.keystore = Keystore(entries)
         self.join_timeout = join_timeout

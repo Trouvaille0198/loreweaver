@@ -1065,9 +1065,19 @@ class BehaviorSmokeLLM(FakeLLM):
         for index, message in enumerate(messages):
             if message.get("role") != "user":
                 continue
-            action = player_line_body(str(message.get("content", "")))
-            if action in self._turn_by_action:
-                matched = (index, self._turn_by_action[action])
+            content = str(message.get("content") or "")
+            # Strip the speaker tag both ways: upstream wraps it as
+            # "[name]\n<body>" (`player_line_body`); older history folds it in as
+            # en `": "` / zh `"："` (`_speaker_labeled`). No break: the chain
+            # replays earlier turns, and the LAST matching user line is the
+            # current turn (last-match-wins).
+            candidates = [content, player_line_body(content)]
+            for sep in (": ", "："):
+                if sep in content:
+                    candidates.append(content.split(sep, 1)[1])
+            for candidate in candidates:
+                if candidate in self._turn_by_action:
+                    matched = (index, self._turn_by_action[candidate])
         smoke_usage = Usage(prompt_tokens=10, completion_tokens=4, total_tokens=14)
         if matched is None:
             return ChatResult(

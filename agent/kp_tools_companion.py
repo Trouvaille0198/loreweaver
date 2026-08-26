@@ -337,7 +337,7 @@ class CompanionTools:
         except Exception as exc:
             return i18n.t("companion.tools.playstyle.failed", error=str(exc))
 
-    @tool
+    @tool(prep_only=True)  # low-frequency knowledge injection, prep-phase work
     async def companion_learns(self, ctx: AgentCtx, name: str, fact: str) -> str:
         """Have a companion learn one new fact (its player-scoped knowledge grows as the party
         discovers things, so it stays current but never gets ahead of what the party knows).

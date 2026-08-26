@@ -539,6 +539,7 @@ async def test_keeper_can_get_and_set_config_list_and_mint_keys():
             "default_base_url": "https://api.minimaxi.com/v1",
             "auth_type": "api_key",
             "model_kinds": ["chat", "image"],
+            "image_default_base_url": "https://api.minimaxi.com/v1/image_generation",
         }
         assert "api_key_masked" in config
 
@@ -2291,7 +2292,10 @@ async def test_new_model_endpoint_never_receives_or_remembers_the_old_key():
         assert changed["type"] == "admin_config"
         assert services.settings.llm.base_url == "https://new.example/v1"
         assert services.settings.llm.api_key == ""
-        assert await services.llm_profiles.get("openai") == {"base_url": "https://new.example/v1"}
+        assert await services.llm_profiles.get("openai") == {
+            "base_url": "https://new.example/v1",
+            "chat_model": "gpt-4o",
+        }
 
         # A later save with omitted fields must not resurrect the old saved key.
         await _send(ws, {"type": "admin_set_model", "provider": "openai"})
@@ -2311,6 +2315,7 @@ async def test_new_model_endpoint_never_receives_or_remembers_the_old_key():
         assert await services.llm_profiles.get("openai") == {
             "api_key": "sk-third-endpoint",
             "base_url": "https://third.example/v1",
+            "chat_model": "gpt-4o",
         }
 
         # Presence matters: an explicitly empty key clears it while retaining the
@@ -2319,7 +2324,10 @@ async def test_new_model_endpoint_never_receives_or_remembers_the_old_key():
             ws,
             {"type": "admin_set_model", "provider": "openai", "api_key": ""},
         )
-        assert await services.llm_profiles.get("openai") == {"base_url": "https://third.example/v1"}
+        assert await services.llm_profiles.get("openai") == {
+            "base_url": "https://third.example/v1",
+            "chat_model": "gpt-4o",
+        }
 
         await ws.close()
     finally:

@@ -310,7 +310,7 @@ class NpcTools:
         except Exception as exc:
             return i18n.t("npc.tools.knowledge.failed", error=str(exc))
 
-    @tool
+    @tool(prep_only=True)  # low-frequency knowledge injection, prep-phase work
     async def npc_learns(self, ctx: AgentCtx, npc: str, fact: str) -> str:
         """Have an NPC learn exactly one new fact during play (appended to their knowledge).
 

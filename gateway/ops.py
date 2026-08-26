@@ -5,7 +5,6 @@ import json
 import re
 import time
 import unicodedata
-from pathlib import Path
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import IntEnum, IntFlag
@@ -361,7 +360,7 @@ async def set_ai_length(store, chat_key: str, mode: str) -> None:
     reply the room's AI Keeper produces."""
     mode = str(mode or "").strip().casefold()
     if mode not in AI_LENGTH_VALUES:
-        raise ValueError(f"ai_length must be one of {AI_LENGTH_VALUES}, got {mode!r}")
+        raise ValueError(f"ai_length must be one of {AI_LENGTH_VALUES}, got {mode!r}")  # i18n-exempt: internal validation, surfaced as a localized admin error
     await store.state_set(chat_key, "ai_length", mode)
 
 

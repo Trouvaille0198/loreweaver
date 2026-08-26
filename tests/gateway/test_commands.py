@@ -1831,7 +1831,7 @@ class _BoomMutableLLM:
     override (a provider whose optional SDK/key is missing), proving that a
     poisoned persisted override does NOT crash `build_services()`."""
 
-    def __init__(self, settings, *, builder=None, credentials=None):
+    def __init__(self, settings, *, builder=None, credentials=None, base=None):
         self._settings = settings
         self.applied: list[dict] = []
 
@@ -1881,7 +1881,7 @@ async def test_build_services_survives_an_unbuildable_baseline_llm(tmp_path, mon
         builds.append(settings.llm.provider or "")
         return raising(settings)
 
-    def _mutable_with_raising_builder(settings, *, credentials=None, fallback_llm=None):
+    def _mutable_with_raising_builder(settings, *, credentials=None, fallback_llm=None, base=None):
         return MutableLLM(
             settings,
             builder=_counting_builder,

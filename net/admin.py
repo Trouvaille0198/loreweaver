@@ -32,8 +32,8 @@ from agent.forge import (
     generate_module_prompt,
 )
 from agent.services import ROOM_LLM_SELECTION_KEY, Services
-from core.rulepacks import available_systems, built_in_rulepack_ids
 from core.preset_store import list_preset_ids, load_preset, preset_source, sanitize_preset_id
+from core.rulepacks import available_systems, built_in_rulepack_ids
 from core.skills import available_skills
 from gateway.ops import (
     get_ai_length,
@@ -75,6 +75,7 @@ from infra.providers import (
     provider_catalog,
     provider_supports_kind,
 )
+from infra.room_facets import STORAGE_ROOM_STATE, RoomStateFacet
 from infra.runtime_config import MODEL_KINDS, model_profile_id, model_profile_parts
 from net.keystore import _DEFAULT_PURPOSE, Keystore
 from net.room_backup import (
@@ -1780,7 +1781,7 @@ async def _save_preset(services: Services, caller_room: str, frame: dict[str, An
     if not text.strip():
         return _error("bad_request", i18n)
     try:
-        parsed = parse_st_preset(text, "preset")
+        parse_st_preset(text, "preset")
     except ValueError as exc:
         return {
             "type": "admin_error",
@@ -1879,7 +1880,7 @@ async def _import_presets(services: Services, caller_room: str, frame: dict[str,
             skipped.append({"id": preset_id, "reason": "empty"})
             continue
         try:
-            parsed = parse_st_preset(text, preset_id or "preset")
+            parse_st_preset(text, preset_id or "preset")
         except ValueError:
             skipped.append({"id": preset_id, "reason": "invalid"})
             continue
@@ -2120,3 +2121,18 @@ def _generated_frame(
 
 def _error(code: str, i18n: I18n) -> dict[str, Any]:
     return {"type": "admin_error", "code": code, "message": i18n.t(f"tui.admin.error.{code}")}
+
+
+# --- Room lifecycle (M23 WS1) -----------------------------------------------
+ROOM_FACETS = (
+    RoomStateFacet(
+        name="generation_progress",
+        owner="net.admin",
+        reset_scope="all",
+        # In-flight module-generation progress for the keeper's module library —
+        # transient by nature (written per stage, deleted when the generation
+        # settles), so any reset may drop it.
+        state_keys=frozenset({"generation_progress"}),
+        storages=frozenset({STORAGE_ROOM_STATE}),
+    ),
+)

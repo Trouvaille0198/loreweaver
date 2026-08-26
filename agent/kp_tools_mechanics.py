@@ -596,7 +596,7 @@ Rules:
         except Exception as exc:
             return i18n.t("kp_tools.item.failed", error=str(exc))
 
-    @tool
+    @tool(prep_only=True)  # keeper's off-catalog improv lane is prep-phase work
     async def improvise_item(self, ctx: AgentCtx, character: str, name: str, description: str = "", bonus: str = "", qty: int = 1) -> str:
         """Give a character an OFF-CATALOG item the Keeper improvises on the spot (a trinket found in a pocket, a curious stone, a small reward, a few doses of something).
 

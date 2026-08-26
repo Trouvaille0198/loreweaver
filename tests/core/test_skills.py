@@ -183,14 +183,11 @@ def test_load_skill_unknown_id_is_none() -> None:
     assert load_skill("definitely-not-a-real-skill-id") is None
 
 
-def test_real_mature_mode_skill_exists_and_is_explicit_rated() -> None:
-    """The one built-in B.1 skill must actually be discoverable from the real
-    `skills/` directory (not just under a tmp fixture) with the mature-mode gate."""
-    skill = load_skill("mature-mode")
-    assert skill is not None
-    assert skill.content_rating == "explicit"
-    assert skill.scope == "room"
-    assert skill.body.strip()
+def test_mature_mode_is_a_system_preset_not_a_skill() -> None:
+    """mature-mode moved from a built-in skill to a system preset (presets/):
+    it must NOT resolve as a skill any more — the skill registry's built-ins
+    are exactly the real skills/ directory (see test_built_in_skill_ids)."""
+    assert load_skill("mature-mode") is None
 
 
 def test_real_romance_relationships_skill_exists_and_is_mature_rated() -> None:
@@ -297,7 +294,7 @@ def test_user_skill_dir_skill_discovered_alongside_built_ins(tmp_path: Path) -> 
     try:
         ids = {skill.id for skill in available_skills()}
         assert "user-skill" in ids
-        assert "mature-mode" in ids  # the real built-ins are still discoverable alongside it
+        assert "romance-relationships" in ids  # the real built-ins are still discoverable alongside it
         loaded = load_skill("user-skill")
         assert loaded is not None
         assert loaded.name == "Test Skill"
@@ -325,10 +322,10 @@ def test_user_skill_dir_none_discovery_is_byte_identical_to_baseline(tmp_path: P
 def test_user_skill_dir_cannot_override_a_built_in_id(tmp_path: Path) -> None:
     """A user-dir skill sharing a built-in's id must never win: the built-in's real content is
     what gets discovered, never the user-dir shadow (a generated skill must never be able to
-    override e.g. `mature-mode`)."""
+    override e.g. `romance-relationships`)."""
     shadow = """---
-name: Shadow Mature Mode
-description: an attempted shadow of the built-in mature-mode skill.
+name: Shadow Romance
+description: an attempted shadow of the built-in romance-relationships skill.
 allowed-tools: []
 metadata:
   scope: room
@@ -336,16 +333,16 @@ metadata:
 
 # Shadowed
 """
-    _write_skill(tmp_path, "mature-mode", shadow)
+    _write_skill(tmp_path, "romance-relationships", shadow)
 
     original_user_dir = skills_module._USER_SKILL_DIR
     skills_module._USER_SKILL_DIR = tmp_path
     skills_module._discover_registry.cache_clear()
     try:
-        loaded = load_skill("mature-mode")
+        loaded = load_skill("romance-relationships")
         assert loaded is not None
-        assert loaded.name == "Mature mode"  # the REAL built-in, never the shadow
-        assert loaded.content_rating == "explicit"
+        assert loaded.name == "Romance & relationships"  # the REAL built-in, never the shadow
+        assert loaded.content_rating == "mature"
     finally:
         skills_module._USER_SKILL_DIR = original_user_dir
         skills_module._discover_registry.cache_clear()
@@ -374,9 +371,9 @@ def test_reload_skills_picks_up_a_newly_written_skill(tmp_path: Path) -> None:
 
 def test_built_in_skill_ids_matches_the_real_skills_dir() -> None:
     ids = skills_module.built_in_skill_ids()
-    assert "mature-mode" in ids
     assert "romance-relationships" in ids
     assert "skill-forge" in ids
+    assert "mature-mode" not in ids  # moved to presets/, no longer a skill
 
 
 def test_built_in_skill_ids_ignores_the_user_dir(tmp_path: Path) -> None:

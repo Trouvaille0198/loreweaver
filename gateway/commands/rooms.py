@@ -699,6 +699,12 @@ class RoomsCommands:
             if await dev_room.rearm(ctx.services, hub, ctx.chat_key) is None:
                 return ctx.i18n.t("dev.commands.not_mounted")
             return await dev_room.reload(ctx.services, hub, ctx.chat_key, ctx.locale)
+        if sub in {"status", "状态", "狀態"}:
+            state = await dev_room.rearm(ctx.services, hub, ctx.chat_key)
+            if state is None:
+                return ctx.i18n.t("dev.commands.not_mounted")
+            return ctx.i18n.t("dev.commands.status", pack=state.pack_id, path=str(state.path))
+        return ctx.i18n.t("dev.commands.usage")
 
 
 async def _publish_poke(hub: Any, chat_key: str, event: Event) -> None:
