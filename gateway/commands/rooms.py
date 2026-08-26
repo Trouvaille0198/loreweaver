@@ -4,6 +4,7 @@ keeper-only command gates on (`_is_keeper`, `_privilege_level`)."""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -355,9 +356,13 @@ class RoomsCommands:
         }
         if ctx.router.hub is not None:
             member_count = len(getattr(ctx.router.hub, "rooms", {}).get(ctx.chat_key, ()))
-            await ctx.router.hub.publish(ctx.chat_key, event)
+            # Fire-and-forget: the fan-out must never hold the room's turn lock —
+            # a slow member connection would otherwise queue every input behind
+            # the poke. The event lands a moment later; ordering vs the turn's
+            # own frames is not load-bearing for a nudge.
+            asyncio.create_task(_publish_poke(ctx.router.hub, ctx.chat_key, event))
             logger.warning(
-                "poke: published to %d members (text=%r)",
+                "poke: backgrounded publish to %d members (text=%r)",
                 member_count,
                 event.text,
             )
@@ -694,9 +699,12 @@ class RoomsCommands:
             if await dev_room.rearm(ctx.services, hub, ctx.chat_key) is None:
                 return ctx.i18n.t("dev.commands.not_mounted")
             return await dev_room.reload(ctx.services, hub, ctx.chat_key, ctx.locale)
-        if sub in {"status", "状态", "狀態"}:
-            state = await dev_room.rearm(ctx.services, hub, ctx.chat_key)
-            if state is None:
-                return ctx.i18n.t("dev.commands.not_mounted")
-            return ctx.i18n.t("dev.commands.status", pack=state.pack_id, path=str(state.path))
-        return ctx.i18n.t("dev.commands.usage")
+
+
+async def _publish_poke(hub: Any, chat_key: str, event: Event) -> None:
+    """Deliver the poke event in the background; failures are logged, never
+    raised into the command turn."""
+    try:
+        await hub.publish(chat_key, event)
+    except Exception:  # noqa: BLE001
+        logger.warning("poke: background publish failed for %s", chat_key, exc_info=True)
