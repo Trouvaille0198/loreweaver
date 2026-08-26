@@ -233,7 +233,11 @@ async def test_tool_round_draft_reaches_keeper_only_as_narrative_draft() -> None
     """A tool round's streamed narration is dropped from the live log (dice-first) but
     kept as a KEEPER-ONLY `narrative_draft` attached to the reply — players never
     receive it, and the draft is persisted with the reply record."""
-    draft_text = "美咲的刀锋抵上岩本的喉咙，血珠顺着刀刃滑落。"
+    draft_text = (
+        "美咲的刀锋抵上岩本的喉咙，血珠顺着刀刃滑落。她压低声音：「告诉我当年那场火，"
+        "是谁放的。」岩本咳着血笑了一下，眼睛却望向窗外燃烧的码头。\n\n"
+        "雨声里，警笛由远及近。"
+    )
     final_text = "骰子落定：突袭失败。岩本反手扣住美咲的手腕。"
     script = [
         ChatResult(content=draft_text, tool_calls=[tool_call("roll_dice", expression="1d100")]),

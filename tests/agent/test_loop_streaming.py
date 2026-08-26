@@ -51,6 +51,27 @@ async def test_gate_holds_an_unclosed_suspicious_tail_at_round_end():
     assert streamed == "正文安全部分。"
 
 
+async def test_gate_discard_archives_flushed_text_too():
+    """A tool round's draft is archived for the keeper IN FULL — including the slices
+    already flushed to the streaming client — not just the tail still held back."""
+    frames: list[dict] = []
+    gate = _ReplyStreamGate(await _collecting_emitter(frames))
+    draft = (
+        "雨声落在窗台上。老周抬起头，指节在桌沿敲了两下，压低了声音："
+        "「那批货今晚走，码头上会有人接应。」\n\n"
+        "窗外，港口的灯一盏接一盏地灭了下去。"
+    )
+    gate.begin_round()
+    gate.feed(draft)
+    gate.finish_round(discard=True)
+    await gate.drain()
+
+    # The long draft (>48 chars with a newline) was flushed to the client…
+    assert frames and "".join(frame["text"] for frame in frames) == draft
+    # …and the keeper's archived copy still holds every byte of it.
+    assert gate.discarded_text() == draft
+
+
 async def test_max_rounds_finalizer_streams_its_reply(tmp_path):
     """The finalizer produces the player-visible reply on every tool-heavy turn, so it
     must stream through the gate like an ordinary final round — those are exactly the

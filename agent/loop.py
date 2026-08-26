@@ -271,6 +271,7 @@ class _ReplyStreamGate:
         self._seq = 0
         self._pending = ""
         self._held = ""
+        self._flushed = ""
         self._discarded = ""
         self._tasks: list[asyncio.Task] = []
 
@@ -279,6 +280,7 @@ class _ReplyStreamGate:
         self._seq = 0
         self._pending = ""
         self._held = ""
+        self._flushed = ""
 
     def feed(self, delta: str) -> None:
         self._held += delta
@@ -290,12 +292,16 @@ class _ReplyStreamGate:
         """Round over: a tool round discards its draft (the client clears on the next
         epoch); a final round releases the held remainder through the full strip."""
         if discard:
-            # The narration never reaches the live stream (dice-first: the model must
+            # The narration never reaches the live log (dice-first: the model must
             # not narrate a result before the dice settle), but it is ARCHIVED so a
             # keeper can review what the model originally wrote before the tool round.
-            self._discarded += self._pending + self._held
+            # Everything counts — the slices already flushed to the streaming client
+            # (the client drops them; the keeper's draft must still hold them) plus
+            # whatever was still pending or held back.
+            self._discarded += self._flushed + self._pending + self._held
             self._pending = ""
             self._held = ""
+            self._flushed = ""
             return
         remainder = _strip_text_tool_calls(self._held)
         cut = self._suspect_hold_index(remainder)
@@ -348,6 +354,7 @@ class _ReplyStreamGate:
     def _flush(self) -> None:
         if not self._pending:
             return
+        self._flushed += self._pending
         frame = {"epoch": self._epoch, "seq": self._seq, "text": self._pending}
         self._seq += 1
         self._pending = ""
