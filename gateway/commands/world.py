@@ -507,12 +507,13 @@ class WorldCommands:
         if rendered is None:
             return ctx.i18n.t("commands.recap.empty")
         return rendered
+
     async def cmd_summary(self, ctx: CommandCtx) -> str:
         """`.summary` — an LLM-generated "where we are" recap of the campaign so far:
         current progress, the story that led here, key info, and open threads. Keeper-only;
         the model call runs in a tracked background task OUTSIDE the room's turn lock, so the
         table is never blocked — the command returns immediately and the recap lands as a
-        room system message when ready. Assembled purely from PLAYER projections of the
+        private system message when ready. Assembled purely from PLAYER projections of the
         campaign summary, the chronicle tail and the recent conversation, so keeper
         annotations structurally cannot appear."""
         if not _is_keeper(ctx.raw_ctx):
@@ -522,6 +523,7 @@ class WorldCommands:
             await ctx.router.hub.publish(
                 ctx.chat_key,
                 Event(kind="system", text=ctx.i18n.t("commands.summary.generating"), data={"level": "info", "spinner": True}),
+                only_user=ctx.user_id,
             )
         tasks = getattr(self, "_summary_background_tasks", None)
         if tasks is None:
@@ -535,7 +537,7 @@ class WorldCommands:
     async def _summary_background(self, ctx: CommandCtx) -> None:
         """The slow half of `.summary` — the authoring call, run OUTSIDE the room's turn
         lock so a slow model never queues the table. Success, the empty-room notice, and
-        failures all surface as a room system message."""
+        failures all surface as a private system message to the invoking keeper."""
         try:
             from agent.session_summary import render_summary
 
@@ -551,6 +553,7 @@ class WorldCommands:
             await ctx.router.hub.publish(
                 ctx.chat_key,
                 Event.system("info", text),
+                only_user=ctx.user_id,
             )
 
     async def cmd_chronicle(self, ctx: CommandCtx) -> str:

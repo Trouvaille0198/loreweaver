@@ -487,6 +487,8 @@ class CommandRouter(
                 ["recap", "前情提要", "前情"],
                 {"name": "recap"},
                 "commands.help.recap",
+                # A member's recap is theirs alone — never broadcast to the room.
+                private_reply=True,
             ),
             CommandSpec(
                 "summary",
@@ -496,7 +498,9 @@ class CommandRouter(
                 {"name": "summary"},
                 "commands.help.summary",
                 # Keeper-only command (in-handler gate, same posture as `.chronicle`);
-                # the reply is a "started" notice, the recap itself lands as a system message.
+                # the reply is a "started" notice, the recap itself lands as a system message —
+                # both delivered to the invoking keeper alone.
+                private_reply=True,
                 keeper_help=True,
             ),
             CommandSpec(

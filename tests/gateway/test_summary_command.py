@@ -33,8 +33,8 @@ class _Hub:
     def __init__(self) -> None:
         self.events = []
 
-    async def publish(self, session_key, event, *, exclude=None):
-        self.events.append((session_key, event, exclude))
+    async def publish(self, session_key, event, *, exclude=None, only_user=None, exclude_user=None):
+        self.events.append((session_key, event, exclude, only_user))
 
 
 def _services(*, llm: FakeLLM | None = None):
@@ -125,9 +125,10 @@ async def test_summary_returns_started_and_publishes_the_recap_as_a_system_messa
     assert reply == i18n.t("commands.summary.started"), "the command never blocks"
     await _settle(router)
 
-    system_events = [event for _, event, _ in hub.events if event.kind == "system"]
-    assert system_events[0].text == i18n.t("commands.summary.generating"), "spinner line first"
-    assert system_events[-1].text == RECAP, "the recap lands as a room system message"
+    system_events = [(event, only) for _, event, _, only in hub.events if event.kind == "system"]
+    assert system_events[0][0].text == i18n.t("commands.summary.generating"), "spinner line first"
+    assert system_events[-1][0].text == RECAP, "the recap lands as a system message"
+    assert all(only == "kp" for _, only in system_events), "every summary line is private to the invoking keeper"
 
     assert len(llm.calls) == 1
     prompt = "\n".join(str(message.get("content", "")) for message in llm.calls[0][0])
@@ -135,7 +136,7 @@ async def test_summary_returns_started_and_publishes_the_recap_as_a_system_messa
     assert "camped by the pier" in prompt, "the chronicle tail feeds the recap"
     assert "search the chapel" in prompt, "the conversation tail feeds the recap"
     assert SENTINEL not in prompt, "keeper annotations never reach the model"
-    assert SENTINEL not in system_events[-1].text, "the reply is player-safe too"
+    assert SENTINEL not in system_events[-1][0].text, "the reply is player-safe too"
 
 
 async def test_summary_empty_room_publishes_the_empty_notice():
@@ -147,8 +148,9 @@ async def test_summary_empty_room_publishes_the_empty_notice():
     await router.dispatch(_keeper_ctx(), ".summary")
     await _settle(router)
 
-    system_events = [event for _, event, _ in hub.events if event.kind == "system"]
-    assert system_events[-1].text == i18n.t("commands.summary.empty")
+    system_events = [(event, only) for _, event, _, only in hub.events if event.kind == "system"]
+    assert system_events[-1][0].text == i18n.t("commands.summary.empty")
+    assert system_events[-1][1] == "kp", "the empty notice is private to the invoking keeper"
     assert not services.llm.calls, "no material means no model call"
 
 
@@ -165,5 +167,5 @@ async def test_summary_publishes_the_failed_notice_when_the_model_errors():
     await router.dispatch(_keeper_ctx(), ".summary")
     await _settle(router)
 
-    system_events = [event for _, event, _ in hub.events if event.kind == "system"]
-    assert system_events[-1].text == i18n.t("commands.summary.failed")
+    system_events = [(event, only) for _, event, _, only in hub.events if event.kind == "system"]
+    assert system_events[-1][0].text == i18n.t("commands.summary.failed")
