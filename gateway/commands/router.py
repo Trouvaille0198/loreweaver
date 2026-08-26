@@ -495,6 +495,9 @@ class CommandRouter(
                 ["summary", "概括", "總結", "总览", "總覽"],
                 {"name": "summary"},
                 "commands.help.summary",
+                # Keeper-only command (in-handler gate, same posture as `.chronicle`);
+                # the reply is a "started" notice, the recap itself lands as a system message.
+                keeper_help=True,
             ),
             CommandSpec(
                 "chronicle",

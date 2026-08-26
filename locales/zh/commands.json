@@ -319,5 +319,8 @@
   "commands.image.started": "已开始生成图片，完成后会自动发到房间。",
   "commands.help.summary": "概括当前进度：剧情回顾、关键信息与悬念。",
   "commands.summary.empty": "还没有可概括的内容——故事展开后再来试试。",
-  "commands.summary.failed": "概括生成失败，请稍后再试。"
+  "commands.summary.failed": "概括生成失败，请稍后再试。",
+  "commands.summary.denied": "只有守秘人可以生成战役概括。",
+  "commands.summary.generating": "正在概括战役进度…",
+  "commands.summary.started": "概括生成中——完成后会显示在这里。"
 }

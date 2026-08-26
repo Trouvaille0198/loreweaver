@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +13,8 @@ from gateway.commands.sheet import _resolve_system_token
 from gateway.commands.types import CommandCtx
 from gateway.hub import Event
 from gateway.turn import publish_state
+
+logger = logging.getLogger(__name__)
 
 # `.lore` subcommand vocabularies (EN + a couple of CN synonyms) -- world lore (M11).
 _LORE_ADD_WORDS = {"add", "new", "添加", "新增"}
@@ -505,16 +509,49 @@ class WorldCommands:
         return rendered
     async def cmd_summary(self, ctx: CommandCtx) -> str:
         """`.summary` — an LLM-generated "where we are" recap of the campaign so far:
-        current progress, the story that led here, key info, and open threads. Player-facing
-        (any member; no keeper privilege): assembled purely from PLAYER projections of the
+        current progress, the story that led here, key info, and open threads. Keeper-only;
+        the model call runs in a tracked background task OUTSIDE the room's turn lock, so the
+        table is never blocked — the command returns immediately and the recap lands as a
+        room system message when ready. Assembled purely from PLAYER projections of the
         campaign summary, the chronicle tail and the recent conversation, so keeper
-        annotations structurally cannot appear — safe to broadcast to the whole room."""
-        from agent.session_summary import render_summary
+        annotations structurally cannot appear."""
+        if not _is_keeper(ctx.raw_ctx):
+            return ctx.i18n.t("commands.summary.denied")
 
-        rendered = await render_summary(ctx.services, ctx.chat_key, ctx.i18n)
+        if ctx.router.hub is not None:
+            await ctx.router.hub.publish(
+                ctx.chat_key,
+                Event(kind="system", text=ctx.i18n.t("commands.summary.generating"), data={"level": "info", "spinner": True}),
+            )
+        tasks = getattr(self, "_summary_background_tasks", None)
+        if tasks is None:
+            tasks = set()
+            self._summary_background_tasks = tasks
+        task = asyncio.create_task(self._summary_background(ctx))
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+        return ctx.i18n.t("commands.summary.started")
+
+    async def _summary_background(self, ctx: CommandCtx) -> None:
+        """The slow half of `.summary` — the authoring call, run OUTSIDE the room's turn
+        lock so a slow model never queues the table. Success, the empty-room notice, and
+        failures all surface as a room system message."""
+        try:
+            from agent.session_summary import render_summary
+
+            rendered = await render_summary(ctx.services, ctx.chat_key, ctx.i18n)
+        except Exception:  # noqa: BLE001
+            logger.debug("summary background generation failed", exc_info=True)
+            rendered = None
         if rendered is None:
-            return ctx.i18n.t("commands.summary.empty")
-        return rendered
+            text = ctx.i18n.t("commands.summary.empty")
+        else:
+            text = rendered
+        if ctx.router.hub is not None:
+            await ctx.router.hub.publish(
+                ctx.chat_key,
+                Event.system("info", text),
+            )
 
     async def cmd_chronicle(self, ctx: CommandCtx) -> str:
         """`.chronicle [list | summary | threads | fold | edit <text> | note <text>]` — the

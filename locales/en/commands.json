@@ -319,5 +319,8 @@
   "commands.image.started": "Image generation started — the result will appear in the room when it is done.",
   "commands.help.summary": "Generate a recap of the campaign so far: current progress, the story, key info, and open threads.",
   "commands.summary.empty": "No campaign material to summarize yet — the recap becomes available once the story gets going.",
-  "commands.summary.failed": "The recap could not be generated right now — try again in a moment."
+  "commands.summary.failed": "The recap could not be generated right now — try again in a moment.",
+  "commands.summary.denied": "Only the keeper can generate a campaign recap.",
+  "commands.summary.generating": "Summarizing the campaign…",
+  "commands.summary.started": "The recap is being generated — it will appear here when ready."
 }
