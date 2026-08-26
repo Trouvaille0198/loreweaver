@@ -172,11 +172,13 @@ COMPANION_OPTION_IDS: tuple[str, ...] = ("skills", "rulepacks", "cards")
 # Per-kind and total caps for the media pass: a cover is singular, every other kind illustrates
 # the KEY subjects only, and one generation never renders more than a dozen images.
 _MEDIA_KIND_CAPS: dict[str, int] = {"cover": 1, "scenes": 6, "npcs": 6, "items": 6, "pregens": 6}
-# Render at most a few shots concurrently: image providers rate-limit (HTTP 429) when a full
-# cast's portraits fan out at once, and serializing a dozen images is a 10+ minute slog. Three
-# in flight is a reasonable middle ground.
-_MEDIA_CONCURRENCY = 3
-_MEDIA_RETRIES = 3
+# Render at most a couple of shots concurrently: image providers rate-limit (HTTP 429) when a
+# cast's portraits fan out at once, and serializing a dozen images is a 10+ minute slog. Two in
+# flight stays under typical per-minute quotas without turning the media pass into a crawl.
+_MEDIA_CONCURRENCY = 2
+# A 429 quota window is usually tens of seconds, so retries must outlast it: six attempts with
+# the rate-limit backoff below span ~5 minutes before a shot is dropped.
+_MEDIA_RETRIES = 6
 
 
 def _should_retry_imagegen(exc: BaseException) -> bool:
@@ -197,8 +199,22 @@ def _should_retry_imagegen(exc: BaseException) -> bool:
     return code == "imagegen_timeout"
 
 
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    """True for an HTTP 429 from the image provider: the retry budget must outlast the quota
+    window, so the backoff schedule treats it differently from a generic transient blip."""
+    return (
+        isinstance(exc, ImageGenError)
+        and exc.code == "imagegen_http_error"
+        and bool(exc.args)
+        and str(exc.args[0]) == "429"
+    )
+
+
 async def _imagegen_generate_retry(imagegen: Any, prompt: str, *, size: str) -> tuple[bytes, str]:
-    """`imagegen.generate` with bounded backoff retry for transient failures (timeout / 429/5xx)."""
+    """`imagegen.generate` with bounded backoff retry for transient failures (timeout / 429/5xx).
+
+    A 429 quota window is tens of seconds: back off 10s → 20s → 40s → 60s so the retries span
+    minutes, not the few seconds a generic transient retry covers."""
     last: BaseException | None = None
     for attempt in range(_MEDIA_RETRIES):
         try:
@@ -207,7 +223,8 @@ async def _imagegen_generate_retry(imagegen: Any, prompt: str, *, size: str) -> 
             last = exc
             if not _should_retry_imagegen(exc):
                 raise
-            await asyncio.sleep(min(2**attempt, 8))
+            delay = min(10 * 2**attempt, 60) if _is_rate_limit_error(exc) else min(2**attempt, 8)
+            await asyncio.sleep(delay)
     raise last  # type: ignore[misc]
 _MEDIA_TOTAL_CAP = 12
 
@@ -1278,8 +1295,10 @@ async def _module_media_pass(
     """Generate the keeper-selected module illustrations: one scoped shot-list call, then the
     room's own imagegen lane per shot, stored into the room's media deck under a
     `module-<id>-<kind>-<n>` provenance name. NOT auto-broadcast -- the keeper pushes handouts
-    when the table calls for them, same stance as a pack's `assets:`. The first stop condition
-    (hourly room cap, provider error, store error) ends the loop; earlier images are kept.
+    when the table calls for them, same stance as a pack's `assets:`. A real capacity stop
+    (hourly room cap, store error) ends the loop; a PROVIDER failure costs only its own shot
+    (bounded retries first, then skip and continue), and the report names every failed shot
+    so the keeper can refill it with `.image <kind> <subject>`. Earlier images are kept.
 
     When ``assets_dir`` is given (the module's own `modules/<id>.assets/` directory), each
     rendered image is ALSO written there, so the module's illustrations travel with the module
@@ -1313,6 +1332,7 @@ async def _module_media_pass(
         allowed_mimes=ALLOWED_IMAGE_MIMES,
     )
     generated: list[str] = []
+    failed: list[str] = []
     stop_reason = ""
     media_index: list[dict[str, str]] = []
     for index, shot in enumerate(shots, 1):
@@ -1320,10 +1340,17 @@ async def _module_media_pass(
             stop_reason = "rate_limited"
             break
         try:
-            data, mime = await imagegen.generate(shot.prompt, size=services.settings.imagegen.size)
-        except Exception:  # provider down / refusal: stop, keep earlier images, report
-            stop_reason = "provider_error"
-            break
+            data, mime = await _imagegen_generate_retry(
+                imagegen, shot.prompt, size=services.settings.imagegen.size
+            )
+        except Exception as exc:  # provider down after bounded retries: skip THIS shot, keep going
+            logger.warning(
+                "[pack-forge] imagegen failed for %s: %s",
+                shot.subject or f"{shot.kind}-{index}",
+                exc,
+            )
+            failed.append(f"{shot.kind}:{shot.subject}" if shot.subject else f"{shot.kind}-{index}")
+            continue
         name = f"module-{module_id}-{shot.kind}-{index}{_IMAGE_MIME_EXTS.get(mime, '.png')}"
         try:
             record = await store.register_blob(
@@ -1333,7 +1360,8 @@ async def _module_media_pass(
                 name=name,
                 uploader=ctx.uid(),
             )
-        except Exception:  # quota/mime rejection: same degrade-and-report stance
+        except Exception as exc:  # quota/mime rejection: same degrade-and-report stance
+            logger.warning("[pack-forge] media register failed %s: %s", name, exc)
             stop_reason = "store_error"
             break
         generated.append(record.name)
@@ -1344,8 +1372,8 @@ async def _module_media_pass(
             try:
                 assets_dir.mkdir(parents=True, exist_ok=True)
                 atomic_write_private(assets_dir / name, data)
-            except Exception:  # noqa: BLE001 — an asset-copy failure must never fail the forge
-                pass
+            except Exception as exc:  # noqa: BLE001 — an asset-copy failure must never fail the forge
+                logger.warning("[pack-forge] asset write failed %s: %s", name, exc)
         # Persist the shot's subject (which scene/NPC/item) with the stored image so
         # the runtime can reuse it as a REFERENCE for `.image <kind> <subject>` — the
         # provenance name alone (`module-<id>-<kind>-<n>`) cannot name the subject.
@@ -1356,16 +1384,28 @@ async def _module_media_pass(
         await _append_module_media_index(services, ctx.chat_key, media_index)
 
     names = ", ".join(generated)
-    if generated and not stop_reason:
-        return i18n.t("agent.forge.module_media_done", count=len(generated), names=names)
-    if generated:
-        return i18n.t(
-            "agent.forge.module_media_partial",
-            count=len(generated),
-            names=names,
-            reason=_option_reason(i18n, stop_reason),
+    parts: list[str] = []
+    if generated and not stop_reason and not failed:
+        parts.append(i18n.t("agent.forge.module_media_done", count=len(generated), names=names))
+    elif generated:
+        parts.append(
+            i18n.t(
+                "agent.forge.module_media_partial",
+                count=len(generated),
+                names=names,
+                reason=_option_reason(i18n, stop_reason or "provider_error"),
+            )
         )
-    return i18n.t("agent.forge.module_media_none", reason=_option_reason(i18n, stop_reason or "no_shots"))
+    else:
+        parts.append(
+            i18n.t(
+                "agent.forge.module_media_none",
+                reason=_option_reason(i18n, stop_reason or ("provider_error" if failed else "no_shots")),
+            )
+        )
+    if failed:
+        parts.append(i18n.t("agent.forge.module_media_failed", count=len(failed), subjects=", ".join(failed)))
+    return "\n".join(parts)
 
 
 async def _append_module_media_index(services: Services, chat_key: str, entries: list[dict[str, str]]) -> None:
@@ -1908,6 +1948,13 @@ async def generate_and_install_pack_module(
                     # module-creation path's `_append_module_media_index`).
                     await _append_module_media_index(services, ctx.chat_key, media_index)
                 logger.info("[pack-forge] media pass done: %d images", len(media_index))
+                failed_shots = [s.subject or s.kind for s, r in zip(shots, rendered) if r is None]
+                if failed_shots:
+                    logger.warning(
+                        "[pack-forge] media pass dropped %d shot(s): %s",
+                        len(failed_shots),
+                        ", ".join(failed_shots),
+                    )
             else:
                 logger.warning("[pack-forge] no imagegen provider for this room; media skipped")
 
