@@ -291,6 +291,13 @@ class RoomsCommands:
         if not target:
             return ctx.i18n.t("commands.poke.usage")
         roster = await ctx.services.characters.get_party_roster(ctx.chat_key)
+        logger.info(
+            "poke: chat_key=%s user=%s target=%r roster=%s",
+            ctx.chat_key,
+            ctx.user_id,
+            target,
+            [str(m.get("name", "")) for m in roster],
+        )
         matches = [
             member
             for member in roster
