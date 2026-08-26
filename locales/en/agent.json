@@ -72,5 +72,9 @@
   "agent.tools.tool_not_available": "Tool {name} is not available in this room.",
   "agent.tools.unknown_tool": "Unknown tool: {name}",
   "agent.forge.module_media_pregen_list": "These are the module's CLAIMABLE INVESTIGATORS — `pregens` portraits must use one of these exact names as `subject`. This is ONLY the investigator list: you MUST STILL also generate shots for the OTHER selected kinds (cover, scenes, npcs, items) — never let the investigator list crowd them out.\n{names}",
-  "agent.forge.module_media_subject_names": "For these kinds the `subject` MUST be one of the module's real names (choose from the list; respect the per-kind cap):\n{groups}"
+  "agent.forge.module_media_subject_names": "For these kinds the `subject` MUST be one of the module's real names (choose from the list; respect the per-kind cap):\n{groups}",
+  "agent.session_summary.system_prompt": "You are writing a progress recap for a TTRPG table. Below is the campaign's public material: the rolling story summary, recent chronicle lines, and the recent conversation. Write a concise recap in the same language as this prompt with these sections: ① Where we are — current progress and what the party is doing now; ② Story so far — the key events that led here; ③ Key information — notable NPCs, clues, threats, and discoveries; ④ Open threads — unanswered questions and likely next steps. Stay strictly within the material given: do not invent events, and never reveal anything the players have not seen. Plain text, a few lines per section.",
+  "agent.session_summary.summary_label": "Rolling story summary",
+  "agent.session_summary.chronicle_label": "Recent chronicle",
+  "agent.session_summary.conversation_label": "Recent conversation"
 }

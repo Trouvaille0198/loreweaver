@@ -41,6 +41,7 @@ MODEL_CALL_LANES: dict[str, str] = {
     "agent/scribe.py": SCOPED_ACTOR,
     "agent/chronicle.py": MEMORY,
     "agent/forge.py": AUTHORING,
+    "agent/session_summary.py": AUTHORING,
     "agent/module_initializer.py": AUTHORING,
     "agent/document_manager.py": AUTHORING,
     "agent/char_from_persona.py": AUTHORING,

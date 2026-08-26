@@ -1,4 +1,4 @@
-"""World knowledge and memory: `.lore`, `.import`, `.var`, `.module`, `.report`, `.recap`,
+"""World knowledge and memory: `.lore`, `.import`, `.var`, `.module`, `.report`, `.recap`, `.summary`,
 `.chronicle`."""
 
 from __future__ import annotations
@@ -502,6 +502,18 @@ class WorldCommands:
         rendered = await render_recap(ctx.services, ctx.chat_key, ctx.i18n)
         if rendered is None:
             return ctx.i18n.t("commands.recap.empty")
+        return rendered
+    async def cmd_summary(self, ctx: CommandCtx) -> str:
+        """`.summary` — an LLM-generated "where we are" recap of the campaign so far:
+        current progress, the story that led here, key info, and open threads. Player-facing
+        (any member; no keeper privilege): assembled purely from PLAYER projections of the
+        campaign summary, the chronicle tail and the recent conversation, so keeper
+        annotations structurally cannot appear — safe to broadcast to the whole room."""
+        from agent.session_summary import render_summary
+
+        rendered = await render_summary(ctx.services, ctx.chat_key, ctx.i18n)
+        if rendered is None:
+            return ctx.i18n.t("commands.summary.empty")
         return rendered
 
     async def cmd_chronicle(self, ctx: CommandCtx) -> str:
