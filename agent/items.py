@@ -197,7 +197,7 @@ def parse_bonus_spec(text: str) -> dict[str, int]:
         try:
             delta = int(raw.strip())
         except (TypeError, ValueError):
-            raise ValueError(f"bonus value must be an integer: {pair!r}") from None
+            raise ValueError(f"bonus value must be an integer: {pair!r}") from None  # i18n-exempt: internal parse diagnostic, surfaced as commands.item.bad_flags
         out[key.strip()] = delta
     return out
 

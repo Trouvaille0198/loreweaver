@@ -86,6 +86,7 @@ def test_provider_catalog_carries_backend_owned_defaults_and_auth_modes():
         "default_base_url": "https://api.minimaxi.com/v1",
         "auth_type": "api_key",
         "model_kinds": ["chat", "image"],
+        "image_default_base_url": "https://api.minimaxi.com/v1/image_generation",
     }
     assert catalog["openai"]["default_base_url"] == "https://api.openai.com/v1"
     assert catalog["anthropic"]["default_base_url"] == "https://api.anthropic.com"
@@ -98,6 +99,7 @@ def test_provider_catalog_carries_backend_owned_defaults_and_auth_modes():
         "default_base_url": "https://api.siliconflow.cn/v1",
         "auth_type": "api_key",
         "model_kinds": ["chat", "embedding", "image"],
+        "image_default_base_url": "https://api.siliconflow.cn/v1",
     }
     assert catalog["deepseek"]["model_kinds"] == ["chat"]
     assert catalog["ollama"]["model_kinds"] == ["chat", "embedding"]
@@ -106,6 +108,7 @@ def test_provider_catalog_carries_backend_owned_defaults_and_auth_modes():
         "default_base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
         "auth_type": "api_key",
         "model_kinds": ["chat", "image"],
+        "image_default_base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/api/v1",
     }
 
 

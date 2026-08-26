@@ -839,20 +839,20 @@ def _build_module_prompt_messages(
 
 def _module_prompt_rule_requirement(i18n: Any, rule_strategy: str, room_system: str) -> str:
     """Turn the forge selector into a terse, model-facing rule constraint: NAME the system
-    (CoC / DnD / WoD or the room's own), one short line — the keeper asked for the rule in one
+    (the room's own rule system, by name), one short line — the keeper asked for the rule in one
     breath, not a full spec dump (no roll/target/outcome/parameter enumeration)."""
     strategy = rule_strategy.strip()
     selected_system = (strategy.split(":", 1)[1] if ":" in strategy else room_system.strip()).strip()
     if not selected_system:
         selected_system = room_system.strip()
-    # Friendly one-line system names — the keeper wants the rule in one breath ("CoC/DnD 就行").
-    display = {
-        "coc7": "CoC 7e",
-        "coc": "CoC",
-        "dnd5e": "DnD 5e",
-        "dnd": "DnD",
-        "wod": "WoD",
-    }.get(selected_system.casefold(), selected_system or i18n.t("agent.forge.module_prompt_room_system"))
+    # Friendly one-line system names — the keeper wants the rule in one breath
+    # ("报系统名就行"). System-name data lives in core (`rule_display_name`), so
+    # agent/ stays system-agnostic (architecture red line).
+    from core.rulepacks import rule_display_name
+
+    display = rule_display_name(selected_system) or selected_system or i18n.t(
+        "agent.forge.module_prompt_room_system"
+    )
     system = display
     if strategy == "standalone":
         return i18n.t("agent.forge.module_prompt_rule_standalone")
@@ -1647,7 +1647,7 @@ _PACK_MODULE_CARD_SCHEMA = """{
 
 def _nominal_skill_budget(pack: Any) -> int | None:
     """The skill-point budget evaluated over the pack's DEFAULT sheet values — a
-    deterministic, system-agnostic ceiling (CoC: 300 with all stats at 50) that
+    deterministic, system-agnostic ceiling (default sheet: 300 with all stats at 50) that
     keeps an LLM-authored cast budget-sane without knowing a concrete sheet. The
     math lives in `core.character_rules.skill_point_budget`; this is the
     default-sheet view of it. ``None`` when the pack declares no budget."""
@@ -1837,7 +1837,7 @@ async def generate_and_install_pack_module(
     name = lorecard.card.name or description
     # A CJK `name` has no ASCII to slug, so the model also supplies `name_en` — a short English
     # title the id can be built from (a Chinese-only fallback used to degrade to whatever ASCII
-    # happened to survive the keeper's description, e.g. a module whose id became "coc").
+    # happened to survive the keeper's description, e.g. a module whose id became a system word).
     module_id = (
         _slugify(card_text.get("name_en") or "")
         or _slugify(lorecard.card.name)

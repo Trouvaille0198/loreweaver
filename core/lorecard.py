@@ -314,8 +314,8 @@ def _parse_items(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
         origin = _text(item.get("origin")).strip()[:200]
         original_holder = _text(item.get("original_holder")).strip()[:100]
         if _is_starter_gear(origin, original_holder):
-            warnings.append(  # i18n-exempt: author diagnostic, wrapped in a localized import summary
-                f"items[{index}] {name!r}: skipped — origin reads like the investigators' "
+            warnings.append(
+                f"items[{index}] {name!r}: skipped — origin reads like the investigators' "  # i18n-exempt: author diagnostic, wrapped in a localized import summary
                 "starting gear; the item pool holds what the party must FIND (a place, "
                 "an NPC's hands), not what they begin with"
             )

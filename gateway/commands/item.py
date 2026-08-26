@@ -92,7 +92,7 @@ def _parse_give_flags(rest: str) -> tuple[str, str, dict[str, int], str, int, bo
             except ValueError:
                 raise ValueError("--qty must be an integer") from None
             if qty < 1:
-                raise ValueError("--qty must be a positive integer")
+                raise ValueError("--qty must be a positive integer")  # i18n-exempt: internal flag diagnostic, surfaced as commands.item.bad_flags
             i += 2
         elif tok == "--bonus":
             if i + 1 >= len(tokens):

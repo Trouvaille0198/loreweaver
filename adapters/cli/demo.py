@@ -20,7 +20,10 @@ _CALL_IDS = count(1)
 def demo_kp_responder(messages, tools):
     if messages and messages[0].get("role") == "user" and "system" not in {item.get("role") for item in messages}:
         prompt = str(messages[0].get("content") or "")
-        locale = "zh" if any("\u4e00" <= char <= "\u9fff" for char in prompt) else "en"
+        # Locale follows the MODULE's language, not the whole prompt: the analysis
+        # framing itself may carry CJK examples (starter-gear markers) in an
+        # English build, which would mis-detect a Chinese locale.
+        locale = "zh" if any("\u4e00" <= char <= "\u9fff" for char in DEMO_MODULE_TEXT) else "en"
         if DEMO_MODULE_TEXT not in prompt:
             # The offline responder only knows the built-in sample adventure.
             # Returning non-JSON for every other source lets ModuleInitializer's

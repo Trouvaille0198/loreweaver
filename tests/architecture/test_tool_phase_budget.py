@@ -25,7 +25,7 @@ from infra.llm import FakeLLM
 # Measured 2026-08-11: the play phase is 32 tools / ~16.6k characters, cut from 35.7k
 # ungated. The ceiling leaves room for a couple of genuinely per-turn additions and no
 # more; a bulk tool cannot slip in under it.
-PLAY_PHASE_SCHEMA_BUDGET = 20_000
+PLAY_PHASE_SCHEMA_BUDGET = 21_000  # the fork's play toolset adds the item suite, module queries and settlement proposal
 
 # What a turn cannot be run without. Losing any of these to a phase reclassification is
 # not a budget question — it breaks play.

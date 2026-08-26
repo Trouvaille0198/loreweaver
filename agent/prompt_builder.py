@@ -309,13 +309,16 @@ async def build_system_prompt_parts(
     preset_bands = await _enabled_preset_bands(ctx, services, i18n)
     stable.append(preset_bands.get("head", ""))
 
-    skill_bodies = await _enabled_skill_bodies(ctx, services)
-    if skill_bodies:
-        stable.append(i18n.t("prompt.skills_header") + "\n\n" + "\n\n".join(skill_bodies))
     # The settlement ritual: the AI-KP recognises a clear ending and reminds the
     # keeper to run `.settle` — it never triggers settlement itself (the keeper
     # decides when the story ends, and only the keeper's `.settle apply` lands it).
+    # Placed BEFORE the skill bodies: P1 pins skills as the LAST stable-head
+    # section (the strongest standing directive), so nothing may follow them.
     stable.append(i18n.t("prompt.settlement_notice"))
+
+    skill_bodies = await _enabled_skill_bodies(ctx, services)
+    if skill_bodies:
+        stable.append(i18n.t("prompt.skills_header") + "\n\n" + "\n\n".join(skill_bodies))
 
     # The campaign summary closes the head — the last thing before the replayed turns
     # it summarises, which is where narrative continuity reads best, and the position

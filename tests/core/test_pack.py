@@ -914,8 +914,9 @@ def test_pack_presets_build_disclose_and_land_in_the_store(tmp_path):
     report = _install(built.path, tmp_path)
     assert report.presets == ["noir"]
     # Landed in the shared store under the sanitized id: discoverable with no import step
-    # (install ≠ enable — a room still opts in via `.preset enable`).
-    assert list_preset_ids(data_dir) == ["noir"]
+    # (install ≠ enable — a room still opts in via `.preset enable`). The store lists
+    # system presets first (mature-mode) ahead of the newly installed one.
+    assert list_preset_ids(data_dir) == ["mature-mode", "noir"]
     assert load_preset(data_dir, "noir") is not None
 
 

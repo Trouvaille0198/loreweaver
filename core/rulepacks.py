@@ -909,6 +909,23 @@ def available_systems() -> list[str]:
     return sorted(_discover_registry())
 
 
+# Friendly one-line system display names for model-facing prompts (forge's
+# rule-strategy selector, etc.). Rule-system DATA lives in core, never agent/ —
+# the architecture tests pin agent/ to zero system tokens.
+RULE_DISPLAY_NAMES: dict[str, str] = {
+    "coc7": "CoC 7e",
+    "coc": "CoC",
+    "dnd5e": "DnD 5e",
+    "dnd": "DnD",
+    "wod": "WoD",
+}
+
+
+def rule_display_name(system: str) -> str:
+    """The friendly display name for a rule-system id (``""`` when unknown)."""
+    return RULE_DISPLAY_NAMES.get(str(system).casefold(), "")
+
+
 def load_rulepack(system: str) -> RulePack:
     """Resolve `system` (an id, a declared name, or a set_key) to its RulePack.
 

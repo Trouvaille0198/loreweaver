@@ -74,15 +74,15 @@ MAX_ROUNDS_PER_TURN = 6
 _BASE_DICE_TOOL_NAMES = frozenset({"skill_check", "roll_dice"})
 
 _ITEM_ACTION_RE = re.compile(
-    r"(?:\b(?:gave|grant(?:ed)?|receiv(?:e|es|ed)|obtain(?:ed)?|pick(?:ed)?\s+up|"
-    r"add(?:ed)?|hand(?:ed)?|equip(?:ped)?|use(?:d)?|consume(?:d)?|"
+    r"(?:\b(?:gave|grant(?:ed)?|receiv(?:e|es|ed)|obtain(?:ed)?|pick(?:ed)?\s+up|"  # i18n-exempt: regex with CJK match words, never user-facing
+    r"add(?:ed)?|equip(?:ped)?|use(?:d)?|consume(?:d)?|"  # no bare `hand`: the noun ("shaky hand") matched
     r"drop(?:ped)?|remove(?:d)?)\b|"
     r"给(?:了|过)?|送给|交给|转交|获得|拿到|捡到|拾起|收下|装备|使用|消耗|"
     r"丢弃|扔掉|移除|持有|拿着)",
     re.IGNORECASE,
 )
 _ITEM_WORD_RE = re.compile(
-    r"(?:\b(?:item|gear|equipment|inventory|backpack|key|potion|amulet|weapon|"
+    r"(?:\b(?:item|gear|equipment|inventory|backpack|key|potion|amulet|weapon|"  # i18n-exempt: regex with CJK match words, never user-facing
     r"shield|sword|map|ledger|token|torch|badge|ring|necklace|scroll)\b|"
     r"物品|道具|装备|物品栏|背包|钥匙|药水|护符|武器|盾|剑|刀|地图|账本|信件|"
     r"令牌|火把|徽章|戒指|项链|卷轴)",

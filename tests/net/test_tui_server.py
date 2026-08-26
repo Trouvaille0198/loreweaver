@@ -266,6 +266,7 @@ async def test_oversized_input_is_rejected_without_starting_a_turn():
             "type": "error",
             "code": "input_too_long",
             "message": "Messages may contain at most 4,000 characters. Nothing was sent.",
+            "private": True,
         }
         assert not server.turns
 
@@ -307,6 +308,7 @@ def test_input_too_long_error_has_a_chinese_translation():
         "type": "error",
         "code": "input_too_long",
         "message": "消息最多可输入 4,000 个字符，本次内容未发送。",
+        "private": True,
     }
 
 
@@ -1106,11 +1108,13 @@ async def test_build_room_state_pregen_claimed_by_is_the_member_display_name():
     sheet = services.characters.generate_character("coc7", "Nora Vance")
     await pregen_add(services.documents, ctx.chat_key, sheet, source="card:test")
 
-    # Claim WITHOUT a recorded name (an older claim): bare state keeps the id…
+    # Claim WITHOUT a recorded name (an older claim): bare state falls back to a
+    # generic display name, never the raw internal id (tui:… read badly and never
+    # matched the client's "yours" check)…
     status, _ = await pregen_claim(services.documents, ctx.chat_key, "Nora Vance", "tui:member-9", services.characters)
     assert status == "ok"
     bare = await build_room_state(services, ctx)
-    assert bare["pregens"][0]["claimed_by"] == "tui:member-9"
+    assert bare["pregens"][0]["claimed_by"] == "player"
 
     # …but the live member registry resolves it.
     class FakeMember:
@@ -1934,7 +1938,7 @@ async def test_replay_delivers_discarded_draft_to_keeper_only():
             for _ in range(20):
                 try:
                     frame = await _recv(ws)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     break
                 if frame.get("type") == "narrative_draft":
                     assert False, "player replay must never receive a narrative_draft"
@@ -2002,7 +2006,7 @@ async def test_a_hidden_ai_roll_reaches_only_the_keeper_live_and_on_replay():
         for _ in range(30):
             try:
                 frame = await _recv(ws)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 break
             if frame.get("type") == "dice":
                 assert False, "player replay must never receive a hidden roll"
@@ -2018,12 +2022,48 @@ async def test_a_hidden_ai_roll_reaches_only_the_keeper_live_and_on_replay():
         for _ in range(30):
             try:
                 frame = await _recv(ws)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 break
             if frame.get("type") == "dice":
                 replayed = frame
         assert replayed is not None, "keeper replay must deliver the hidden roll"
         assert replayed["hidden"] is True
         await ws.close()
+    finally:
+        await server.close()
+
+
+async def test_join_replays_system_notices_with_plain_formatting():
+    """A `system`-named chat-log entry (a settlement proposal, an engine notice)
+    replays EXACTLY as it was broadcast — plain text, newlines intact — not as
+    markdown KP prose that folds single newlines into one run-on line."""
+    services = _services()
+    keystore = Keystore()
+    key_ann = keystore.add(room="system-replay-room", name="Ann")
+    server = TuiServer(services, keystore, port=0)
+    url = await _start(server)
+    try:
+        chat_key = _room_ctx("system-replay-room").chat_key
+        await append_message(
+            services,
+            chat_key,
+            DEFAULT_HISTORY_KEY,
+            role="assistant",
+            content="📜 Settlement proposal\n— Vera\nGrowth checks: 侦查",
+            turn=1,
+            name="system",
+        )
+
+        ws_ann = await websockets.connect(url)
+        await _join(ws_ann, key_ann, "Ann")
+        await _recv(ws_ann)  # Ann's own join presence
+
+        replay = await _recv(ws_ann)
+        await _recv(ws_ann)  # state
+
+        assert replay["type"] == "narrative"
+        assert replay["speaker"] == "system"
+        assert replay["text"] == "📜 Settlement proposal\n— Vera\nGrowth checks: 侦查"
+        await ws_ann.close()
     finally:
         await server.close()

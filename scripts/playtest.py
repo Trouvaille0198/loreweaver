@@ -1018,8 +1018,21 @@ class BehaviorSmokeLLM(FakeLLM):
     def _respond(self, messages: list[dict], _tools: list[dict] | None) -> ChatResult:
         matched: tuple[int, dict[str, Any]] | None = None
         for index, message in enumerate(messages):
-            if message.get("role") == "user" and message.get("content") in self._turn_by_action:
-                matched = (index, self._turn_by_action[str(message["content"])])
+            if message.get("role") != "user":
+                continue
+            content = str(message.get("content") or "")
+            # The production loop folds the speaker name into the content
+            # (`_speaker_labeled`, en `": "`, zh `"："`); the fixture keys on the
+            # player's bare line. No break: the chain replays earlier turns, and
+            # the LAST matching user line is the current turn (matches the
+            # original fixture matcher's last-match-wins semantics).
+            candidates = [content]
+            for sep in (": ", "："):
+                if sep in content:
+                    candidates.append(content.split(sep, 1)[1])
+            for candidate in candidates:
+                if candidate in self._turn_by_action:
+                    matched = (index, self._turn_by_action[candidate])
         smoke_usage = Usage(prompt_tokens=10, completion_tokens=4, total_tokens=14)
         if matched is None:
             return ChatResult(

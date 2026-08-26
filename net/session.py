@@ -626,19 +626,27 @@ class SessionCore:
                         anchor,
                     )
                 elif text and role == "assistant":
-                    await self._deliver_replay(
-                        member, Event.narrative(speaker="kp", text=text, fmt="markdown"), replayed, anchor
-                    )
-                    # The discarded streaming draft rides the reply — KEEPER-ONLY: a
-                    # player rejoin never learns the pre-tool narration existed.
-                    draft = str(entry.get("_lw_draft") or "").strip()
-                    if draft and getattr(member, "role", "") == "keeper":
+                    # A `system`-named entry (settlement proposals, engine notices
+                    # written through the ordinary chat-log path) replays EXACTLY as it
+                    # was broadcast — plain, newlines intact. KP prose stays markdown.
+                    if str(entry.get("_lw_name") or "") == "system":
                         await self._deliver_replay(
-                            member,
-                            Event(kind="narrative_draft", data={"id": anchor, "text": draft}),
-                            replayed,
-                            anchor,
+                            member, Event.narrative(speaker="system", text=text, fmt="plain"), replayed, anchor
                         )
+                    else:
+                        await self._deliver_replay(
+                            member, Event.narrative(speaker="kp", text=text, fmt="markdown"), replayed, anchor
+                        )
+                        # The discarded streaming draft rides the reply — KEEPER-ONLY: a
+                        # player rejoin never learns the pre-tool narration existed.
+                        draft = str(entry.get("_lw_draft") or "").strip()
+                        if draft and getattr(member, "role", "") == "keeper":
+                            await self._deliver_replay(
+                                member,
+                                Event(kind="narrative_draft", data={"id": anchor, "text": draft}),
+                                replayed,
+                                anchor,
+                            )
                 # …then everything that happened right after this message, live: the
                 # KP's rolls after the player's line, a companion's exchange, a typed roll
                 # after the reply. The legacy room_state blob has no ids: nothing anchors.
@@ -1083,8 +1091,10 @@ class SessionCore:
             resolved = await resolve_pack_asset(self.services, member.session_key, sha256)
             if resolved is None:
                 # Module-library context: a keeper viewing an installed pack's detail needs its
-                # illustrations even before the pack is enabled in this room.
-                resolved = await resolve_installed_pack_asset(self.services, sha256)
+                # illustrations even before the pack is enabled in this room. KEEPER-ONLY —
+                # a player must never resolve an un-enabled pack's hashes (no blob oracle).
+                if getattr(member, "role", "") == "keeper":
+                    resolved = await resolve_installed_pack_asset(self.services, sha256)
             if resolved is None:
                 raise
             asset_data, mime, name = resolved

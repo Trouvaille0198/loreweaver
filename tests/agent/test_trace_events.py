@@ -118,6 +118,7 @@ async def test_the_scribe_records_its_verdict(tmp_path):
         "ops_seen": 1,
         "whispers": 1,
         "chronicle": True,
+        "memories": 0,
     }
 
 
@@ -158,6 +159,7 @@ async def test_a_dropped_op_and_a_skipped_chronicle_are_visible_in_the_verdict(t
         "ops_seen": 1,
         "whispers": 0,
         "chronicle": False,
+        "memories": 0,
     }
 
 
