@@ -523,7 +523,6 @@ class WorldCommands:
             await ctx.router.hub.publish(
                 ctx.chat_key,
                 Event(kind="system", text=ctx.i18n.t("commands.summary.generating"), data={"level": "info", "spinner": True}),
-                only_user=ctx.user_id,
             )
         tasks = getattr(self, "_summary_background_tasks", None)
         if tasks is None:
@@ -553,7 +552,6 @@ class WorldCommands:
             await ctx.router.hub.publish(
                 ctx.chat_key,
                 Event.system("info", text),
-                only_user=ctx.user_id,
             )
 
     async def cmd_chronicle(self, ctx: CommandCtx) -> str:

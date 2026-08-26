@@ -128,7 +128,7 @@ async def test_summary_returns_started_and_publishes_the_recap_as_a_system_messa
     system_events = [(event, only) for _, event, _, only in hub.events if event.kind == "system"]
     assert system_events[0][0].text == i18n.t("commands.summary.generating"), "spinner line first"
     assert system_events[-1][0].text == RECAP, "the recap lands as a system message"
-    assert all(only == "kp" for _, only in system_events), "every summary line is private to the invoking keeper"
+    assert all(only is None for _, only in system_events), "the recap is broadcast to the whole room"
 
     assert len(llm.calls) == 1
     prompt = "\n".join(str(message.get("content", "")) for message in llm.calls[0][0])
@@ -150,7 +150,7 @@ async def test_summary_empty_room_publishes_the_empty_notice():
 
     system_events = [(event, only) for _, event, _, only in hub.events if event.kind == "system"]
     assert system_events[-1][0].text == i18n.t("commands.summary.empty")
-    assert system_events[-1][1] == "kp", "the empty notice is private to the invoking keeper"
+    assert system_events[-1][1] is None, "the empty notice is broadcast to the whole room"
     assert not services.llm.calls, "no material means no model call"
 
 
