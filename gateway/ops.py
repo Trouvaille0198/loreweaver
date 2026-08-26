@@ -340,6 +340,29 @@ async def set_media_enabled(store, chat_key: str, on: bool) -> None:
     await store.state_set(chat_key, "media_enabled", value)
 
 
+# The room's AI reply-length mode (`ai_length` store flag): "normal" (the default —
+# no brevity directive is folded into the prompt) or "brief" (the style layer asks
+# the KP for short, to-the-point replies). A missing or unknown value always reads
+# as "normal" so a corrupt flag can never change a room's behavior.
+AI_LENGTH_VALUES = ("normal", "brief")
+
+
+async def get_ai_length(store, chat_key: str) -> str:
+    """This room's AI reply-length mode: ``"normal"`` (default) or ``"brief"``."""
+    value = await store.state_get(chat_key, "ai_length")
+    return str(value or "") if str(value or "") in AI_LENGTH_VALUES else "normal"
+
+
+async def set_ai_length(store, chat_key: str, mode: str) -> None:
+    """Set the room's AI reply-length mode (``"normal"`` or ``"brief"``; anything
+    else is refused). Keeper-only at the call sites — it shapes every reply the
+    room's AI Keeper produces."""
+    mode = str(mode or "").strip().casefold()
+    if mode not in AI_LENGTH_VALUES:
+        raise ValueError(f"ai_length must be one of {AI_LENGTH_VALUES}, got {mode!r}")
+    await store.state_set(chat_key, "ai_length", mode)
+
+
 async def get_enabled_skills(store, chat_key: str) -> list[str]:
     """The list of KP-skill ids enabled for `chat_key`'s room (`[]` if unset/corrupt).
 
@@ -552,6 +575,7 @@ def _neutralize_url(url: str) -> str:
 
 
 __all__ = [
+    "AI_LENGTH_VALUES",
     "Botlist",
     "Censor",
     "CensorDisposition",
@@ -561,6 +585,7 @@ __all__ = [
     "PrivilegeLevel",
     "RateLimiter",
     "censor_from_settings",
+    "get_ai_length",
     "get_enabled_skills",
     "bot_setting",
     "is_bot_enabled",
@@ -568,6 +593,7 @@ __all__ = [
     "requires_at_mention",
     "room_content_unfiltered",
     "sanitize_outbound",
+    "set_ai_length",
     "set_bot_enabled",
     "set_enabled_skills",
     "toggle_enabled_skill",
@@ -588,6 +614,7 @@ ROOM_FACETS = (
         ),
         state_keys=frozenset(
             {
+                "ai_length",
                 "chat_locale",
                 "bot_enabled",
                 "media_enabled",

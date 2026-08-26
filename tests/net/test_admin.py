@@ -282,6 +282,37 @@ async def test_admin_enable_unknown_preset_is_rejected(tmp_path):
     assert reply["type"] == "admin_error" and reply["code"] == "bad_request"
 
 
+async def test_admin_room_settings_get_and_set_ai_length():
+    """`admin_get_room_settings` / `admin_set_room_settings` expose the room's
+    AI reply-length mode: get reads the default, set writes the two known modes,
+    and anything else is refused without touching the store."""
+    services = _services()
+    admin = AdminService(services, Keystore())
+    i18n = get_i18n("en")
+    chat_key = SessionSource(platform="tui", chat_type="group", chat_id="arkham").chat_key()
+
+    reply = await admin.dispatch("keeper", "arkham", {"type": "admin_get_room_settings"}, i18n)
+    assert reply == {"type": "admin_room_settings", "room": "arkham", "ai_length": "normal"}
+
+    reply = await admin.dispatch(
+        "keeper", "arkham", {"type": "admin_set_room_settings", "ai_length": "brief"}, i18n
+    )
+    assert reply["type"] == "admin_room_settings" and reply["ai_length"] == "brief"
+    assert await services.store.state_get(chat_key, "ai_length") == "brief"
+
+    reply = await admin.dispatch(
+        "keeper", "arkham", {"type": "admin_set_room_settings", "ai_length": "normal"}, i18n
+    )
+    assert reply["ai_length"] == "normal"
+    assert await services.store.state_get(chat_key, "ai_length") == "normal"
+
+    bad = await admin.dispatch(
+        "keeper", "arkham", {"type": "admin_set_room_settings", "ai_length": "verbose"}, i18n
+    )
+    assert bad["type"] == "admin_error" and bad["code"] == "bad_request"
+    assert await services.store.state_get(chat_key, "ai_length") == "normal"  # untouched
+
+
 async def test_admin_delete_missing_preset_is_not_found(tmp_path):
     services = _services(str(tmp_path))
     reply = await AdminService(services, Keystore()).dispatch(

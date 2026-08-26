@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 
 from agent.context import AgentCtx
-from agent.prompt_builder import build_system_prompt
+from agent.prompt_builder import build_system_prompt, build_system_prompt_parts
 from agent.services import build_services
 from core.modvars import build_spec, define_modvar, set_modvar
 from core.prompt_sections import (
@@ -258,3 +258,33 @@ async def test_build_system_prompt_without_module_variables_has_no_modvars_heade
     prompt = await build_system_prompt(ctx, services)
 
     assert services.i18n.with_locale("en").t("prompt.modvars_header") not in prompt
+
+
+# ---------------------------------------------------------------------------
+# The room's AI reply-length mode (the `ai_length` store flag) --
+# ---------------------------------------------------------------------------
+
+
+async def test_build_system_prompt_folds_brief_directive_only_when_room_asks_for_it():
+    """`ai_length=brief` folds the brevity directive into the stable head; the default
+    (unset, or an explicit "normal") leaves the prompt byte-identical — the setting is
+    off unless a keeper turned it on."""
+    services = _services("en")
+    chat_key = "chat-prompt-builder-ai-length"
+    ctx = AgentCtx(chat_key=chat_key, user_id="u1", locale="en")
+    i18n = services.i18n.with_locale("en")
+
+    baseline = await build_system_prompt(ctx, services)
+    assert i18n.t("prompt.style.brief") not in baseline
+
+    await services.store.state_set(chat_key, "ai_length", "brief")
+    brief = await build_system_prompt(ctx, services)
+    assert i18n.t("prompt.style.brief") in brief
+    assert i18n.t("prompt.style.narrative") in brief  # the style layer still leads
+    parts = await build_system_prompt_parts(ctx, services)
+    assert i18n.t("prompt.style.brief") in parts.stable
+    assert i18n.t("prompt.style.brief") not in parts.volatile
+
+    await services.store.state_set(chat_key, "ai_length", "normal")
+    back = await build_system_prompt(ctx, services)
+    assert back == baseline

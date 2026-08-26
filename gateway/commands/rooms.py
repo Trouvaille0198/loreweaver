@@ -15,6 +15,8 @@ from agent.undo import restore as restore_room
 from gateway.commands.types import CommandCtx
 from gateway.ops import (
     PrivilegeLevel,
+    get_ai_length,
+    set_ai_length,
     set_bot_enabled,
 )
 from gateway.rooms import (
@@ -222,6 +224,26 @@ class RoomsCommands:
             await set_bot_enabled(ctx.services.store, ctx.chat_key, False)
             return ctx.i18n.t("commands.bot.off")
         return ctx.i18n.t("commands.bot.status")
+
+    async def cmd_ai_length(self, ctx: CommandCtx) -> str:
+        """`.ai length [normal|brief]` — this room's AI reply-length mode. A bare
+        query is open to anyone; changing it shapes every reply the room's AI Keeper
+        produces, so writes require a keeper (same in-handler gate as `.bot`)."""
+        words = ctx.args.split()
+        if words and words[0].casefold() == "length":
+            mode = " ".join(words[1:]).strip()
+        else:
+            mode = ctx.args.strip()
+        mode = mode.casefold()
+        if not mode:
+            current = await get_ai_length(ctx.services.store, ctx.chat_key)
+            return ctx.i18n.t("commands.ai.length_status", mode=current)
+        if mode not in ("normal", "brief"):
+            return ctx.fail(ctx.i18n.t("commands.ai.bad_mode"))
+        if not _is_keeper(ctx.raw_ctx):
+            return ctx.fail(ctx.i18n.t("rooms.denied"))
+        await set_ai_length(ctx.services.store, ctx.chat_key, mode)
+        return ctx.i18n.t("commands.ai.length_set", mode=mode)
 
     async def cmd_botlist(self, ctx: CommandCtx) -> str:
         """`.botlist [add|remove|list] <bot_id>` — maintain the anti-loop bot-ignore
