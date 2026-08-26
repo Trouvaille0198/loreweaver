@@ -478,6 +478,87 @@ async def test_media_pass_generates_stores_and_reports_images(tmp_path: Path) ->
         forge_module._USER_MODULE_DIR = original_user_dir
 
 
+
+class _FlakyImageGen(_UniqueImageGen):
+    """A generator whose Nth calls (1-based, retries included) raise a transient
+    provider timeout, exercising `_imagegen_generate_retry` + skip-and-continue."""
+
+    def __init__(self, fail_on: set[int]):
+        super().__init__()
+        self._fail_on = fail_on
+
+    async def generate(self, prompt: str, **kwargs):
+        if len(self.calls) + 1 in self._fail_on:
+            self.calls.append({"prompt": prompt, "failed": "1"})
+            raise ImageGenError("imagegen_timeout")
+        return await super().generate(prompt, **kwargs)
+
+
+async def _no_sleep(_seconds: float) -> None:
+    """Retry backoff is wall-clock policy, not behavior under test."""
+
+
+async def test_media_pass_retries_then_skips_a_failing_shot_and_continues(tmp_path: Path, monkeypatch) -> None:
+    """One shot's provider dying must not kill the rest of the shot list: shot 2's
+    six attempts all time out, shot 3 still renders, and the report NAMES the
+    failed subject so the keeper can refill it with `.image <kind> <subject>`."""
+    monkeypatch.setattr(forge_module.asyncio, "sleep", _no_sleep)
+    reset_imagegen_limiters()
+    shots = json.dumps(
+        [
+            _shot("cover", "Greyreed at dusk"),
+            _shot("scenes", "The drowned chapel"),
+            _shot("scenes", "The ferry crossing"),
+        ]
+    )
+    services = _option_services(tmp_path, [GENERATED_MODULE_MD, _scripted_analysis_json(), shots])
+    services.imagegen = _FlakyImageGen(fail_on={2, 3, 4, 5, 6, 7})  # shot 2's call + all five retries
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        result = await generate_and_install_module(services, ctx, "a marsh mystery", media=["cover", "scenes"])
+
+        assert result.ok, result.error
+        assert len(services.imagegen.calls) == 8  # 1 + 6 failed + 1
+        records = await MediaStore(services.store, str(tmp_path)).list_room_records(CHAT_KEY)
+        assert {record.name for record in records} == {
+            "module-the-salt-marsh-vanishing-cover-1.png",
+            "module-the-salt-marsh-vanishing-scenes-3.png",
+        }
+        assert "scenes:The drowned chapel" in result.detail
+        assert "Failed 1 illustration(s)" in result.detail
+        index = json.loads(await services.store.state_get(CHAT_KEY, "module_media_index"))
+        assert {e["subject"] for e in index} == {"Greyreed at dusk", "The ferry crossing"}
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
+async def test_media_pass_reports_all_failed_shots_when_the_provider_is_down(tmp_path: Path, monkeypatch) -> None:
+    """A fully down provider produces no images, and every failed shot is named in
+    the report instead of vanishing silently."""
+    monkeypatch.setattr(forge_module.asyncio, "sleep", _no_sleep)
+    reset_imagegen_limiters()
+    shots = json.dumps([_shot("npcs", "Ada Marsh"), _shot("npcs", "Bob Grey")])
+    services = _option_services(tmp_path, [GENERATED_MODULE_MD, _scripted_analysis_json(), shots])
+    services.imagegen = _FlakyImageGen(fail_on=set(range(1, 13)))  # two shots × six attempts
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        result = await generate_and_install_module(services, ctx, "a marsh mystery", media=["npcs"])
+
+        assert result.ok, result.error
+        records = await MediaStore(services.store, str(tmp_path)).list_room_records(CHAT_KEY)
+        assert records == []
+        assert "npcs:Ada Marsh" in result.detail
+        assert "npcs:Bob Grey" in result.detail
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
 async def test_media_pass_without_imagegen_degrades_to_a_note(tmp_path: Path) -> None:
     services = _option_services(
         tmp_path, [GENERATED_MODULE_MD, _scripted_analysis_json()], imagegen=False
