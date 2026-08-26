@@ -10,7 +10,7 @@ from agent.loop import _ReplyStreamGate, run_kp_turn
 from agent.services import build_services
 from infra.config import Settings
 from infra.embeddings import FakeEmbeddings
-from infra.llm import FakeLLM, assistant_text, assistant_tools, tool_call
+from infra.llm import ChatResult, FakeLLM, assistant_text, assistant_tools, tool_call
 
 
 async def _collecting_emitter(frames: list[dict]):
@@ -97,23 +97,40 @@ async def test_max_rounds_finalizer_streams_its_reply(tmp_path):
     assert reconstructed == final_text
 
 
-async def test_run_kp_turn_streams_final_round_and_discards_tool_round_draft(tmp_path):
-    script = [
-        assistant_tools(tool_call("roll_dice", expression="1d100")),
-        assistant_text("侦查的结果映入眼帘：墙上有一道新鲜的刮痕，一直延伸到踢脚线之下。"),
-    ]
-    services = build_services(Settings(locale="zh"), llm=FakeLLM(script=script), embeddings=FakeEmbeddings(16))
-    ctx = AgentCtx(chat_key="stream-room", user_id="p1", locale="zh")
+async def test_tool_round_draft_is_fed_back_to_the_model(tmp_path):
+    """A tool round's discarded streamed narration is NOT lost from the fiction: it rides
+    back into the model's context so the final reply preserves the action/sensory process
+    detail (dice-first discards it from the live log, not from the story)."""
+    draft = (
+        "你伸手把铜镜从柜台上拿了起来。镜背贴上掌心的瞬间，那股凉意又爬上来了——"
+        "镜面上没有你的倒影，映着的是一片黑。"
+    )
+    llm = FakeLLM(
+        script=[
+            # A tool round that STREAMED its narration before calling the dice tool:
+            # `assistant_tools` alone carries no content, so spell the round out.
+            ChatResult(content=draft, tool_calls=[tool_call("roll_dice", expression="1d100")]),
+            assistant_text("你猛地回过神，镜面映出的是你自己的脸——额头上一层薄汗。"),
+        ]
+    )
+    services = build_services(Settings(locale="zh"), llm=llm, embeddings=FakeEmbeddings(16))
+    ctx = AgentCtx(chat_key="draft-feedback-room", user_id="p1", locale="zh")
     frames: list[dict] = []
 
+    # The gate only exists when streaming is on — pass an emitter so the tool round's
+    # narration is actually collected (and the draft can ride back to the model).
     async def emit(frame: dict) -> None:
         frames.append(frame)
 
-    result = await run_kp_turn(ctx, services, build_kp_toolset(services), "我检查墙面。", on_reply_delta=emit)
+    result = await run_kp_turn(ctx, services, build_kp_toolset(services), "把镜子拿走", on_reply_delta=emit)
 
-    assert "刮痕" in result.reply
-    final_epoch = max(frame["epoch"] for frame in frames)
-    reconstructed = "".join(frame["text"] for frame in frames if frame["epoch"] == final_epoch)
-    assert reconstructed == result.reply  # the streamed draft equals the final authoritative text
-    # The tool round produced no streamed draft text (no content in that round).
-    assert all(frame["epoch"] == final_epoch for frame in frames)
+    # The keeper-visible draft is still archived…
+    assert result.discarded_draft == draft
+    # …AND the next model call received the draft back with a resume instruction, so the
+    # final reply can carry the process detail the players should have seen.
+    assert len(llm.calls) >= 2
+    second_messages = llm.calls[1][0]
+    joined = "\n".join(str(m.get("content") or "") for m in second_messages)
+    assert draft in joined
+    assert "承接并保留" in joined  # loop.draft_resume (zh) — instructs to preserve the detail
+    assert result.reply

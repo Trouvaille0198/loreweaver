@@ -37,7 +37,13 @@ async def test_build_room_state_carries_memory_source_and_relationships():
     first) and the relationship tracks this character holds toward each entity
     (non-default values only). All additive wire fields — absent when empty."""
     from core.character_manager import CharacterSheet
-    from core.character_memory import CHARACTER_MEMORY_DOC_TYPE, append_entry, empty_memory, fold_entries
+    from core.character_memory import (
+        CHARACTER_MEMORY_DOC_TYPE,
+        append_entry,
+        append_playthrough_entry,
+        empty_memory,
+        fold_entries,
+    )
     from core.pregen_roster import pregen_add
     from core.relationships import RelationshipManager
 
@@ -49,6 +55,9 @@ async def test_build_room_state_carries_memory_source_and_relationships():
     await services.characters.set_active_character("player-1", ctx.chat_key, "林晚照")
 
     memory = append_entry(empty_memory(), "在雪鬼山庄发现枯井里的铜镜。", turn=1)
+    # The per-turn Scribe line stays server-side; only the settled PLAYTHROUGH
+    # memory rides the wire (the scenario-level "剧本回忆").
+    memory = append_playthrough_entry(memory, "【雪鬼山庄】调查员在雪鬼山庄揭开了镜中秘密，葬送了邪物。", turn=9)
     memory = fold_entries(memory, "调查员最终揭开了镜中秘密。")
     await services.documents.put(ctx.chat_key, CHARACTER_MEMORY_DOC_TYPE, "林晚照", memory)
 
@@ -59,9 +68,10 @@ async def test_build_room_state_carries_memory_source_and_relationships():
 
     character = state["character"]
     assert character["source"] == "forge-module:snow-villa"
+    # Only the scenario-level playthrough memory rides the wire — the per-turn
+    # Scribe journal and the retired folded life-summary stay server-side.
     assert character["memory"] == {
-        "summary": "调查员最终揭开了镜中秘密。",
-        "entries": ["在雪鬼山庄发现枯井里的铜镜。"],
+        "entries": ["【雪鬼山庄】调查员在雪鬼山庄揭开了镜中秘密，葬送了邪物。"],
     }
     assert character["relationships"] == [{"target": "阿雪", "tracks": [{"track": "affection", "value": 15}]}]
 
@@ -154,14 +164,19 @@ async def test_build_room_state_surfaces_pregen_roster_to_every_viewer():
 
     state = await build_room_state(services, ctx)
 
-    assert state["pregens"] == [
-        {
-            "name": "Mira Vane",
-            "claimed_by": "player",
-            "blurb": "A reporter tracking a disappearance.",
-        },
-        {"name": "老陈", "claimed_by": ""},
-    ]
+    # Names + claim state, plus the pregen's PUBLIC sheet fields (attributes /
+    # skills / system) so the roster can open the same detail dialog a claimed
+    # party member opens. Empty fields (no background here) stay off the wire;
+    # the derived one-liner and pristine internals never ride it.
+    roster = state["pregens"]
+    assert [entry["name"] for entry in roster] == ["Mira Vane", "老陈"]
+    assert roster[0]["claimed_by"] == "player"
+    assert roster[1]["claimed_by"] == ""
+    assert roster[0]["system"] == "CoC"
+    assert roster[0]["attributes"]["STR"] == 50
+    assert roster[0]["skills"]["聆听"] == 20
+    assert "background" not in roster[0]
+    assert "blurb" not in roster[0]
 
 
 async def test_build_room_state_resolves_legacy_offline_pregen_claim_without_exposing_member_id():
@@ -184,7 +199,10 @@ async def test_build_room_state_resolves_legacy_offline_pregen_claim_without_exp
         claimant_name_resolver=lambda member_id: "甲" if member_id == "tui:legacy" else "",
     )
 
-    assert state["pregens"] == [{"name": "白露", "claimed_by": "甲"}]
+    roster = state["pregens"]
+    assert roster[0]["name"] == "白露"
+    assert roster[0]["claimed_by"] == "甲"
+    assert "system" in roster[0]  # public sheet fields ride the roster too
     assert "tui:legacy" not in str(state)
 
 
@@ -204,7 +222,9 @@ async def test_build_room_state_hides_unresolvable_legacy_pregen_claim_id():
 
     state = await build_room_state(services, ctx)
 
-    assert state["pregens"] == [{"name": "白露", "claimed_by": "player"}]
+    roster = state["pregens"]
+    assert roster[0]["name"] == "白露"
+    assert roster[0]["claimed_by"] == "player"
     assert "tui:unknown" not in str(state)
 
 

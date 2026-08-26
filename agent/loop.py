@@ -289,9 +289,12 @@ class _ReplyStreamGate:
         if len(self._pending) >= 48 or "\n" in self._pending:
             self._flush()
 
-    def finish_round(self, *, discard: bool) -> None:
+    def finish_round(self, *, discard: bool) -> str:
         """Round over: a tool round discards its draft (the client clears on the next
-        epoch); a final round releases the held remainder through the full strip."""
+        epoch); a final round releases the held remainder through the full strip.
+        Returns this round's discarded draft text (``""`` otherwise), so the caller can
+        feed it back to the model — a tool round's narration holds the action/sensory
+        process detail the final reply must preserve, not throw away."""
         if discard:
             # The narration never reaches the live log (dice-first: the model must
             # not narrate a result before the dice settle), but it is ARCHIVED so a
@@ -299,17 +302,18 @@ class _ReplyStreamGate:
             # Everything counts — the slices already flushed to the streaming client
             # (the client drops them; the keeper's draft must still hold them) plus
             # whatever was still pending or held back.
-            self._discarded += self._flushed + self._pending + self._held
+            round_draft = self._flushed + self._pending + self._held
+            self._discarded += round_draft
             self._pending = ""
             self._held = ""
             self._flushed = ""
-            return
+            return round_draft
         remainder = _strip_text_tool_calls(self._held)
         cut = self._suspect_hold_index(remainder)
         self._held = ""
         self._pending += remainder[:cut]
         self._flush()
-
+        return ""
     def discarded_text(self) -> str:
         """The narration this turn's tool rounds discarded before the dice settled —
         the keeper-visible draft attached to the final reply (see `KPTurnResult`)."""
@@ -813,8 +817,16 @@ async def _run_kp_turn_body(
         _accumulate_usage(turn_usage, result)
 
         if result.tool_calls:
-            if gate is not None:
-                gate.finish_round(discard=True)
+            round_draft = gate.finish_round(discard=True) if gate is not None else ""
+            if round_draft:
+                # Dice-first drops a tool round's streamed narration from the live log,
+                # but that narration holds process description the players should have
+                # seen (the action and sensory detail leading INTO the tool call). Feed
+                # it back so the final reply preserves it and corrects only what the
+                # settled dice/tool results contradict — without this the model never
+                # learns it wrote the scene and the description silently vanishes from
+                # the fiction (the "draft should be in the reply" gap).
+                messages.append({"role": "user", "content": i18n.t("loop.draft_resume", draft=round_draft)})
             # Coarse progress for a long turn: which KIND of work this round opened with,
             # and which round it is. The first call sets the round's character; the bucket
             # is all that leaves this function (see `tool_activity`).
@@ -856,6 +868,10 @@ async def _run_kp_turn_body(
     # wrote); nothing here reads the fiction or guesses at the player's intent. Skipped
     # entirely on the max_rounds fallback (reply is still None) and after a provider error
     # (returned early above).
+    # End-of-turn check confirmations are keeper review material (the same
+    # `narrative_draft` lane as discarded tool-round prose): the model's answer
+    # to "did the item change?" is a keeper-side note, never player text.
+    check_notes: list[str] = []
     if reply is not None:
         item_names = await _item_names_for_checks(services, ctx.chat_key)
         reply = await _run_turn_checks(
@@ -876,6 +892,7 @@ async def _run_kp_turn_body(
             on_tool_event=on_tool_event,
             llm=room_llm,
             item_names=item_names,
+            check_notes=check_notes,
         )
 
     if reply is None:  # max_rounds exhausted without ever reaching a plain-text reply
@@ -946,7 +963,10 @@ async def _run_kp_turn_body(
         rounds=rounds,
         turn=turn_index,
         reply_record_id=reply_record_id,
-        discarded_draft=gate.discarded_text() if gate is not None else "",
+        discarded_draft=(
+            (gate.discarded_text() if gate is not None else "")
+            + ("\n\n" + "\n\n".join(check_notes) if check_notes else "")
+        ),
         usage=turn_usage,
         ui_frames=hook_ui_frames,
         panel_events=_capped_panel_events(hook_panel_events, ctx.chat_key),
@@ -1545,6 +1565,7 @@ async def _run_turn_checks(
     temperature: float | None,
     on_tool_event: Callable[[dict], Awaitable[None]] | None = None,
     item_names: frozenset[str] = frozenset(),
+    check_notes: list[str] | None = None,
 ) -> str:
     """Run this room's end-of-turn check table in pure Stop form; return the final reply.
 
@@ -1626,7 +1647,23 @@ async def _run_turn_checks(
                     raise
                 awaiting_narration = True
                 continue
-            reply = result.content or reply
+            reply_text = (result.content or "").strip()
+            if reply_text:
+                # The whole exchange (engine question + model answer) is keeper review
+                # material: it rides the keeper-only draft lane, so a keeper sees the
+                # item confirmation while players see only the clean narration.
+                notes = check_notes if check_notes is not None else []
+                notes.append(f"[{check.id}] {instruction}\n{reply_text}")
+            if check.condition == "item_forged" and reply_text.casefold() == "none":
+                # The NONE protocol: the model confirms that the item's holder did not
+                # change and the original prose stands. The confirmation is an answer
+                # TO THE ENGINE, never table text — keeping it out of the reply is what
+                # stops "（物品核对：……无物品变更。）" from leaking into the player's
+                # narration (it still reaches the keeper via the draft lane above).
+                # Only item_forged accepts NONE: a dice claim that goes unanswered must
+                # still be corrected, never silently kept.
+                break
+            reply = reply_text or reply
             awaiting_narration = False
     _clear_llm_continuation(services, convo, llm=llm)
     return reply
