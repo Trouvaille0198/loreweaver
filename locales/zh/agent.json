@@ -22,6 +22,7 @@
   "agent.forge.module_media_language_requirement": "所有 subject、prompt 和 caption 都必须使用与这条系统提示词相同的语言（中文）撰写，与模组正文语言保持一致；不要切换成其他语言。",
   "agent.forge.module_media_none": "未生成任何模组插图（{reason}）。",
   "agent.forge.module_media_partial": "已生成 {count} 张模组插图，随后停止（{reason}）：{names}。",
+  "agent.forge.module_media_failed": "重试后仍失败 {count} 张插图（provider 错误）：{subjects}——可用 `.image <类型> <主体>` 补图。",
   "agent.forge.module_media_request": "选定的插图类型及每类上限：{kinds}。\n\n以下是模组文档：\n\n{module}",
   "agent.forge.module_media_system_prompt": "你在为一个刚创作完成的 Loreweaver TTRPG 模组设计配图清单（shot list）。守秘人勾选了若干插图类型：封面、关键场景、NPC 立绘、关键物品/线索、可认领调查员立绘。你的输出是一份清单，之后由独立的渲染环节逐张生成——你本人不画任何图。\n\n只输出一个 JSON 数组，元素是配图对象——不要解说、不要代码围栏、数组前后不要有任何文字。每个对象恰好包含：\"kind\"（勾选的类型之一）、\"subject\"（所绘对象的确切名称）、\"prompt\"（这张图的完整图像生成提示词）、\"caption\"（守秘人展示图片时可以说的一句话）。\n\n数量结构（必须遵守，总数绝不超过 12 张）：\n- cover：恰好 1 张。\n- scenes：至少 2 张。\n- npcs：每个关键 NPC 恰好 1 张。\n- items：至少 1 张。\n- pregens：每个可认领调查员恰好 1 张，subject 必须使用提供的调查员名单中的名字。\n- 必须为守秘人勾选的每一种类型都生成配图——绝不可跳过任何勾选类型，也绝不可只填单一类型。\n\n规则：\n- 只描绘模组正文实际描述过、且玩家当下能知道的内容；绝不描绘守密人专属秘密、隐藏真相或任何剧透转折的内容。拿不准时，画氛围与场景，绝不画答案。\n- 每个 NPC 或调查员最多一张立绘。\n- 每条 prompt 必须完全自包含（渲染环节只看得到 prompt 文本）：点名对象，描述可见的画面、氛围以及时代/背景细节，并在所有图之间保持统一的美术方向（例如\"情绪感数字油画，低饱和色调\"）。不要提及\"模组\"或其他图片。",
   "agent.forge.module_no_data_dir": "模组生成功能不可用：服务器未配置数据目录。",
