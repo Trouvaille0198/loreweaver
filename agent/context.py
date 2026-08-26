@@ -58,6 +58,7 @@ class AgentCtx:
     extra: dict = field(default_factory=dict)
     dice_payloads: list[dict[str, Any]] = field(default_factory=list, init=False, repr=False, compare=False)
     npc_lines: list[dict[str, str]] = field(default_factory=list, init=False, repr=False, compare=False)
+    item_lines: list[dict[str, str]] = field(default_factory=list, init=False, repr=False, compare=False)
     # Optional progress channel for a long turn: `(activity, round_index)`, where activity is
     # one of four COARSE categories. The gateway injects a publisher on the player-turn path;
     # everywhere else it stays None and the loop's calls are no-ops. Deliberately coarse — a
@@ -105,6 +106,20 @@ class AgentCtx:
         """Return and clear every buffered NPC line in emission order."""
         lines = self.npc_lines
         self.npc_lines = []
+        return lines
+
+    def emit_item_grant(self, character: str, item: str, text: str) -> None:
+        """Buffer one public item-grant notice for this turn — the table hears who
+        now holds what, even when the model's own narration skips it. The same
+        structural channel dice and NPC lines use: the room's system narrative is
+        built from what a tool EMITTED here, never re-read off the tool's return
+        string (`gateway.turn._item_events`)."""
+        self.item_lines.append({"character": str(character), "item": str(item), "text": str(text)})
+
+    def consume_item_lines(self) -> list[dict[str, str]]:
+        """Return and clear every buffered item-grant notice in emission order."""
+        lines = self.item_lines
+        self.item_lines = []
         return lines
 
 

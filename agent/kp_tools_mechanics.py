@@ -633,6 +633,7 @@ Rules:
                     return i18n.t("kp_tools.item.module_mismatch", item=name)
                 await grant_instance(self.services.documents, ctx.chat_key, character, template, int(qty))
                 await _refresh_character_bonuses(self.services, ctx, character, owner)
+                ctx.emit_item_grant(character, name, i18n.t("kp_tools.item.granted", character=character, item=name))
                 return i18n.t("kp_tools.item.granted", character=character, item=name)
             try:
                 bonus_map = parse_bonus_spec(bonus or "")
@@ -644,6 +645,7 @@ Rules:
             template = improvised_template(name, description=description or "", bonus=bonus_map)
             await grant_instance(self.services.documents, ctx.chat_key, character, template, int(qty))
             await _refresh_character_bonuses(self.services, ctx, character, owner)
+            ctx.emit_item_grant(character, name, i18n.t("kp_tools.item.improvised_granted", character=character, item=name))
             return i18n.t("kp_tools.item.improvised_granted", character=character, item=name)
         except CharacterDataError:
             return i18n.t("kp_tools.character.data_error")
