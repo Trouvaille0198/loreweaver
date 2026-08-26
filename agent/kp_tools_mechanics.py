@@ -587,6 +587,7 @@ Rules:
                 return i18n.t("kp_tools.item.module_mismatch", item=item_id)
             await grant_instance(self.services.documents, ctx.chat_key, character, template, int(qty))
             await _refresh_character_bonuses(self.services, ctx, character, owner)
+            ctx.emit_item_grant(character, item_id, i18n.t("kp_tools.item.granted", character=character, item=item_id))
             return i18n.t("kp_tools.item.granted", character=character, item=item_id)
         except CharacterDataError:
             return i18n.t("kp_tools.character.data_error")
@@ -690,6 +691,7 @@ Rules:
             await grant_instance(self.services.documents, ctx.chat_key, target, doc.data, move)
             await _refresh_character_bonuses(self.services, ctx, source, src_owner)
             await _refresh_character_bonuses(self.services, ctx, target, dst_owner)
+            ctx.emit_item_grant(target, item, i18n.t("kp_tools.item.transferred", item=item, source=source, target=target))
             return i18n.t("kp_tools.item.transferred", item=item, source=source, target=target)
         except CharacterDataError:
             return i18n.t("kp_tools.character.data_error")
@@ -713,6 +715,7 @@ Rules:
                 return i18n.t("kp_tools.item.not_found", name=character, item=item)
             await self.services.documents.delete(ctx.chat_key, "item", doc.id)
             await _refresh_character_bonuses(self.services, ctx, character, owner)
+            ctx.emit_item_grant(character, item, i18n.t("kp_tools.item.removed", item=item, character=character))
             return i18n.t("kp_tools.item.removed", item=item, character=character)
         except CharacterDataError:
             return i18n.t("kp_tools.character.data_error")
@@ -740,7 +743,9 @@ Rules:
                 return i18n.t("kp_tools.item.not_found", name=character, item=item)
             await _refresh_character_bonuses(self.services, ctx, character, owner)
             if remaining is None:
+                ctx.emit_item_grant(character, item, i18n.t("kp_tools.item.used_up", character=character, item=item))
                 return i18n.t("kp_tools.item.used_up", character=character, item=item)
+            ctx.emit_item_grant(character, item, i18n.t("kp_tools.item.used", character=character, item=item, remaining=remaining))
             return i18n.t("kp_tools.item.used", character=character, item=item, remaining=remaining)
         except CharacterDataError:
             return i18n.t("kp_tools.character.data_error")
@@ -765,6 +770,7 @@ Rules:
             effective_slot = slot.strip() or str(doc.data.get("slot") or "equipped")
             await set_equipped(self.services.documents, ctx.chat_key, doc.id, effective_slot)
             await _refresh_character_bonuses(self.services, ctx, character, owner)
+            ctx.emit_item_grant(character, item, i18n.t("kp_tools.item.equipped", item=item, character=character, slot=effective_slot))
             return i18n.t("kp_tools.item.equipped", item=item, character=character, slot=effective_slot)
         except CharacterDataError:
             return i18n.t("kp_tools.character.data_error")
@@ -788,6 +794,7 @@ Rules:
                 return i18n.t("kp_tools.item.not_found", name=character, item=item)
             await set_equipped(self.services.documents, ctx.chat_key, doc.id, None)
             await _refresh_character_bonuses(self.services, ctx, character, owner)
+            ctx.emit_item_grant(character, item, i18n.t("kp_tools.item.unequipped", item=item, character=character))
             return i18n.t("kp_tools.item.unequipped", item=item, character=character)
         except CharacterDataError:
             return i18n.t("kp_tools.character.data_error")
