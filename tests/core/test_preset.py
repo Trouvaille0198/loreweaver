@@ -565,3 +565,24 @@ def test_style_bands_without_markers_match_the_v0_single_fold():
     bands = style_bands(parse_st_preset(json.dumps(raw), "plain"))
     assert bands["head"] == "One.\n\nTwo."
     assert bands["pre_lore"] == "" and bands["post_lore"] == "" and bands["post_history"] == ""
+
+
+def test_content_rating_marker_parses_and_unknown_values_warn():
+    raw = _preset_dict()
+    raw["x_loreweaver_content_rating"] = "explicit"
+    preset = parse_st_preset(json.dumps(raw), "rated")
+    assert preset.content_rating == "explicit"
+    # The marker is structural, never reported as an ignored key.
+    assert "x_loreweaver_content_rating" not in preset.unknown_top_level
+
+    raw["x_loreweaver_content_rating"] = "Mature"
+    assert parse_st_preset(json.dumps(raw), "rated").content_rating == "mature"
+
+    # A value outside mature/explicit is ignored with a warning — never trusted.
+    raw["x_loreweaver_content_rating"] = "kids"
+    warned = parse_st_preset(json.dumps(raw), "rated")
+    assert warned.content_rating == ""
+    assert any("x_loreweaver_content_rating" in w for w in warned.warnings)
+
+    # Absent marker stays empty.
+    assert parse_st_preset(json.dumps(_preset_dict()), "plain").content_rating == ""

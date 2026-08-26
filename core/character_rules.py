@@ -171,6 +171,63 @@ def _coerce_int(value: Any) -> int | None:
     return None
 
 
+def skill_point_budget(sheet: CharacterSheet, pack: RulePack) -> int | None:
+    """The pack's first parts-based skill budget evaluated over THIS sheet's
+    values (attribute-aware, so an array-placed pregen gets its real budget).
+    ``None`` when the pack declares no parts-based budget."""
+    budgets = pack.creation_constraints.get("budgets") or {}
+    namespace = canonical_values(sheet, pack)
+    namespace.update(pack.compute_derived(namespace))
+    for rule in budgets.values():
+        parts = rule.get("parts") if isinstance(rule, Mapping) else None
+        if not isinstance(parts, list) or not parts:
+            continue
+        return _rule_budget(pack, parts, namespace)
+    return None
+
+
+def _rule_budget(pack: RulePack, parts: list[Any], namespace: Mapping[str, Any]) -> int:
+    """Evaluate one budget rule's parts (a ``{max: [...]}`` part takes the best
+    alternative) over the canonical value namespace."""
+    budget = 0
+    for part in parts:
+        if isinstance(part, Mapping) and "max" in part:
+            budget += max(
+                (_eval_budget_formula(pack, str(formula), namespace) for formula in (part["max"] or [])),
+                default=0,
+            )
+        else:
+            budget += _eval_budget_formula(pack, str(part), namespace)
+    return budget
+
+
+def scale_skills_to_budget(skills: Mapping[str, int], base_skills: Mapping[str, Any], budget: int) -> dict[str, int]:
+    """Scale an above-base skill spend down to `budget`, preserving the author's
+    relative profile: proportional shrink (floor), then trim the largest
+    remaining overage one point at a time. Within budget returns the input
+    unchanged. Deterministic; model-authored numbers are never trusted."""
+    result = {str(key): int(value) for key, value in skills.items()}
+
+    def spent(values: Mapping[str, int]) -> int:
+        return sum(max(0, value - _int(base_skills.get(key), 0)) for key, value in values.items())
+
+    if spent(result) <= budget:
+        return result
+    total = spent(result)
+    scale = budget / total if total else 0.0
+    for key in list(result):
+        base = _int(base_skills.get(key), 0)
+        result[key] = base + int((result[key] - base) * scale)
+    guard = 0
+    while spent(result) > budget and guard < 4096:
+        guard += 1
+        key = max(result, key=lambda k: (result[k] - _int(base_skills.get(k), 0), result[k]))
+        if result[key] <= _int(base_skills.get(key), 0):
+            break
+        result[key] -= 1
+    return result
+
+
 def _check_budgets(sheet: CharacterSheet, pack: RulePack, violations: list[SheetViolation]) -> None:
     """Typed budget checks. ``skill-points`` semantics: spent = the points every
     non-derived skill sits above its fresh-sheet base; budget = the sum of the
@@ -194,15 +251,7 @@ def _check_budgets(sheet: CharacterSheet, pack: RulePack, violations: list[Sheet
             if skill in derived_keys:
                 continue
             spent += max(0, _int(value, 0) - _int(base_skills.get(skill), 0))
-        budget = 0
-        for part in parts:
-            if isinstance(part, Mapping) and "max" in part:
-                budget += max(
-                    (_eval_budget_formula(pack, str(formula), namespace) for formula in (part["max"] or [])),
-                    default=0,
-                )
-            else:
-                budget += _eval_budget_formula(pack, str(part), namespace)
+        budget = _rule_budget(pack, parts, namespace)
         if spent > budget:
             violations.append(SheetViolation(f"{budget_id}_exceeded", "skills", spent, limit=budget))
 

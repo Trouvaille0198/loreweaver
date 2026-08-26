@@ -64,5 +64,6 @@
   "tui.web.url": "  Web 地址：{url}",
   "tui.web.failed": "Web 传输启动失败（{error}）。",
   "tui.web.static": "  正在从 {static_dir} 托管网页客户端。",
-  "tui.web.no_static": "  未配置网页客户端构建——仅提供 WebSocket 端点。请构建 loreweaver-web 并传入 {static_dir}（或在前面加反向代理）。"
+  "tui.web.no_static": "  未配置网页客户端构建——仅提供 WebSocket 端点。请构建 loreweaver-web 并传入 {static_dir}（或在前面加反向代理）。",
+  "tui.admin.error.invalid_preset": "预设内容解析失败——请确认是有效的 SillyTavern 预设 JSON 后重试。"
 }

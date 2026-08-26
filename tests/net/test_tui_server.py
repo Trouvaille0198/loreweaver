@@ -1943,3 +1943,87 @@ async def test_replay_delivers_discarded_draft_to_keeper_only():
             assert saw_reply, "player replay should at least see the reply itself"
     finally:
         await server.close()
+
+
+async def test_a_hidden_ai_roll_reaches_only_the_keeper_live_and_on_replay():
+    """`roll_dice(hidden=True)` from the AI Keeper: the dice frame reaches the keeper
+    connection ONLY — a player never sees the number or that a roll happened — and a
+    rejoin replays it to the keeper only. Live and replay agree (iron rule #3)."""
+
+    def responder(messages, tools):
+        called = _tools_called_this_turn(messages)
+        if "roll_dice" not in called:
+            return assistant_tools(tool_call("roll_dice", expression="1d100", hidden=True))
+        return assistant_text("These herbs look healthy and sweet.")
+
+    services = _services(responder=responder)
+    keystore = Keystore()
+    keeper_key = keystore.add(room="hidden-ai", name="Keeper", role="keeper")
+    player_key = keystore.add(room="hidden-ai", name="Nora", role="player")
+    server = TuiServer(services, keystore, port=0)
+    url = await _start(server)
+    try:
+        kp, *_ = await _connect_and_join(url, keeper_key, "Keeper")
+        player, *_ = await _connect_and_join(url, player_key, "Nora")
+
+        await player.send(json.dumps({"type": "input", "text": "我采集这些草药。"}))
+        await _recv(player)  # echo
+        await _recv(player)  # busy
+
+        # Player's live view: narration only — never a dice frame, never a number.
+        player_dice = 0
+        while True:
+            frame = await _recv(player)
+            if frame.get("type") == "dice":
+                player_dice += 1
+            if frame.get("type") == "turn_status" and frame.get("status") == "idle":
+                break
+        assert player_dice == 0
+
+        # Keeper's live view: the SAME turn's hidden roll, flagged, with the number.
+        kp_frames = []
+        while True:
+            frame = await _recv(kp)
+            kp_frames.append(frame)
+            if frame.get("type") == "turn_status" and frame.get("status") == "idle":
+                break
+        hidden = [f for f in kp_frames if f.get("type") == "dice"]
+        assert len(hidden) == 1, kp_frames
+        assert hidden[0]["hidden"] is True
+        assert "total" in hidden[0]
+
+        await player.close()
+        await kp.close()
+
+        # Player rejoin: the hidden roll is NOT replayed.
+        ws = await websockets.connect(url)
+        await _join(ws, player_key, "Nora")
+        saw_narrative = False
+        for _ in range(30):
+            try:
+                frame = await _recv(ws)
+            except asyncio.TimeoutError:
+                break
+            if frame.get("type") == "dice":
+                assert False, "player replay must never receive a hidden roll"
+            if frame.get("type") == "narrative" and frame.get("speaker") == "kp":
+                saw_narrative = True
+        assert saw_narrative, "player replay should still see the reply"
+        await ws.close()
+
+        # Keeper rejoin: the hidden roll replays, still flagged.
+        ws = await websockets.connect(url)
+        await _join(ws, keeper_key, "Keeper")
+        replayed = None
+        for _ in range(30):
+            try:
+                frame = await _recv(ws)
+            except asyncio.TimeoutError:
+                break
+            if frame.get("type") == "dice":
+                replayed = frame
+        assert replayed is not None, "keeper replay must deliver the hidden roll"
+        assert replayed["hidden"] is True
+        await ws.close()
+    finally:
+        await server.close()

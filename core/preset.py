@@ -101,7 +101,18 @@ SAMPLING_KEYS: dict[str, str] = {
     "openai_max_context": "max_context",
 }
 
-_STRUCTURAL_KEYS = frozenset({"prompts", "prompt_order", "extensions"})
+#: Loreweaver's own top-level marker on a preset: a content-rating declaration that
+#: opts the room OUT of the output word-filter when the preset is enabled — the
+#: engine's mature-mode gate (`gateway.ops.room_content_unfiltered`) reads it the
+#: same way it reads a skill's `content_rating`. Unknown to SillyTavern, so it is
+#: carried as a structural key and never reported as an ignored field.
+_CONTENT_RATING_KEY = "x_loreweaver_content_rating"
+
+#: Values that actually lift the filter. Anything else on the key is ignored (with a
+#: warning) rather than trusted — a typo must not accidentally unfilter a room.
+_UNFILTERED_RATINGS = frozenset({"mature", "explicit"})
+
+_STRUCTURAL_KEYS = frozenset({"prompts", "prompt_order", "extensions", _CONTENT_RATING_KEY})
 
 # One macro span: `{{name}}`, `{{name::arg}}`, `{{name:arg}}`, `{{// comment}}`.
 _MACRO_RE = re.compile(r"\{\{([^{}]*)\}\}")
@@ -167,6 +178,9 @@ class StPreset:
     has_regex_scripts: bool = False
     has_tavern_helper: bool = False
     warnings: tuple[str, ...] = ()
+    #: ``""`` unless the file declares ``x_loreweaver_content_rating`` with a value the
+    #: engine treats as unfiltered (`mature`/`explicit`); see :data:`_CONTENT_RATING_KEY`.
+    content_rating: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -429,6 +443,18 @@ def parse_st_preset(text: str, fallback_name: str) -> StPreset:
     sampling, consumed = _extract_sampling(data, warnings)
     has_regex, has_helper, consumed_extensions = _extension_flags(data, warnings)
 
+    # Loreweaver's own gate marker: `x_loreweaver_content_rating` lifts the output
+    # word-filter when this preset is enabled. Only `mature`/`explicit` count; any
+    # other value is ignored with a warning so a typo cannot silently unfilter a room.
+    raw_rating = data.get(_CONTENT_RATING_KEY)
+    content_rating = ""
+    if raw_rating is not None:
+        rating = str(raw_rating).strip().casefold()
+        if rating in _UNFILTERED_RATINGS:
+            content_rating = rating
+        else:
+            warnings.append(f"ignoring unknown {_CONTENT_RATING_KEY}={raw_rating!r}")
+
     unknown = tuple(
         key
         for key in data
@@ -444,6 +470,7 @@ def parse_st_preset(text: str, fallback_name: str) -> StPreset:
         has_regex_scripts=has_regex,
         has_tavern_helper=has_helper,
         warnings=tuple(warnings),
+        content_rating=content_rating,
     )
     # The fold cap is checked here, for the DEFAULT group, so the truncation shows up in
     # `warnings` alongside everything else (`style_segments` itself stays pure).

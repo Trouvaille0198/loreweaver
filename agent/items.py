@@ -6,7 +6,8 @@ section). Item INSTANCES are `item` documents (one per holding, doc_id = a uniqu
 `owner` = the character's sheet name — unique within a room).
 
 This module is the ONE place the tools and CLI read/write both, so grant validation
-(D6: no template-less items) and the equipped-bonus aggregation (D3) live here once.
+(D6: catalog-gated grants, with the Keeper's capped off-catalog improv lane as the
+single exception) and the equipped-bonus aggregation (D3) live here once.
 """
 
 from __future__ import annotations
@@ -77,6 +78,92 @@ async def ensure_catalog(documents: DocumentStore, chat_key: str, templates: lis
 # Instances
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Improv lane — off-catalog grants (D6's single exception)
+# ---------------------------------------------------------------------------
+# A Keeper may hand out items the catalog does not know: narrative trinkets
+# (no bonus), light edges (small capped bonus) or consumables (quantity). The
+# caps are engine constants, not pack data — the improv lane belongs to the
+# Keeper, and a module author must not govern it. An improvised item can be a
+# surprise, never a rival to a designed catalog item.
+
+
+IMPROVISED_MAX_BONUS = 2
+IMPROVISED_MAX_BONUS_TOTAL = 4
+
+
+def parse_bonus_spec(text: str) -> dict[str, int]:
+    """Parse a ``stat=value,stat=value`` bonus spec into {canonical: delta}.
+    Raises ValueError on malformed input (shared by the CLI and the Keeper tool)."""
+    out: dict[str, int] = {}
+    for pair in text.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        key, sep, raw = pair.partition("=")
+        if not sep or not key.strip():
+            raise ValueError(f"malformed bonus spec: {pair!r}")
+        try:
+            delta = int(raw.strip())
+        except (TypeError, ValueError):
+            raise ValueError(f"bonus value must be an integer: {pair!r}") from None
+        out[key.strip()] = delta
+    return out
+
+
+def validate_improvised_bonus(bonus: dict) -> str | None:
+    """None when ``bonus`` fits the improv budget; else an error code
+    (``invalid_value`` | ``stat_cap`` | ``total_cap``) the caller maps to i18n."""
+    if not isinstance(bonus, dict):
+        return "invalid_value"
+    if not bonus:
+        return None
+    total = 0
+    for canon, delta in bonus.items():
+        if not isinstance(canon, str) or not canon.strip():
+            return "invalid_value"
+        if isinstance(delta, bool) or not isinstance(delta, int):
+            return "invalid_value"
+        if abs(delta) > IMPROVISED_MAX_BONUS:
+            return "stat_cap"
+        total += abs(delta)
+    if total > IMPROVISED_MAX_BONUS_TOTAL:
+        return "total_cap"
+    return None
+
+
+def improvised_template(
+    name: str, *, description: str = "", bonus: dict | None = None, secret: bool = False
+) -> dict:
+    """A one-off template for an off-catalog grant. Improvised items are
+    universal-scope (they travel with the holder, never die with a module) and
+    carry at most a small capped bonus."""
+    return {
+        "name": name,
+        "description": description,
+        "bonus": dict(bonus) if isinstance(bonus, dict) and bonus else {},
+        "scope": "universal",
+        "secret": bool(secret),
+        "improvised": True,
+    }
+
+
+async def consume_instance(
+    documents: DocumentStore, chat_key: str, owner: str, name: str, qty: int = 1
+) -> tuple[bool, int | None]:
+    """Use up ``qty`` of an instance (consumable semantics): quantity decreases,
+    and the instance disappears when it hits zero. Returns ``(found, remaining)``;
+    ``remaining`` is None when the instance is gone."""
+    doc = await find_instance(documents, chat_key, owner, name)
+    if doc is None:
+        return False, None
+    new_qty = int(doc.data.get("quantity", 1)) - int(qty)
+    if new_qty <= 0:
+        await documents.delete(chat_key, "item", doc.id)
+        return True, None
+    await documents.put(chat_key, "item", doc.id, {**doc.data, "quantity": new_qty})
+    return True, new_qty
+
 
 def _instance_data(owner: str, template: dict, qty: int) -> dict[str, Any]:
     name = str(template.get("name") or template.get("template_id") or "").strip()
@@ -98,6 +185,7 @@ def _instance_data(owner: str, template: dict, qty: int) -> dict[str, Any]:
         "origin": str(template.get("origin") or ""),
         "original_holder": str(template.get("original_holder") or ""),
         "secret": bool(template.get("secret", False)),
+        "improvised": bool(template.get("improvised", False)),
     }
 
 
@@ -181,6 +269,7 @@ _ITEM_VIEW_FIELDS = (
     "quantity",
     "equipped_slot",
     "bonus",
+    "improvised",
 )
 
 

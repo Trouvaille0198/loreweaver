@@ -278,6 +278,7 @@ def test_entry_dicts_carry_every_trigger_field_the_importer_reads():
         "sticky": 2,
         "cooldown": 3,
         "delay": 1,
+        "image": "",
     }
     plain = _by_title(_parse().card.character_book, "山庄")
     assert (plain["selective"], plain["selective_logic"], plain["position"], plain["priority"]) == (
@@ -435,6 +436,24 @@ def test_wrong_typed_sections_warn_instead_of_raising():
     assert len(parsed.warnings) == 3
 
 
+def test_pregens_carry_occupation_into_the_sheet_field():
+    """`pregens[].occupation` (the character's job) survives parsing and lands in
+    the sheet's occupation field — the deterministic no-LLM cast path must not
+    lose the author's job text."""
+    raw = {
+        "format": "loreweaver.card",
+        "format_version": 1,
+        "name": "pregens-occupation",
+        "pregens": [
+            {"name": "陈曦", "concept": "考古所年轻研究员", "occupation": "考古研究员", "skills": {"考古学": 65}},
+            {"name": "无业者", "occupation": ""},
+        ],
+    }
+    parsed = parse_lorecard_bytes(json.dumps(raw).encode("utf-8"))
+    assert parsed.pregens[0]["occupation"] == "考古研究员"
+    assert parsed.pregens[1]["occupation"] == ""
+
+
 def test_pregens_parse_normalizes_and_caps():
     """`pregens:` ships a claimable cast: name required, concept|blurb merged,
     integer skills kept, junk rows warned and skipped."""
@@ -501,3 +520,26 @@ def test_items_parse_normalizes_and_caps():
     assert any("items[1]" in warning for warning in parsed.warnings)
     assert any("bonus" in warning for warning in parsed.warnings)
     assert any("scope" in warning for warning in parsed.warnings)
+
+def test_items_skip_investigator_starter_gear():
+    """The item pool holds what the party must FIND — entries whose origin reads as
+    the investigators' own starting gear (调查员随身携带/自备, starter gear) are
+    skipped with a warning; NPC-held and place-origin items pass."""
+    raw = {
+        "format": "loreweaver.card",
+        "format_version": 1,
+        "name": "items-starter",
+        "items": [
+            {"name": "手电筒", "origin": "调查员随身携带"},
+            {"name": "急救包", "origin": "调查员自备"},
+            {"name": "打火机", "origin": "调查员随身携带"},
+            {"name": "铜镜", "origin": "松本千代手中", "original_holder": "松本千代"},
+            {"name": "钥匙串", "origin": "工厂警卫室"},
+            {"name": "古书", "origin": "the ferryman's coat", "original_holder": "the ferryman"},
+        ],
+    }
+    parsed = parse_lorecard_bytes(json.dumps(raw).encode("utf-8"))
+    assert [entry["name"] for entry in parsed.items] == ["铜镜", "钥匙串", "古书"]
+    assert any("手电筒" in warning and "skipped" in warning for warning in parsed.warnings)
+    assert any("急救包" in warning and "skipped" in warning for warning in parsed.warnings)
+    assert any("打火机" in warning and "skipped" in warning for warning in parsed.warnings)

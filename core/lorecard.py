@@ -72,6 +72,24 @@ MAX_LORECARD_ENTRY_CONTENT_BYTES = 128 * 1024
 MAX_LORECARD_VARIABLES = 256
 MAX_LORECARD_PREGENS = 8
 MAX_LORECARD_ITEMS = 32
+# Starter-gear detection. The module item pool holds things the party must FIND in the
+# world (a place, an NPC's hands) — never the investigators' personal starting gear.
+# When `origin`/`original_holder` reads like initial equipment (investigators carry
+# it, 随身携带/自备, starter gear), the entry is skipped with a warning: that payload
+# belongs to the character sheet (pregens' equipment), not the findable pool.
+_INITIAL_GEAR_MARKS = (
+    "调查员", "玩家角色", "随身携带", "自备", "自带",
+    "初始装备", "初始物品", "开局装备", "开局物品",
+    "investigator", "player character", "starter", "starting",
+    "carried by the", "personal gear",
+)
+
+
+def _is_starter_gear(origin: str, original_holder: str) -> bool:
+    """Whether `origin`/`original_holder` describe the investigators' own starting
+    gear rather than something findable in the world."""
+    text = f"{origin} {original_holder}".casefold()
+    return any(mark in text for mark in _INITIAL_GEAR_MARKS)
 # Mirrors ``core.condexpr.MAX_EXPR_LEN`` (not imported — see HOOKS_EXTENSION_KEY). A longer
 # condition still rides along, but fails closed downstream, so the author gets a warning here.
 MAX_CONDITION_CHARS = 500
@@ -196,9 +214,11 @@ def parse_lorecard_bytes(data: bytes, filename: str = "") -> Lorecard:
 def _parse_pregens(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
     """Native pregen-cast list → normalized entries the world importer registers.
 
-    Shape: ``[{name, concept|blurb?, notes?, skills?: {canonical: int}}]``. Sheets are
-    built downstream from the target system's DEFAULTS plus these skill overrides —
-    deterministic, no LLM — so a module ships a claimable multi-investigator cast."""
+    Shape: ``[{name, concept|blurb?, occupation?, notes?, skills?: {canonical: int}}]``.
+    ``occupation`` (the character's job, e.g. "Detective" / "考古研究员") lands in the
+    sheet's occupation field when the system declares one. Sheets are built downstream
+    from the target system's DEFAULTS plus these overrides — deterministic, no LLM —
+    so a module ships a claimable multi-investigator cast."""
     if raw is None:
         return ()
     if not isinstance(raw, list):
@@ -217,6 +237,7 @@ def _parse_pregens(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
             warnings.append(f"pregens[{index}]: ignored (missing name)")  # i18n-exempt: author diagnostic, wrapped in a localized import summary
             continue
         blurb = _text(item.get("concept") or item.get("blurb")).strip()[:200]
+        occupation = _text(item.get("occupation")).strip()[:60]
         notes = _text(item.get("notes")).strip()[:400]
         skills: dict[str, int] = {}
         skills_raw = item.get("skills")
@@ -229,7 +250,7 @@ def _parse_pregens(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
         elif skills_raw is not None:
             warnings.append(f"pregens[{index}].skills: ignored (must be a mapping)")  # i18n-exempt: author diagnostic, wrapped in a localized import summary
         avatar = str(item.get("avatar") or "").strip()[:200]
-        out.append({"name": name, "blurb": blurb, "notes": notes, "skills": skills, "avatar": avatar})
+        out.append({"name": name, "blurb": blurb, "occupation": occupation, "notes": notes, "skills": skills, "avatar": avatar})
     return tuple(out)
 
 
@@ -242,9 +263,12 @@ def _parse_items(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
     equip slot the item occupies when equipped (empty = not equippable), and ``bonus``
     is the equipped mechanical delta map (sheet canonical -> int) that the engine
     aggregates into the sheet's derived bonuses — this is what makes a designed item
-    grant a real effect, not just a prop. ``origin`` is where the item starts (a
+    grant a real effect, not just a prop.     ``origin`` is where the item starts (a
     place); ``original_holder`` is who holds it first (a person or group) — both ride
-    the template so the module page can show where each item begins play.
+    the template so the module page can show where each item begins play. Entries
+    whose origin reads as the investigators' OWN starting gear (随身携带/自备/
+    investigator) are skipped with a warning — the item pool is for things the party
+    must find in the world, not what they begin with.
 
     ``scope`` marks whether the item is ``universal`` (works in ANY module — a
     handgun, a healing salve, a toolkit) or ``module`` (bound to the module it
@@ -270,6 +294,15 @@ def _parse_items(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
         name = _text(item.get("name")).strip()[:60]
         if not name:
             warnings.append(f"items[{index}]: ignored (missing name)")  # i18n-exempt: author diagnostic, wrapped in a localized import summary
+            continue
+        origin = _text(item.get("origin")).strip()[:200]
+        original_holder = _text(item.get("original_holder")).strip()[:100]
+        if _is_starter_gear(origin, original_holder):
+            warnings.append(  # i18n-exempt: author diagnostic, wrapped in a localized import summary
+                f"items[{index}] {name!r}: skipped — origin reads like the investigators' "
+                "starting gear; the item pool holds what the party must FIND (a place, "
+                "an NPC's hands), not what they begin with"
+            )
             continue
         scope_raw = _text(item.get("scope")).strip().casefold()
         if scope_raw not in {"universal", "module"}:
@@ -302,8 +335,8 @@ def _parse_items(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
                 "description": _text(item.get("description")).strip()[:500],
                 "lore": _text(item.get("lore")).strip()[:2000],
                 "effect": _text(item.get("effect")).strip()[:500],
-                "origin": _text(item.get("origin")).strip()[:200],
-                "original_holder": _text(item.get("original_holder")).strip()[:100],
+                "origin": origin,
+                "original_holder": original_holder,
                 "quantity": quantity,
                 "bonus": bonus,
                 "secret": bool(item.get("secret", False)),

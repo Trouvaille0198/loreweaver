@@ -45,7 +45,6 @@ import logging
 import re
 import time
 import unicodedata
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -61,13 +60,11 @@ from agent.kp_tools_knowledge import DocumentTools
 from agent.module_initializer import ProgressCb, _emit
 from agent.services import Services
 from core.character_manager import CharacterSheet
-from core.character_rules import validate_sheet
-from core.condexpr import CondExprError, compile_expression
+from core.character_rules import scale_skills_to_budget, skill_point_budget, validate_sheet
 from core.documents import KEEPER_VIEWER, MODULE_POOL_ID
 from core.lorecard import parse_lorecard_bytes
 from core.pack import build_pack
 from core.pregen_roster import pregen_add
-from core.sheets import canonical_values
 from core.yaml_safety import safe_load_no_aliases
 from gateway.imagegen import allow_imagegen_request
 from infra.file_permissions import atomic_write_private
@@ -1431,7 +1428,11 @@ async def _module_cards_pass(services: Services, ctx: AgentCtx, content: str, mo
     """Generate claimable pregen character cards for the module: one scoped concept call, then
     each concept through the EXISTING `.genchar` pipeline (`build_sheet_from_description` +
     `validate_sheet`) onto the room's pregen roster (`core.pregen_roster`), where players pick
-    cards up with `.pc claim`. The sheets are built on the room's active rule system."""
+    cards up with `.pc claim`. The sheets are built on the room's active rule system.
+
+    Pregens pass ``creation="pregen"``: a shipped cast member is an author-fixed
+    sheet, so a pack declaring a standard array gets deterministic placement
+    instead of dice (a pack without one keeps the rolled fallback)."""
     raw, failure = await _llm_authored(
         services,
         _build_module_cards_messages(services, content, i18n),
@@ -1450,7 +1451,7 @@ async def _module_cards_pass(services: Services, ctx: AgentCtx, content: str, mo
     for concept in concepts:
         try:
             sheet = await build_sheet_from_description(
-                services, concept["description"], system, name=concept["name"]
+                services, concept["description"], system, name=concept["name"], creation="pregen"
             )
             sheet, _violations = validate_sheet(sheet, system, initialize_vitals=True)
             entry = await pregen_add(
@@ -1575,6 +1576,7 @@ _PACK_MODULE_CARD_SCHEMA = """{
         {
             "name": "a claimable investigator",
             "concept": "one-line character concept",
+            "occupation": "the character's job or occupation (e.g. 'Detective', 'Archaeologist', 'journalist'); empty if genuinely unemployed",
             "skills": {"Spot Hidden": 60, "Fast Talk": 45, "Library Use": 50}
         }
     ],
@@ -1587,8 +1589,8 @@ _PACK_MODULE_CARD_SCHEMA = """{
             "description": "short player-visible intro (what it is, how it looks)",
             "effect": "the mechanical effect (e.g. '+2 attack', 'heals 1d4', '+1 to Spot Hidden'); empty for purely narrative items",
             "lore": "background story — ONLY for notable items, else leave empty",
-            "origin": "where the item starts the module (a place, e.g. 'in the Fog Manor cellar')",
-            "original_holder": "who holds it first (a person or group, e.g. 'the ferryman'; leave empty for loose items)",
+            "origin": "WHERE the item is found in the world: a place or an NPC's hands (e.g. 'in the Fog Manor cellar', 'the ferryman's coat'). NEVER the investigators' starting gear — what they begin with is character equipment, not a module item",
+            "original_holder": "the NPC or group holding it first (e.g. 'the ferryman'); leave empty for loose items; NEVER an investigator or player character",
             "bonus": {"SheetCanonical": 1, "AnotherCanonical": -1},
             "quantity": 1
         }
@@ -1596,57 +1598,15 @@ _PACK_MODULE_CARD_SCHEMA = """{
 }"""
 
 
-def _spent_above_base(skills: Mapping[str, int], base_skills: Mapping[str, int]) -> int:
-    """Points a skill map spends above the fresh-sheet base values."""
-    return sum(value - base_skills.get(key, 0) for key, value in skills.items())
-
 
 def _nominal_skill_budget(pack: Any) -> int | None:
-    """The skill-point budget evaluated over the pack's DEFAULT sheet values.
-
-    Budget formulas reference canonical attribute values (CoC: ``智力 * 2`` + the
-    occupation family), which for a pregen are only known at import time, when the
-    sheet's attributes are rolled. Forge normalizes against the pack's declared
-    DEFAULTS instead — a deterministic, system-agnostic ceiling (CoC: 300 with all
-    stats at 50) that keeps an LLM-authored cast budget-sane without knowing the
-    dice. ``None`` when the pack declares no budget or no default sheet.
-    """
-    creation = pack.creation_constraints or {}
-    budgets = creation.get("budgets") or {}
-    parts: Any = None
-    for rule in budgets.values():
-        if isinstance(rule, dict) and isinstance(rule.get("parts"), list) and rule["parts"]:
-            parts = rule["parts"]
-            break
-    if not isinstance(parts, list):
-        return None
-
+    """The skill-point budget evaluated over the pack's DEFAULT sheet values — a
+    deterministic, system-agnostic ceiling (CoC: 300 with all stats at 50) that
+    keeps an LLM-authored cast budget-sane without knowing a concrete sheet. The
+    math lives in `core.character_rules.skill_point_budget`; this is the
+    default-sheet view of it. ``None`` when the pack declares no budget."""
     sheet = CharacterSheet(name="", system=pack.system)  # seeds the pack's default attributes
-    namespace = canonical_values(sheet, pack)
-
-    def resolve(path: str) -> int:
-        try:
-            value = namespace.get(path, pack.defaults.get(path, 0))
-            return int(value) if value is not None else 0
-        except (TypeError, ValueError):
-            return 0
-
-    total = 0
-    for part in parts:
-        if isinstance(part, dict) and isinstance(part.get("max"), list):
-            best = 0
-            for formula in part["max"]:
-                try:
-                    best = max(best, int(compile_expression(formula)(resolve)))
-                except (CondExprError, TypeError, ValueError):
-                    continue
-            total += best
-        elif isinstance(part, str):
-            try:
-                total += int(compile_expression(part)(resolve))
-            except (CondExprError, TypeError, ValueError):
-                continue
-    return total
+    return skill_point_budget(sheet, pack)
 
 
 def _normalize_pregen_skills(card: dict, pack: Any) -> int:
@@ -1702,21 +1662,8 @@ def _normalize_pregen_skills(card: dict, pack: Any) -> int:
             # Nothing resolved (junk keys): drop the field so no garbage reaches the sheet.
             pregen.pop("skills", None)
             continue
-        if budget is not None and _spent_above_base(cleaned, base_skills) > budget:
-            spent = _spent_above_base(cleaned, base_skills)
-            scale = budget / spent
-            for key in list(cleaned):
-                base = base_skills.get(key, 0)
-                cleaned[key] = base + int((cleaned[key] - base) * scale)
-            # Floor-scaling drifts under the budget; trim the largest remaining
-            # overage one point at a time until the spend is within budget.
-            guard = 0
-            while _spent_above_base(cleaned, base_skills) > budget and guard < 4096:
-                guard += 1
-                key = max(cleaned, key=lambda k: (cleaned[k] - base_skills.get(k, 0), cleaned[k]))
-                if cleaned[key] <= base_skills.get(key, 0):
-                    break
-                cleaned[key] -= 1
+        if budget is not None:
+            cleaned = scale_skills_to_budget(cleaned, base_skills, budget)
         pregen["skills"] = cleaned
         adjusted += 1
     return adjusted

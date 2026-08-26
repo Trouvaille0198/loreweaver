@@ -652,6 +652,9 @@ class CharcardTools:
                     # pregen's own name during generation/refresh — the roster keys on the
                     # character's name, so pin it back after any pack defaults applied.
                     sheet.name = spec["name"]
+                    occupation = str(spec.get("occupation") or "").strip()
+                    if occupation and "occupation" in pack.sheet_spec.fields:
+                        sheet.occupation = occupation[:60]
                     for skill_name, value in dict(spec.get("skills", {})).items():
                         try:
                             set_sheet_value(sheet, pack, skill_name, int(value))
@@ -786,11 +789,16 @@ class CharcardTools:
                 await ensure_catalog(self._services.documents, ctx.chat_key, tagged)
                 items_line = i18n.t("charcard.tools.world.items_line", count=len(lorecard.items))
 
+            # The receipt's variable count is the TOTAL actually injected into the
+            # room: the ST-compat [InitVar] tree plus the native typed specs. Reporting
+            # only the ST channel read "0" for a native card that shipped variables —
+            # the variable was live in the room while the receipt said none were.
+            native_vars = len(lorecard.variable_specs) if lorecard is not None and lorecard.variable_specs else 0
             result = i18n.t(
                 "charcard.tools.world.done",
                 name=card.name or i18n.t("common.unknown"),
                 lore=lore,
-                vars=world.initvar_entries,
+                vars=world.initvar_entries + native_vars,
                 hooks=len(hooks),
             )
             skipped_line = ""

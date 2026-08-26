@@ -415,6 +415,9 @@ class SessionCore:
                             text=str(payload.get("text") or ""),
                             fmt=str(payload.get("fmt") or "plain"),
                             data=payload.get("data") if isinstance(payload.get("data"), dict) else {},
+                            # A hidden roll (flag persisted by `gateway.turn`'s
+                            # replay lane) is delivered to a joining keeper only.
+                            keeper_only=bool(payload.get("keeper_only")),
                         ),
                     )
                 )
@@ -496,6 +499,10 @@ class SessionCore:
         authorize = getattr(member, "authorize", None)
         if authorize is not None and not authorize():
             raise PermissionError("member authorization was revoked")  # i18n-exempt: internal hub signal
+        # A keeper-only event (a hidden roll, a discarded draft) replays to a
+        # joining KEEPER only — the mirror of the hub's live fan-out filter.
+        if event.keeper_only and getattr(member, "role", "") != "keeper":
+            return
         # Stamp the record id onto the rebuilt event so `render_frame` emits the SAME
         # narrative id every time this record is replayed — a reconnect replaces the
         # line in place instead of appending another copy (protocol 2.0 replay

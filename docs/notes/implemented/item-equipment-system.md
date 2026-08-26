@@ -11,6 +11,11 @@
   seeded solely from the module script's analysis (the engine still names no
   concrete item/slot category, so this is a later pack-data enhancement, not a
   vocabulary leak).
+  The current scope also includes the Keeper's improv lane (D6's single
+  exception: off-catalog grants become narrative trinkets, light capped bonuses
+  or consumables) and D7 (the item pool holds only what the party must FIND —
+  entries that read as the investigators' own starting gear are refused at the
+  lorecard parser, and the generation prompts forbid listing it).
 
 ## Problem
 
@@ -47,8 +52,16 @@ it is a fork extension, not a fix.
 - **D5 — Any viewer may SEE any character's holdings.** The read view is
   table-level (each character's list is visible to the table); only
   `secret`-flagged items stay isolated (Keeper/owner only).
-- **D6 — No homebrew items (yet).** Every item must come from a template in the
-  room's catalog (seeded by the module script). No template-less one-offs.
+- **D6 — Catalog-gated grants, with one Keeper's exception.** Every player-side
+  grant comes from a template in the room's catalog (seeded by the module
+  script). The single exception is the Keeper's improv lane: an off-catalog
+  grant creates an improvised one-off — a narrative trinket (no bonus), a light
+  edge (per-stat cap ±2, total 4 points) or a consumable (quantity) — capped so
+  it can never rival a designed item. Players cannot add off-catalog items.
+- **D7 — The item pool holds what the party must FIND.** Module analysis, forge
+  cards and lorecard `items:` never list the investigators' own starting gear;
+  the lorecard parser skips entries whose origin reads as starter gear
+  (调查员随身携带/自备, "starter"/"investigator") with a warning.
 
 ## Conceptual model: narrative vs mechanical
 
@@ -256,8 +269,8 @@ async def grant_item(self, ctx: AgentCtx, character: str, item_id: str, qty: int
     - Call ONLY when the item is genuinely in that character's hands in the story —
       never pre-award, never as a reward for narration alone.
     - The item MUST exist in the room's catalog (from the module script). You cannot
-      invent a template; if the script has no such item, treat it as narrative/a clue
-      until it becomes a real object.
+      invent a template; if the script has no such item, use improvise_item for a
+      light off-catalog one-off, or keep it narrative/a clue until it becomes real.
     - After granting, your narration must reflect that the character now holds it
       ("You pick up X").
     - Check the current holder first (items may have moved via transfer).
@@ -265,7 +278,10 @@ async def grant_item(self, ctx: AgentCtx, character: str, item_id: str, qty: int
 ```
 
 plus `transfer_item(from, to, item, qty)` / `remove_item(character, item, qty)` /
-`use_item(character, item)` / `equip_item(character, item, slot)`.
+`use_item(character, item)` (consumes one unit — quantity decreases, zero removes) /
+`equip_item(character, item, slot)` — and `improvise_item(character, name,
+description, bonus, qty)`, the off-catalog lane: narrative trinkets, light capped
+bonuses and consumables, capped so an improvised item never rivals a designed one.
 
 **Item discipline block** — a third Keeper-discipline clause alongside
 `prompt.keeper_discipline` / `prompt.module_fidelity` (which already fold into
@@ -275,9 +291,10 @@ plus `transfer_item(from, to, item, qty)` / `remove_item(character, item, qty)` 
 > Item discipline: grant items only when a character has genuinely acquired
 > them in play (picked up, looted, bought, rewarded). Never pre-award, never for
 > narration alone. The item must come from the room's catalog (module script) —
-> do not invent templates; if the script lacks an item, keep it narrative/clue
-> until it becomes real. After granting, narrate that the character now holds
-> it. Track current holders; avoid double grants or wrong targets.
+> do not invent templates; a missing item may become a light improvised one-off
+> (improvise_item), else keep it narrative/clue until it becomes real. After
+> granting, narrate that the character now holds it. Track current holders;
+> avoid double grants or wrong targets.
 
 The block is injected only when the room has an item-enabled catalog (same
 gating style as keeper_discipline — a room with no items contributes no block).
@@ -285,8 +302,11 @@ gating style as keeper_discipline — a room with no items contributes no block)
 **CLI** (`gateway/commands/router.py` spec row + a mixin module + i18n keys in
 `locales/{en,zh}/commands.json` + tests in `tests/gateway/`):
 - `.item inv [name]` — see any character's list (table-level read, D5)
-- `.item add <name> [qty]` / `.item drop <name> [qty]` / `.item give <name> <to>`
-  — players manage their own; keeper-only verbs on others
+- `.item add <name> [qty]` / `.item drop <name> [qty]`
+  — players manage their own bag (catalog-validated, D6)
+- `.item give <name> <to> [--desc <text> --bonus stat=n,… --qty n --secret]`
+  — keeper-only; off-catalog names become improvised one-offs (D6 exception)
+- `.item use <name> [qty]` — consume a held item (quantity decreases, zero removes)
 - `.item equip <name> [slot]` / `.item unequip <name>` — slot control (D3)
 
 Phase 1 ships the verbs + `.item inv/add/drop/give`; phase 2 adds

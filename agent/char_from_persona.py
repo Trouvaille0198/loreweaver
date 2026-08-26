@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from core.character_manager import CharacterManager, CharacterSheet
+from core.character_rules import scale_skills_to_budget, skill_point_budget
 from core.charcard import CharacterCard
 from core.rulepacks import RulePack, load_rulepack
 from core.sheets import has_check_value, refresh_sheet, set_sheet_value, sheet_value
@@ -53,18 +54,24 @@ async def build_sheet_from_persona(
     system: str,
     *,
     module_context: str = "",
+    creation: str = "",
 ) -> CharacterSheet:
     manager = _character_manager_from_services(services)
     pack = load_rulepack(system)  # unknown systems raise ValueError with a clear message
-    concept = await _ask_concept(services, card, pack.system, module_context)
+    concept = await _ask_concept(services, card, pack, module_context)
     sheet = manager.generate_character(pack.system, card.name or None)
     sheet.name = card.name or sheet.name
 
     if not concept:
+        if creation == "pregen":
+            # A pregen must stay deterministic even when the concept call failed:
+            # place the pack's standard array with no emphasis rather than ship
+            # the raw dice roll.
+            _bias_sheet(manager, sheet, pack, {}, creation=creation)
         _apply_persona_text(sheet, card, {})
         return sheet
 
-    _bias_sheet(manager, sheet, pack, concept)
+    _bias_sheet(manager, sheet, pack, concept, creation=creation)
     _apply_persona_text(sheet, card, concept)
     return sheet
 
@@ -76,10 +83,11 @@ async def build_sheet_from_description(
     *,
     name: str = "",
     module_context: str = "",
+    creation: str = "",
 ) -> CharacterSheet:
     text = description.strip()
     card = CharacterCard(name=name.strip(), description=text, personality=text)
-    return await build_sheet_from_persona(services, card, system, module_context=module_context)
+    return await build_sheet_from_persona(services, card, system, module_context=module_context, creation=creation)
 
 
 def _character_manager_from_services(services: Any) -> CharacterManager:
@@ -93,14 +101,14 @@ def _character_manager_from_services(services: Any) -> CharacterManager:
 async def _ask_concept(
     services: Any,
     card: CharacterCard,
-    template_name: str,
+    pack: RulePack,
     module_context: str,
 ) -> dict[str, Any]:
     llm = getattr(services, "llm", None)
     if llm is None:
         return {}
 
-    prompt = _render_prompt(services, card, template_name, module_context)
+    prompt = _render_prompt(services, card, pack, module_context)
     try:
         with lane_scope("authoring"):
             result = await llm.chat(
@@ -115,15 +123,34 @@ async def _ask_concept(
     return _parse_concept(getattr(result, "content", None))
 
 
-def _render_prompt(services: Any, card: CharacterCard, template_name: str, module_context: str) -> str:
+def _render_prompt(services: Any, card: CharacterCard, pack: RulePack, module_context: str) -> str:
     i18n = getattr(services, "i18n", None)
     renderer = i18n.t if i18n is not None and hasattr(i18n, "t") else t
     return renderer(
         "charcard.concept_prompt",
-        system=template_name,
+        system=pack.system,
         module_context=module_context,
         persona=_persona_summary(card),
+        skill_rules=_skill_rules_text(renderer, pack),
     )
+
+
+def _skill_rules_text(renderer: Any, pack: RulePack) -> str:
+    """The `skill_allocations` contract for the concept prompt: value range plus the
+    nominal point budget (pack defaults), so the model's proposal lands inside the
+    budget the engine will enforce against the placed sheet. Empty when the pack
+    declares no skills table or no budget — the field stays unadvertised."""
+    spec = pack.sheet_spec
+    if spec is None or not spec.skills:
+        return ""
+    budget = skill_point_budget(CharacterSheet(name="", system=pack.system), pack)
+    if budget is None:
+        return ""
+    skills_rule = (pack.creation_constraints or {}).get("skills") or {}
+    default = skills_rule.get("default") if isinstance(skills_rule, Mapping) else None
+    skill_min = int(default.get("min", 0)) if isinstance(default, Mapping) else 0
+    skill_max = int(default.get("max", 90)) if isinstance(default, Mapping) else 90
+    return renderer("charcard.concept_skill_rules", budget=budget, min=skill_min, max=skill_max)
 
 
 def _persona_summary(card: CharacterCard) -> str:
@@ -155,7 +182,9 @@ def _parse_concept(content: str | None) -> dict[str, Any]:
     return {}
 
 
-def _bias_sheet(manager: CharacterManager, sheet: CharacterSheet, pack: RulePack, concept: dict[str, Any]) -> None:
+def _bias_sheet(
+    manager: CharacterManager, sheet: CharacterSheet, pack: RulePack, concept: dict[str, Any], *, creation: str = ""
+) -> None:
     """Bias a freshly generated sheet toward `concept`: reassign its rolled or
     arrayed attributes to favor the concept's emphasis, set its occupation/class
     meta field, and raise its signature skills to a competent floor.
@@ -166,6 +195,12 @@ def _bias_sheet(manager: CharacterManager, sheet: CharacterSheet, pack: RulePack
     attributes redistributes each same-roll group's already-rolled values
     (never re-rolling). A pack with neither section (or no ``sheet:`` at all)
     is simply left at its freshly generated values.
+
+    ``creation`` selects the placement method: ``"pregen"`` (module cast
+    sheets) ALWAYS takes the declared standard array when one exists -- a
+    shipped pregen is an author-fixed sheet, not a dice roll; anything else
+    follows the pack's declared ``default_method``, falling back to the array
+    when declared and rolled redistribution otherwise.
     """
     constraints = pack.creation_constraints or {}
     attribute_rules: dict[str, Any] = constraints.get("attributes") or {}
@@ -177,8 +212,9 @@ def _bias_sheet(manager: CharacterManager, sheet: CharacterSheet, pack: RulePack
     methods = constraints.get("methods") or {}
     array_values = (methods.get("standard_array") or {}).get("values")
     archetypes = constraints.get("archetype_priorities")
-    if array_values and archetypes:
+    if _creation_method(constraints, creation) == "standard_array":
         _assign_by_archetype(sheet, emphasis, array_values, archetypes, constraints.get("default_archetype"), role_text)
+        _apply_attribute_tweaks(sheet, constraints, concept)
     else:
         _assign_rolled_groups(sheet, emphasis, attribute_rules)
 
@@ -194,12 +230,141 @@ def _bias_sheet(manager: CharacterManager, sheet: CharacterSheet, pack: RulePack
         if has_check_value(sheet, pack, canonical):
             trained = min(99, max(int(sheet_value(sheet, pack, canonical)), 60))
             set_sheet_value(sheet, pack, canonical, trained)
+    _apply_skill_allocations(manager, sheet, pack, concept)
 
     # A full creation-style refresh: the reassignment above may have moved the
     # very attributes a current-pool vital (HP/SAN/MP-alike) derives from, so
     # this sheet -- never having been played -- starts fresh at its recomputed
     # full values, exactly like `CharacterManager.generate_character` itself.
     refresh_sheet(sheet, pack, initialize_vitals=True)
+
+
+def _creation_method(constraints: Mapping[str, Any], creation: str) -> str:
+    """Resolve which lane places attribute values: ``"standard_array"`` or ``"rolled"``.
+
+    ``creation="pregen"`` forces the array whenever the pack declares one (with a
+    rolled redistribution fallback for packs without); otherwise the pack's own
+    ``default_method`` wins, with the legacy auto choice (array when declared) as
+    the fallback for packs that never declared a preference.
+    """
+    methods = constraints.get("methods") or {}
+    has_array = bool((methods.get("standard_array") or {}).get("values") and constraints.get("archetype_priorities"))
+    if creation == "pregen":
+        return "standard_array" if has_array else "rolled"
+    declared = str(constraints.get("default_method") or "").strip().casefold()
+    if declared in {"rolled", "standard_array"}:
+        return declared
+    return "standard_array" if has_array else "rolled"
+
+
+def _apply_skill_allocations(
+    manager: CharacterManager, sheet: CharacterSheet, pack: RulePack, concept: Mapping[str, Any]
+) -> None:
+    """Apply the concept's ``skill_allocations`` (skill name -> target value).
+
+    Model-proposed numbers are untrusted: names resolve through the pack alias
+    table (unknown names dropped, never an error), values floor at the skill's
+    base and clamp to the pack's creation max, and when the pack declares a
+    skill-point budget the SHEET's total spend — signature floor included —
+    is held within it by scaling the allocation profile down (the signature
+    floor keeps its points). No-op without allocations or a skills table.
+    """
+    raw = concept.get("skill_allocations")
+    if not isinstance(raw, Mapping) or not raw:
+        return
+    spec = pack.sheet_spec
+    if spec is None or not spec.skills:
+        return
+    base_skills: dict[str, int] = {}
+    for key, value in (spec.skills or {}).items():
+        try:
+            base_skills[str(key)] = int(value)
+        except (TypeError, ValueError):
+            continue
+    derived = set(spec.derived_skills)
+    skills_rule = (pack.creation_constraints or {}).get("skills") or {}
+    default = skills_rule.get("default") if isinstance(skills_rule, Mapping) else None
+    skill_max = int(default.get("max", 90)) if isinstance(default, Mapping) else 90
+
+    allocated: dict[str, int] = {}
+    for key, value in raw.items():
+        canonical = manager.find_skill_by_alias(sheet, str(key))
+        if canonical is None or canonical in derived or canonical not in base_skills:
+            continue
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            continue
+        allocated[canonical] = max(base_skills[canonical], min(skill_max, number))
+    if not allocated:
+        return
+
+    # The prompt advertises the field only for packs with a declared budget, and
+    # the engine enforces the same gate: no budget, no allocations.
+    budget = skill_point_budget(sheet, pack)
+    if budget is None:
+        return
+    for skill, value in allocated.items():
+        set_sheet_value(sheet, pack, skill, value)
+    other_spend = sum(
+        max(0, int(sheet_value(sheet, pack, skill)) - base)
+        for skill, base in base_skills.items()
+        if skill not in allocated and skill not in derived
+    )
+    scaled = scale_skills_to_budget(
+        {skill: int(sheet_value(sheet, pack, skill)) for skill in allocated},
+        base_skills,
+        max(0, budget - other_spend),
+    )
+    for skill, value in scaled.items():
+        set_sheet_value(sheet, pack, skill, value)
+
+
+def _tweak_policy_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _apply_attribute_tweaks(sheet: CharacterSheet, constraints: Mapping[str, Any], concept: Mapping[str, Any]) -> None:
+    """Apply the concept's optional zero-sum attribute nudges to an array-placed sheet.
+
+    The model proposes DELTAS; the engine enforces the pack's tweak policy
+    (``methods.standard_array.tweak_step`` / ``tweak_max``): deltas must be whole
+    multiples of the step, bounded in magnitude, sum to exactly zero, and keep
+    every adjusted value inside the attribute's declared creation range. ANY
+    violation discards the ENTIRE tweak set -- a malformed proposal degrades to
+    the plain array, never to a partial or inflated sheet. A pack without the
+    policy ignores tweaks altogether.
+    """
+    array_cfg = (constraints.get("methods") or {}).get("standard_array") or {}
+    step = _tweak_policy_int(array_cfg.get("tweak_step"))
+    limit = _tweak_policy_int(array_cfg.get("tweak_max"))
+    raw = concept.get("attribute_tweaks")
+    if step <= 0 or limit <= 0 or not isinstance(raw, Mapping) or not raw:
+        return
+    rules: Mapping[str, Any] = constraints.get("attributes") or {}
+    tweaks: dict[str, int] = {}
+    for key, value in raw.items():
+        attr = str(key).strip().upper()
+        rule = rules.get(attr)
+        # bool is an int subclass -- accept real ints only.
+        if not isinstance(rule, Mapping) or not isinstance(value, int) or isinstance(value, bool):
+            return
+        if value % step or abs(value) > limit:
+            return
+        tweaks[attr] = value
+    if sum(tweaks.values()) != 0:
+        return
+    adjusted: dict[str, int] = {}
+    for attr, delta in tweaks.items():
+        rule = rules[attr]
+        placed = int(sheet.attributes.get(attr, 0)) + delta
+        if placed < int(rule.get("min", 0)) or placed > int(rule.get("max", 100)):
+            return
+        adjusted[attr] = placed
+    sheet.attributes.update(adjusted)
 
 
 def _assign_by_archetype(

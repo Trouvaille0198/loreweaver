@@ -270,7 +270,7 @@ async def test_slugified_traversal_name_contains_no_path_characters() -> None:
 
 
 async def test_generated_id_colliding_with_a_built_in_is_rejected(tmp_path: Path) -> None:
-    collision_skill = VALID_SKILL_MD.replace("Grim Survival Horror", "Mature Mode")
+    collision_skill = VALID_SKILL_MD.replace("Grim Survival Horror", "Romance Relationships")
     services = _services(collision_skill)
 
     original_user_dir = skills_module._USER_SKILL_DIR
@@ -281,12 +281,12 @@ async def test_generated_id_colliding_with_a_built_in_is_rejected(tmp_path: Path
 
         assert not result.ok
         assert result.error.startswith("bad_id")
-        assert "mature-mode" in result.error
+        assert "romance-relationships" in result.error
         assert list(tmp_path.iterdir()) == []  # nothing written
         # The real built-in must still be exactly what resolves -- unshadowed.
-        loaded = skills_module.load_skill("mature-mode")
+        loaded = skills_module.load_skill("romance-relationships")
         assert loaded is not None
-        assert loaded.content_rating == "explicit"
+        assert loaded.content_rating == "mature"
     finally:
         skills_module._USER_SKILL_DIR = original_user_dir
         skills_module._discover_registry.cache_clear()

@@ -86,6 +86,11 @@ def _visible_rolls(rolls: list[dict]) -> list[dict]:
     return [roll for roll in rolls if not roll.get("hidden")]
 
 
+def _visible_checks(checks: list[dict]) -> list[dict]:
+    """Drop hidden (behind-the-screen) checks so no report ever replays them."""
+    return [check for check in checks if not check.get("hidden")]
+
+
 class SessionRecord:
     """One session's dice ledgers and the per-player aggregates over them."""
 
@@ -165,6 +170,8 @@ class SessionRecord:
         skill: str,
         target: int,
         roll: int,
+        *,
+        hidden: bool = False,
         **details: object,
     ) -> None:
         """Record a structured skill check and update the roller's aggregates.
@@ -174,6 +181,12 @@ class SessionRecord:
         id/tier, the rendered ``label``, plus any system-declared roll
         modifiers — stored as-is (``None`` values dropped). Aggregates branch
         only on the semantic flags.
+
+        ``hidden`` marks a keeper/private check (mirroring
+        ``add_dice_roll``): retained on the record for the keeper's own
+        bookkeeping, but excluded from every rendered statistic, aggregate and
+        report (see ``_visible_checks`` and ``rebuild_player_stats``), so a
+        secret ruling cannot be replayed via `.report`.
         """
         check: dict = {
             "user_id": user_id,
@@ -184,9 +197,12 @@ class SessionRecord:
             "timestamp": time.time(),
         }
         check.update({key: value for key, value in details.items() if value is not None})
+        if hidden:
+            check["hidden"] = True
         self.skill_checks.append(check)
 
-        if user_id == NPC_USER_ID:
+        # A hidden check never contributes to any player-facing aggregate.
+        if user_id == NPC_USER_ID or hidden:
             return
 
         if user_id not in self.player_stats:
@@ -235,6 +251,8 @@ class SessionRecord:
                 stats[field] += 1
 
         for check in self.skill_checks:
+            if check.get("hidden"):
+                continue
             stats = player(str(check.get("user_id", "")), str(check.get("char_name", "")))
             if stats is None:
                 continue
@@ -503,7 +521,7 @@ class BattleReportGenerator:
             i18n.t(
                 "battle.report.stat_line",
                 label=i18n.t("battle.report.label.total_skill_checks"),
-                count=len(record.skill_checks),
+                count=len(_visible_checks(record.skill_checks)),
             )
         )
         lines.append("")
@@ -616,7 +634,7 @@ class BattleReportGenerator:
             i18n.t(
                 "battle.report.md.stat_row",
                 label=i18n.t("battle.report.label.total_skill_checks"),
-                count=len(record.skill_checks),
+                count=len(_visible_checks(record.skill_checks)),
             )
         )
         lines.append("")
@@ -697,7 +715,7 @@ class BattleReportGenerator:
                 )
             )
 
-        for check in record.skill_checks:
+        for check in _visible_checks(record.skill_checks):
             timestamp = float(check.get("timestamp", 0) or 0)
             entries.append(
                 (
@@ -831,11 +849,17 @@ class BattleReportManager:
         skill: str,
         target: int,
         roll: int,
+        *,
+        hidden: bool = False,
         **details: object,
     ) -> None:
-        """Record a structured skill check, lazily starting the session."""
+        """Record a structured skill check, lazily starting the session.
+
+        ``hidden`` marks a private/keeper check that must be kept out of every
+        player-facing report (see ``SessionRecord.add_skill_check``).
+        """
         record = await self._session_for_write(chat_key)
-        record.add_skill_check(user_id, char_name, skill, target, roll, **details)
+        record.add_skill_check(user_id, char_name, skill, target, roll, hidden=hidden, **details)
         await self.generator.save_session(chat_key, record)
 
     async def generate_battle_report(

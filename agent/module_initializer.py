@@ -143,10 +143,9 @@ _ANALYSIS_JSON_SCHEMA = """{
             "kind": "weapon/armor/consumable/gem/tool/quest/misc - pick the single best fit",
             "description": "short player-visible intro (what it is, how it looks)",
             "lore": "background story - ONLY for notable/powerful items, else leave empty",
-            "effect": "the mechanical effect (e.g. '+2 attack', 'heals 1d4', '+1 to Spot Hidden') - leave empty for purely narrative items",
-            "origin": "the scene or NPC where it is found - be specific (a scene name, an NPC name)",
-            "original_holder": "who held it before, if the module states it",
-            "clue": "the narrative significance it reveals, if any (links to a clue/truth name)"
+            "origin": "the scene or NPC where it is found - be specific (a scene name, an NPC name); NEVER the investigators' starting gear",
+            "original_holder": "who held it before, if the module states it - an NPC, never an investigator",
+                        "clue": "the narrative significance it reveals, if any (links to a clue/truth name)"
         }
     ],
     "timeline": [
@@ -190,7 +189,11 @@ an item. Never assign an item to a specific character: who ends up holding it is
 decided in play, not by the script. Make 'origin'/'original_holder' concrete. Only
 notable/powerful items get a 'lore'; ordinary items make do with 'description'. An
 item's 'clue' links to a clue/truth when it carries plot significance - the item is
-NOT a clue; it is a thing with an effect."""  # i18n-exempt: model-facing analysis instruction
+NOT a clue; it is a thing with an effect. Items must be FINDABLE in the world: their
+'origin' is a place or an NPC who holds them, waiting for the investigators to find,
+loot or negotiate for them. NEVER list the investigators' own starting gear (items the
+script says they begin with, '随身携带'/'自备' gear) - that is character equipment, not
+module items."""  # i18n-exempt: model-facing analysis instruction
 
 
 def _extract_json_object(content: str, i18n: I18n) -> dict:

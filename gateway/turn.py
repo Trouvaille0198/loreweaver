@@ -227,7 +227,7 @@ async def run_turn(
         # gate — see `gateway.ops.room_content_unfiltered`) opts the output censor
         # OUT entirely for that room, regardless of the configured `Censor`; every
         # other room keeps today's behavior exactly.
-        unfiltered = await room_content_unfiltered(services.store, ctx.chat_key)
+        unfiltered = await room_content_unfiltered(services.store, ctx.chat_key, services.settings.data_dir)
         review = None if unfiltered else ((lambda value: censor.review(value).cleaned) if censor is not None else None)
         # Progress inside a long busy stretch: each tool round refreshes the room's `busy`
         # frame with a COARSE category and the round number (protocol 2.3.1). Gated on the
@@ -807,6 +807,10 @@ async def record_turn_events(services: Any, chat_key: str, events: list[Event]) 
                         "text": event.text,
                         "fmt": event.fmt,
                         "data": event.data,
+                        # A hidden (behind-the-screen) roll must replay to a joining
+                        # keeper but NEVER to a joining player; the flag has to
+                        # survive the lane (see net.session `_recorded_turn_events`).
+                        "keeper_only": event.keeper_only,
                     },
                 }
             )
@@ -830,6 +834,12 @@ def _dice_events(entry: dict[str, Any], actor: str) -> list[Event]:
     Protocol 2.0: dice frames come ONLY from structured `ctx.emit_dice`
     payloads — the pre-2.0 fallback that re-parsed a tool's localized text to
     guess ranks is gone (a tool that emits no payload emits no dice frame).
+
+    A payload flagged ``hidden`` (a behind-the-screen roll from a tool's
+    ``hidden=True`` argument) becomes a KEEPER-ONLY frame: it still reaches the
+    keeper's page — the roll happened and the keeper must read it — but never
+    any player connection. The ``hidden`` marker rides along in the frame data
+    so the client can label it, and the replay lane stores the flag with it.
     """
     if entry.get("keeper_only"):
         return []
@@ -847,13 +857,14 @@ def _dice_events(entry: dict[str, Any], actor: str) -> list[Event]:
         payload_actor = fields.pop("actor", "")
         if not kind or "total" not in fields:
             continue
-        events.append(
-            Event.dice(
-                actor=str(payload_actor or arguments.get("actor") or arguments.get("name") or actor),
-                kind=kind,
-                **fields,
-            )
+        event = Event.dice(
+            actor=str(payload_actor or arguments.get("actor") or arguments.get("name") or actor),
+            kind=kind,
+            **fields,
         )
+        if raw_payload.get("hidden"):
+            event.keeper_only = True
+        events.append(event)
     return events
 
 

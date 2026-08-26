@@ -26,7 +26,28 @@
     `generate_and_install_rulepack`, and the `.genchar` sheet pipeline
     (`build_sheet_from_description` + `validate_sheet` + `core.pregen_roster`), the
     last fed by one scoped concept call (≤4 player-safe PC concepts) and landing on
-    the room's claimable roster (`.pc claim`).
+    the room's claimable roster (`.pc claim`). Pregen sheets are built with
+    `creation="pregen"`: a module cast member is author-fixed, never a dice roll —
+    when the room's rulepack declares a `standard_array` + `archetype_priorities`
+    (coc7 ships the CoC quick-fire array 80/70/60/60/50/50/50/50/40, power-neutral
+    against rolled expectations), the array is placed by archetype + concept
+    emphasis and the sheet comes out identical across forge runs, even when the
+    concept call fails (default archetype); packs without an array keep the rolled
+    fallback. Player-facing `.genchar` follows the pack's `default_method`
+    (coc7: `rolled`), so players keep rolling. On top of the placed array the
+    concept call may add `attribute_tweaks` — zero-sum deltas the engine
+    validates against the pack's tweak policy (`tweak_step` / `tweak_max` on the
+    array declaration): off-grid, over-limit, non-zero-sum, unknown-attribute,
+    or out-of-range proposals discard the ENTIRE set, so a malformed tweak
+    degrades to the plain array and the array's total budget is invariant.
+    Skills follow the same contract via `skill_allocations` (skill name ->
+    target value): the concept prompt states the value range and nominal point
+    budget up front, names resolve through the pack alias table (unknown ones
+    dropped), and an over-budget spend is scaled down proportionally against
+    the PLACED sheet's real budget (`core.character_rules.skill_point_budget` +
+    `scale_skills_to_budget`, shared with the pack-authoring lane's pregen
+    normalizer). Packs without a declared skill budget never see the field —
+    the prompt omits the rules and the engine ignores the key.
 
   Both passes run SYNCHRONOUSLY inside the `admin_generate` reply, AFTER the module
   itself is safely installed, and NEVER fail the module: any error (provider down,
