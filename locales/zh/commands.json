@@ -312,5 +312,8 @@
   "commands.item.improv_invalid_value": "❌ 即兴物品加成必须是整数（属性=数值，逗号分隔）",
   "commands.item.improv_stat_cap": "❌ 即兴物品单项加成上限为 ±2",
   "commands.item.improv_total_cap": "❌ 即兴物品加成总额上限为 4 点",
-  "commands.image.started": "已开始生成图片，完成后会自动发到房间。"
+  "commands.image.started": "已开始生成图片，完成后会自动发到房间。",
+  "commands.help.summary": "概括当前进度：剧情回顾、关键信息与悬念。",
+  "commands.summary.empty": "还没有可概括的内容——故事展开后再来试试。",
+  "commands.summary.failed": "概括生成失败，请稍后再试。"
 }

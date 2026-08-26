@@ -488,6 +488,14 @@ class CommandRouter(
                 "commands.help.recap",
             ),
             CommandSpec(
+                "summary",
+                self.cmd_summary,
+                ["summary"],
+                ["summary", "概括", "總結", "总览", "總覽"],
+                {"name": "summary"},
+                "commands.help.summary",
+            ),
+            CommandSpec(
                 "chronicle",
                 self.cmd_chronicle,
                 ["chronicle"],

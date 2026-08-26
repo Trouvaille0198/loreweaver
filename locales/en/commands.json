@@ -312,5 +312,8 @@
   "commands.item.improv_invalid_value": "❌ Improvised bonus values must be integers (stat=value, comma-separated)",
   "commands.item.improv_stat_cap": "❌ Improvised bonus is capped at ±2 per stat",
   "commands.item.improv_total_cap": "❌ Improvised bonus total is capped at 4 points",
-  "commands.image.started": "Image generation started — the result will appear in the room when it is done."
+  "commands.image.started": "Image generation started — the result will appear in the room when it is done.",
+  "commands.help.summary": "Generate a recap of the campaign so far: current progress, the story, key info, and open threads.",
+  "commands.summary.empty": "No campaign material to summarize yet — the recap becomes available once the story gets going.",
+  "commands.summary.failed": "The recap could not be generated right now — try again in a moment."
 }

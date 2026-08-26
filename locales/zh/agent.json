@@ -72,5 +72,9 @@
   "agent.tools.tool_not_available": "工具 {name} 在本房间不可用。",
   "agent.tools.unknown_tool": "未知工具：{name}",
   "agent.forge.module_media_pregen_list": "以下是模组的可认领调查员——`pregens` 立绘的 `subject` 必须使用这些确切名字之一。这只是调查员名单：你**仍然必须**为其他选定的类型（封面、场景图、NPC 立绘、物品/线索图）生成配图，绝不要让调查员名单挤掉其他类型。\n{names}",
-  "agent.forge.module_media_subject_names": "这些类型的 `subject` 必须使用模组中真实存在的名称（从列表中选取，且不超过该类上限）：\n{groups}"
+  "agent.forge.module_media_subject_names": "这些类型的 `subject` 必须使用模组中真实存在的名称（从列表中选取，且不超过该类上限）：\n{groups}",
+  "agent.session_summary.system_prompt": "你在为一个跑团桌写一份进度回顾。下面是这场战役的公开材料：滚动剧情摘要、最近的编年史记录、以及最近的对话。请用与这条系统提示词相同的语言写一份简洁回顾，包含这些部分：① 当前进度——进行到哪了、队伍现在在做什么；② 剧情回顾——一路走来的关键事件；③ 关键信息——重要的 NPC、线索、威胁与发现；④ 悬念与下一步——悬而未决的问题和可能的方向。严格基于给出的材料：不要编造事件，也不要透露玩家尚未见过的东西。纯文本，每部分几行即可。",
+  "agent.session_summary.summary_label": "滚动剧情摘要",
+  "agent.session_summary.chronicle_label": "最近编年史",
+  "agent.session_summary.conversation_label": "最近对话"
 }
