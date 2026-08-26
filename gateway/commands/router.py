@@ -386,6 +386,7 @@ class CommandRouter(
             CommandSpec("jrrp", self.cmd_jrrp, ["jrrp", "luck"], ["jrrp"], None, "commands.help.jrrp"),
             CommandSpec("draw", self.cmd_draw, ["draw"], ["draw", "抽牌"], None, "commands.help.draw"),
             CommandSpec("bot", self.cmd_bot_toggle, ["bot"], ["bot"], None, "commands.help.bot", keeper_help=True),
+            CommandSpec("ai", self.cmd_ai_length, ["ai"], ["ai"], None, "commands.help.ai", keeper_help=True),
             CommandSpec("skill", self.cmd_skill, ["skill"], ["skill"], None, "commands.help.skill"),
             CommandSpec("phase", self.cmd_phase, ["phase"], ["phase", "阶段", "階段"], None, "commands.help.phase"),
             CommandSpec("dev", self.cmd_dev, ["dev"], ["dev"], None, "commands.help.dev", keeper_help=True),

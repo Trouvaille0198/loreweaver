@@ -197,6 +197,33 @@ async def test_bot_flag_is_tri_state_and_unset_means_on() -> None:
         store.close()
 
 
+async def test_ai_length_defaults_to_normal_and_accepts_brief() -> None:
+    """The `ai_length` flag is a two-mode room setting: unset/unknown reads as
+    "normal" (so a corrupt flag never changes a room's behavior) and only the two
+    known modes can be written."""
+    from gateway.ops import AI_LENGTH_VALUES, get_ai_length, set_ai_length
+
+    store = Store(":memory:")
+    chat_key = "tui:group:len"
+    try:
+        assert await get_ai_length(store, chat_key) == "normal"
+
+        await set_ai_length(store, chat_key, "brief")
+        assert await get_ai_length(store, chat_key) == "brief"
+
+        await set_ai_length(store, chat_key, "NORMAL")  # casefolded on write
+        assert await get_ai_length(store, chat_key) == "normal"
+
+        await store.state_set(chat_key, "ai_length", "garbage")
+        assert await get_ai_length(store, chat_key) == "normal"
+
+        with pytest.raises(ValueError):
+            await set_ai_length(store, chat_key, "verbose")
+        assert AI_LENGTH_VALUES == ("normal", "brief")
+    finally:
+        store.close()
+
+
 def test_requires_at_mention_for_group_like_chats_not_dms() -> None:
     assert requires_at_mention("group")
     assert requires_at_mention("channel")

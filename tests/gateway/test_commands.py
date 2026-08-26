@@ -2217,12 +2217,68 @@ async def test_botlist_command_denied_for_ordinary_group_member():
 async def test_botlist_zh_dialect_alias_adds_id():
     services = _services()
     router = CommandRouter(services)
-    cli = AgentCtx(chat_key="cli:dm:t", user_id="kp", locale="zh")
+    cli = AgentCtx(chat_key="cli:dm:botlist-zh", user_id="u1", locale="zh")
     i18n = services.i18n.with_locale("zh")
 
     added = await router.dispatch(cli, "。机器人名单 add qq:888")
     assert added == i18n.t("commands.botlist.added", id="qq:888")
     assert router.botlist.is_bot("qq:888")
+
+
+# ---------------------------------------------------------------------------
+# `.ai` — the room's AI reply-length mode (the `ai_length` store flag).
+# ---------------------------------------------------------------------------
+
+
+async def test_ai_length_command_query_and_keeper_set():
+    services = _services()
+    router = CommandRouter(services)
+    cli = AgentCtx(chat_key="cli:dm:ailen", user_id="u1", locale="en")
+    i18n = services.i18n.with_locale("en")
+
+    status = await router.dispatch(cli, ".ai")
+    assert status == i18n.t("commands.ai.length_status", mode="normal")
+    assert await services.store.state_get(cli.chat_key, "ai_length") is None  # query writes nothing
+
+    set_reply = await router.dispatch(cli, ".ai length brief")
+    assert set_reply == i18n.t("commands.ai.length_set", mode="brief")
+    assert await services.store.state_get(cli.chat_key, "ai_length") == "brief"
+
+    status = await router.dispatch(cli, ".ai")
+    assert status == i18n.t("commands.ai.length_status", mode="brief")
+
+    # A bare mode word works too, and an unknown mode is refused without writing.
+    bad = await router.dispatch(cli, ".ai verbose")
+    assert bad == i18n.t("commands.ai.bad_mode")
+    assert await services.store.state_get(cli.chat_key, "ai_length") == "brief"
+
+    set_reply = await router.dispatch(cli, ".ai normal")
+    assert set_reply == i18n.t("commands.ai.length_set", mode="normal")
+    assert await services.store.state_get(cli.chat_key, "ai_length") == "normal"
+
+
+async def test_ai_length_command_requires_keeper_to_change():
+    services = _services()
+    router = CommandRouter(services)
+    from types import SimpleNamespace
+
+    source = SimpleNamespace(chat_type="group")
+    player = AgentCtx(
+        chat_key="discord:group:ailen",
+        user_id="discord:u-1",
+        platform="discord",
+        locale="en",
+        extra={"source": source, "raw": {}},
+    )
+    i18n = services.i18n.with_locale("en")
+
+    denied = await router.dispatch(player, ".ai brief")
+    assert denied == i18n.t("rooms.denied")
+    assert await services.store.state_get(player.chat_key, "ai_length") is None
+
+    # A bare query stays open to anyone.
+    status = await router.dispatch(player, ".ai")
+    assert status == i18n.t("commands.ai.length_status", mode="normal")
 
 
 # ---------------------------------------------------------------------------

@@ -35,7 +35,14 @@ from agent.services import ROOM_LLM_SELECTION_KEY, Services
 from core.rulepacks import available_systems, built_in_rulepack_ids
 from core.preset_store import list_preset_ids, load_preset, preset_source, sanitize_preset_id
 from core.skills import available_skills
-from gateway.ops import get_enabled_preset, get_enabled_skills, set_enabled_preset, toggle_enabled_skill
+from gateway.ops import (
+    get_ai_length,
+    get_enabled_preset,
+    get_enabled_skills,
+    set_ai_length,
+    set_enabled_preset,
+    toggle_enabled_skill,
+)
 from gateway.rooms import (
     clear_bindings_for_session,
     clear_keeper_binding,
@@ -113,6 +120,8 @@ _ADMIN_REQUESTS: frozenset[str] = frozenset(
         "admin_delete_preset",
         "admin_export_presets",
         "admin_import_presets",
+        "admin_get_room_settings",
+        "admin_set_room_settings",
         "admin_list_rules",
         "admin_generate",
         "admin_update_server",
@@ -282,6 +291,10 @@ async def _dispatch_admin_frame(
         return _error("forbidden", i18n)
 
     kind = frame.get("type")
+    if kind == "admin_get_room_settings":
+        return await _room_settings_frame(services, caller_room)
+    if kind == "admin_set_room_settings":
+        return await _set_room_settings(services, caller_room, frame, i18n)
     if kind == "admin_get_room_config":
         return await _room_config_frame(services, caller_room)
     if kind == "admin_set_room_model":
@@ -532,6 +545,28 @@ def _default_room_llm_selection() -> dict[str, Any]:
 
 async def _room_llm_selection(services: Services, room: str) -> dict[str, Any]:
     return await services.room_model_selection(room)
+
+
+async def _room_settings_frame(services: Services, room: str) -> dict[str, Any]:
+    """Answer `admin_get_room_settings`/a fresh post-`admin_set_room_settings` reply:
+    this room's keeper-facing settings (currently the AI reply-length mode)."""
+    return {
+        "type": "admin_room_settings",
+        "room": room,
+        "ai_length": await get_ai_length(services.store, chat_key_for_room(room)),
+    }
+
+
+async def _set_room_settings(services: Services, caller_room: str, frame: dict[str, Any], i18n: I18n) -> dict[str, Any]:
+    """Apply a `admin_set_room_settings` write: only `ai_length` is settable, and only
+    the two known modes (`normal`/`brief`) — anything else is refused without writing."""
+    chat_key = chat_key_for_room(caller_room)
+    if "ai_length" in frame:
+        mode = str(frame.get("ai_length") or "").strip().casefold()
+        if mode not in ("normal", "brief"):
+            return _error("bad_request", i18n)
+        await set_ai_length(services.store, chat_key, mode)
+    return await _room_settings_frame(services, caller_room)
 
 
 async def _room_config_frame(services: Services, room: str) -> dict[str, Any]:

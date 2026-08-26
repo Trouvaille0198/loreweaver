@@ -261,6 +261,17 @@ async def build_system_prompt_parts(
         ),
         await inject_interaction_style_prompt(ctx, i18n),
     ]
+    # The room's AI reply-length mode (the `ai_length` store flag, managed by
+    # `gateway.ops`): "brief" folds a brevity directive into the style layer, and
+    # "normal" (the default, or any unknown value) contributes nothing — the head
+    # stays byte-identical. Read inline off the store, same layering rule as the
+    # preset/skills blocks below (never import `gateway.ops`).
+    try:
+        ai_mode = str(await services.store.state_get(ctx.chat_key, "ai_length") or "").strip().casefold()
+    except Exception:
+        ai_mode = ""
+    if ai_mode == "brief":
+        stable.append(i18n.t("prompt.style.brief"))
     # The knowledge pool is a stored document — genuinely constant between turns. The
     # vector-search FALLBACK for a room with no initialized module is retrieval-driven
     # and is not; routing it to the tail keeps the head honestly stable instead of
