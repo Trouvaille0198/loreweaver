@@ -3,11 +3,13 @@
 Any member may poke a party member. The handler publishes ONE system event
 carrying the poke metadata (actor/target identities for the browser nudge) and
 returns no separate reply, so the room sees exactly one line and the handler's
-reply never double-broadcasts.
+reply never double-broadcasts. The fan-out is fire-and-forget so the room's
+turn lock is never held on slow members, hence the `asyncio.sleep` drains.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from agent.context import AgentCtx
@@ -90,6 +92,7 @@ async def test_poke_broadcasts_one_event_with_nudge_metadata_and_no_reply():
     await _seed_party(services, claimed_by="Player Two", owner="u2")
 
     reply = await router.dispatch(_ctx(), ".poke 陈武")
+    await asyncio.sleep(0.05)  # the poke fan-out is fire-and-forget
 
     assert reply is None, "the poke itself is the only line — no separate reply"
     assert len(hub.events) == 1
@@ -114,6 +117,7 @@ async def test_poke_self_uses_the_self_text():
     await services.store.state_set(ROOM, "active_character.p1", "陈武")
 
     await router.dispatch(_ctx(), ".poke 陈武")
+    await asyncio.sleep(0.05)  # the poke fan-out is fire-and-forget
 
     _, event, _, _ = hub.events[0]
     assert event.text == i18n.t("commands.poke.self", actor="陈武")
