@@ -354,7 +354,7 @@ class RoomsCommands:
             "target_user": target_user,
         }
         if ctx.router.hub is not None:
-            member_count = len(ctx.router.hub.rooms.get(ctx.chat_key, ()))
+            member_count = len(getattr(ctx.router.hub, "rooms", {}).get(ctx.chat_key, ()))
             await ctx.router.hub.publish(ctx.chat_key, event)
             logger.warning(
                 "poke: published to %d members (text=%r)",
