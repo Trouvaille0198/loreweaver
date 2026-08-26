@@ -64,5 +64,6 @@
   "tui.web.url": "  Web URL: {url}",
   "tui.web.failed": "Web transport could not start ({error}).",
   "tui.web.static": "  Serving the web client from {static_dir}.",
-  "tui.web.no_static": "  No web client bundle configured — serving the WebSocket endpoint only. Build loreweaver-web and pass {static_dir} (or put a reverse proxy in front)."
+  "tui.web.no_static": "  No web client bundle configured — serving the WebSocket endpoint only. Build loreweaver-web and pass {static_dir} (or put a reverse proxy in front).",
+  "tui.admin.error.invalid_preset": "The preset text could not be parsed as a SillyTavern preset JSON — check the format and retry."
 }

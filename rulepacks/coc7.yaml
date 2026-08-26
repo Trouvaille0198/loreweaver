@@ -360,6 +360,34 @@ creation_constraints:
     LUC: {min: 15, max: 90, roll: "3d6x5"}
   skills:
     default: {min: 0, max: 90, growth_max: 99}
+  methods:
+    standard_array:
+      # The CoC7 quick-fire array (80/70/60/60/50/50/50/40, LUC pinned at the
+      # 3d6x5 expectation of 50). Sum 510 == the summed roll expectations, so an
+      # array sheet is power-neutral against a rolled one. Deterministic lanes
+      # (module pregen casts) place these values; every value sits inside its
+      # attribute's declared min/max (SIZ/INT/EDU floor at 40).
+      values: [80, 70, 60, 60, 50, 50, 50, 50, 40]
+      # Optional zero-sum flavour on top of the placed array: the concept call may
+      # nudge values (deltas that are whole multiples of tweak_step, each
+      # |delta| <= tweak_max, summing to exactly zero, results inside the
+      # attribute's declared min/max). ANY violation discards the whole tweak
+      # set, so a malformed proposal degrades to the plain array, never to a
+      # partial or inflated sheet.
+      tweak_step: 5
+      tweak_max: 20
+  # Rolled creation is CoC's standard rule and stays the player default; the
+  # standard array above serves deterministic lanes only.
+  default_method: rolled
+  # Concept-driven placement priority for standard-array creation: which
+  # attribute (storage key) gets the best value per archetype keyword. Pure
+  # game DATA consumed by the generic persona->sheet builder.
+  archetype_priorities:
+    scholar: [INT, EDU, POW, APP, DEX, CON, STR, SIZ, LUC]
+    investigator: [INT, POW, DEX, EDU, CON, APP, STR, SIZ, LUC]
+    muscle: [STR, CON, SIZ, DEX, POW, APP, EDU, INT, LUC]
+    face: [APP, POW, EDU, DEX, INT, CON, STR, SIZ, LUC]
+  default_archetype: investigator
   budgets:
     # Skill-point budget: spent = sum over non-derived skills of the points
     # above the fresh-sheet base. The budget is the SUM of parts; a {max: [...]}

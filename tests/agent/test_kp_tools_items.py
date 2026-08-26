@@ -390,3 +390,138 @@ def test_aggregate_equipped_bonuses_skips_foreign_module_items():
     assert aggregate_equipped_bonuses(items, active) == {"STR": 1, "INT": 1}
     # No active module: module-scoped gear is inert, universal still counts.
     assert aggregate_equipped_bonuses(items, None) == {"STR": 1}
+
+# ---------------------------------------------------------------------------
+# improvise_item — the off-catalog lane (D6's exception)
+# ---------------------------------------------------------------------------
+
+
+async def test_improvise_item_creates_off_catalog_instance():
+    services, ctx = _build()
+    await _make_character(services, ctx.chat_key, "u1", "Alice")
+    tools = CharacterTools(services)
+
+    reply = await tools.improvise_item(ctx, "Alice", "神秘护符", "石质护符，刻着看不懂的符文")
+
+    assert "improvised" in reply
+    instances = await instances_for_owner(services.documents, ctx.chat_key, "Alice")
+    assert len(instances) == 1
+    data = instances[0].data
+    assert data["name"] == "神秘护符"
+    assert data["description"] == "石质护符，刻着看不懂的符文"
+    assert data["scope"] == "universal"
+    assert data["bonus"] == {}
+
+
+async def test_improvise_item_with_small_bonus():
+    services, ctx = _build()
+    await _make_character(services, ctx.chat_key, "u1", "Alice")
+    tools = CharacterTools(services)
+
+    reply = await tools.improvise_item(ctx, "Alice", "幸运石", bonus="spot_hidden=1")
+
+    assert "improvised" in reply
+    instances = await instances_for_owner(services.documents, ctx.chat_key, "Alice")
+    assert instances[0].data["bonus"] == {"spot_hidden": 1}
+
+
+async def test_improvise_item_merges_quantity():
+    services, ctx = _build()
+    await _make_character(services, ctx.chat_key, "u1", "Alice")
+    tools = CharacterTools(services)
+
+    await tools.improvise_item(ctx, "Alice", "治疗药水", qty=3)
+    await tools.improvise_item(ctx, "Alice", "治疗药水", qty=2)
+
+    instances = await instances_for_owner(services.documents, ctx.chat_key, "Alice")
+    assert len(instances) == 1 and instances[0].data.get("quantity") == 5
+
+
+async def test_improvise_item_rejects_oversized_bonus():
+    services, ctx = _build()
+    await _make_character(services, ctx.chat_key, "u1", "Alice")
+    tools = CharacterTools(services)
+
+    reply = await tools.improvise_item(ctx, "Alice", "神剑", bonus="attack=3")
+
+    assert "±2" in reply
+    assert await _instance_names(services, ctx.chat_key, "Alice") == []
+
+
+async def test_improvise_item_rejects_total_over_cap():
+    services, ctx = _build()
+    await _make_character(services, ctx.chat_key, "u1", "Alice")
+    tools = CharacterTools(services)
+
+    reply = await tools.improvise_item(ctx, "Alice", "神剑", bonus="attack=2,ac=2,str=1")
+
+    assert "4 points" in reply
+    assert await _instance_names(services, ctx.chat_key, "Alice") == []
+
+
+async def test_improvise_item_rejects_malformed_bonus():
+    services, ctx = _build()
+    await _make_character(services, ctx.chat_key, "u1", "Alice")
+    tools = CharacterTools(services)
+
+    reply = await tools.improvise_item(ctx, "Alice", "神剑", bonus="attack=abc")
+
+    assert "integers" in reply
+    assert await _instance_names(services, ctx.chat_key, "Alice") == []
+
+
+async def test_improvise_item_unknown_character():
+    services, ctx = _build()
+    tools = CharacterTools(services)
+    reply = await tools.improvise_item(ctx, "Ghost", "石头")
+    assert "No character" in reply
+
+
+async def test_use_item_decrements_quantity_keeps_instance():
+    services, ctx = _build()
+    await _make_character(services, ctx.chat_key, "u1", "Alice")
+    tools = CharacterTools(services)
+    await tools.improvise_item(ctx, "Alice", "治疗药水", qty=3)
+
+    reply = await tools.use_item(ctx, "Alice", "治疗药水")
+
+    assert "2 left" in reply
+    instances = await instances_for_owner(services.documents, ctx.chat_key, "Alice")
+    assert instances[0].data.get("quantity") == 2
+
+
+async def test_use_item_last_unit_removes_instance():
+    services, ctx = _build()
+    await _make_character(services, ctx.chat_key, "u1", "Alice")
+    tools = CharacterTools(services)
+    await tools.improvise_item(ctx, "Alice", "治疗药水", qty=1)
+
+    reply = await tools.use_item(ctx, "Alice", "治疗药水")
+
+    assert "last" in reply
+    assert await _instance_names(services, ctx.chat_key, "Alice") == []
+
+
+async def test_improvise_item_uses_catalog_template_when_name_exists():
+    """Improvising a name the catalog already designs must grant the real template
+    (kind/effect/bonus), never a stripped one-off."""
+    services, ctx = _build()
+    await _make_character(services, ctx.chat_key, "u1", "Alice")
+    await _seed(
+        services,
+        ctx.chat_key,
+        _tpl("撬棍", kind="weapon", slot="weapon", effect="伤害 1d8，可撬开固定物。", bonus={"attack": 1}),
+    )
+    tools = CharacterTools(services)
+
+    reply = await tools.improvise_item(ctx, "Alice", "撬棍", "顺手捡的")
+
+    assert "Gave" in reply
+    instances = await instances_for_owner(services.documents, ctx.chat_key, "Alice")
+    assert len(instances) == 1
+    data = instances[0].data
+    assert data["kind"] == "weapon"
+    assert data["slot"] == "weapon"
+    assert data["effect"] == "伤害 1d8，可撬开固定物。"
+    assert data["bonus"] == {"attack": 1}
+    assert data["scope"] == ""  # template scope inherited verbatim, not improv's universal

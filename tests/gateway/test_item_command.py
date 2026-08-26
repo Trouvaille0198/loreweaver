@@ -243,3 +243,227 @@ async def test_item_equip_not_held_is_failure():
     await _seed(services, chat_key, _tpl("Sword", slot="main_hand"))
     reply = await router.dispatch(_player_ctx(chat_key), ".item equip Sword")
     assert "holds no" in reply
+
+# ---------------------------------------------------------------------------
+# .item give — improvised off-catalog lane (D6's exception)
+# ---------------------------------------------------------------------------
+
+
+async def test_item_give_improvised_off_catalog():
+    """A catalog miss becomes an improvised one-off: universal scope, no bonus,
+    and the player still cannot add it themselves."""
+    services = _services()
+    router = CommandRouter(services)
+    chat_key = "cli:dm:items"
+    await _make(services, chat_key, "p2", "Bob")
+
+    reply = await router.dispatch(_keeper_ctx(chat_key), ".item give 神秘护符 Bob")
+
+    assert "improvised" in reply and "Bob" in reply
+    instances = await instances_for_owner(services.documents, chat_key, "Bob")
+    assert len(instances) == 1
+    data = instances[0].data
+    assert data["name"] == "神秘护符"
+    assert data["scope"] == "universal"
+    assert data["bonus"] == {}
+    assert data["improvised"] is True
+    denied = await router.dispatch(_player_ctx(chat_key, uid="p2"), ".item add 神秘护符")
+    assert "not in this room's item catalog" in denied
+
+
+async def test_item_give_improvised_with_desc_qty_and_secret():
+    services = _services()
+    router = CommandRouter(services)
+    chat_key = "cli:dm:items"
+    await _make(services, chat_key, "p2", "Bob")
+
+    reply = await router.dispatch(
+        _keeper_ctx(chat_key), ".item give 治疗药水 Bob --desc 红色瓶装药剂 --qty 3 --secret"
+    )
+
+    assert "improvised" in reply
+    instances = await instances_for_owner(services.documents, chat_key, "Bob")
+    assert len(instances) == 1
+    data = instances[0].data
+    assert data["description"] == "红色瓶装药剂"
+    assert data["quantity"] == 3
+    assert data["secret"] is True
+    inv = await router.dispatch(_player_ctx(chat_key), ".item inv Bob")
+    assert "治疗药水" not in inv
+
+
+async def test_item_give_improvised_small_bonus_applies_when_equipped():
+    services = _services()
+    router = CommandRouter(services)
+    chat_key = "cli:dm:items"
+    await _make(services, chat_key, "p2", "Bob")
+
+    await router.dispatch(_keeper_ctx(chat_key), ".item give 幸运石 Bob --bonus 侦查=1")
+    reply = await router.dispatch(_player_ctx(chat_key, uid="p2"), ".item equip 幸运石 as necklace")
+    assert "necklace" in reply
+    sheet = await services.characters.get_character("p2", chat_key)
+    assert sheet.equipped_bonuses == {"侦查": 1}
+
+
+async def test_item_give_improvised_bonus_over_cap_rejected():
+    services = _services()
+    router = CommandRouter(services)
+    chat_key = "cli:dm:items"
+    await _make(services, chat_key, "p2", "Bob")
+    reply = await router.dispatch(_keeper_ctx(chat_key), ".item give 神剑 Bob --bonus 侦查=3")
+    assert "±2" in reply
+    assert await _instance_names(services, chat_key, "Bob") == []
+
+
+async def test_item_give_improvised_bonus_total_over_cap_rejected():
+    services = _services()
+    router = CommandRouter(services)
+    chat_key = "cli:dm:items"
+    await _make(services, chat_key, "p2", "Bob")
+    reply = await router.dispatch(_keeper_ctx(chat_key), ".item give 神剑 Bob --bonus 侦查=2,意志=2,敏捷=1")
+    assert "4 points" in reply
+    assert await _instance_names(services, chat_key, "Bob") == []
+
+
+async def test_item_give_improvised_bad_bonus_rejected():
+    services = _services()
+    router = CommandRouter(services)
+    chat_key = "cli:dm:items"
+    await _make(services, chat_key, "p2", "Bob")
+    reply = await router.dispatch(_keeper_ctx(chat_key), ".item give 神剑 Bob --bonus 侦查=abc")
+    assert "Invalid give flags" in reply
+    assert await _instance_names(services, chat_key, "Bob") == []
+
+
+async def test_item_give_catalog_item_rejects_override_flags():
+    """A catalog item's description/bonus/secret come from the module — the Keeper
+    cannot override them through give flags."""
+    services = _services()
+    router = CommandRouter(services)
+    chat_key = "cli:dm:items"
+    await _make(services, chat_key, "p2", "Bob")
+    await _seed(services, chat_key, _tpl("Torch"))
+    reply = await router.dispatch(_keeper_ctx(chat_key), ".item give Torch Bob --desc 照亮一切")
+    assert "catalog item" in reply
+    assert await _instance_names(services, chat_key, "Bob") == []
+
+
+async def test_item_give_catalog_item_with_qty_merges():
+    services = _services()
+    router = CommandRouter(services)
+    chat_key = "cli:dm:items"
+    await _make(services, chat_key, "p2", "Bob")
+    await _seed(services, chat_key, _tpl("Ration"))
+    reply = await router.dispatch(_keeper_ctx(chat_key), ".item give Ration Bob --qty 3")
+    assert "Bob" in reply
+    instances = await instances_for_owner(services.documents, chat_key, "Bob")
+    assert instances[0].data.get("quantity") == 3
+
+
+# ---------------------------------------------------------------------------
+# .item use — consumable semantics (quantity decreases, zero removes)
+# ---------------------------------------------------------------------------
+
+
+async def test_item_use_consumes_quantity():
+    services = _services()
+    router = CommandRouter(services)
+    chat_key = "cli:dm:items"
+    await _make(services, chat_key, "p1", "Alice")
+    await _seed(services, chat_key, _tpl("Ration"))
+    await router.dispatch(_player_ctx(chat_key), ".item add Ration 3")
+
+    reply = await router.dispatch(_player_ctx(chat_key), ".item use Ration")
+    assert "2 left" in reply
+    instances = await instances_for_owner(services.documents, chat_key, "Alice")
+    assert instances[0].data.get("quantity") == 2
+
+    reply = await router.dispatch(_player_ctx(chat_key), ".item use Ration 2")
+    assert "last" in reply
+    assert await _instance_names(services, chat_key, "Alice") == []
+
+
+async def test_item_use_not_held_is_failure():
+    services = _services()
+    router = CommandRouter(services)
+    chat_key = "cli:dm:items"
+    await _make(services, chat_key, "p1", "Alice")
+    reply = await router.dispatch(_player_ctx(chat_key), ".item use Ghost")
+    assert "holds no" in reply
+
+# ---------------------------------------------------------------------------
+# room broadcast — who holds what is table talk (D5)
+# ---------------------------------------------------------------------------
+
+
+class _FakeHub:
+    def __init__(self) -> None:
+        self.published: list = []
+
+    def members(self, chat_key: str) -> list:
+        return []
+
+    async def publish(self, chat_key: str, event: object) -> None:
+        self.published.append((chat_key, event))
+
+    async def publish_each(self, chat_key: str, event_for: object) -> None:
+        return
+
+
+def _narrative_texts(hub: _FakeHub) -> list[str]:
+    return [e.text for _, e in hub.published if getattr(e, "kind", "") == "narrative"]
+
+
+async def test_item_add_broadcasts_room_notice():
+    services = _services()
+    hub = _FakeHub()
+    router = CommandRouter(services, hub=hub)
+    chat_key = "cli:dm:items"
+    await _make(services, chat_key, "p1", "Alice")
+    await _seed(services, chat_key, _tpl("Torch"))
+
+    await router.dispatch(_player_ctx(chat_key), ".item add Torch")
+
+    texts = _narrative_texts(hub)
+    assert any("Alice" in t and "Torch" in t for t in texts)
+
+
+async def test_item_give_broadcasts_room_notice():
+    services = _services()
+    hub = _FakeHub()
+    router = CommandRouter(services, hub=hub)
+    chat_key = "cli:dm:items"
+    await _make(services, chat_key, "p2", "Bob")
+    await _seed(services, chat_key, _tpl("Bronze Key"))
+
+    await router.dispatch(_keeper_ctx(chat_key), ".item give Bronze Key Bob")
+
+    texts = _narrative_texts(hub)
+    assert any("Bob" in t and "Bronze Key" in t for t in texts)
+
+
+async def test_item_use_broadcasts_room_notice():
+    services = _services()
+    hub = _FakeHub()
+    router = CommandRouter(services, hub=hub)
+    chat_key = "cli:dm:items"
+    await _make(services, chat_key, "p1", "Alice")
+    await _seed(services, chat_key, _tpl("Ration"))
+    await router.dispatch(_player_ctx(chat_key), ".item add Ration 3")
+
+    await router.dispatch(_player_ctx(chat_key), ".item use Ration")
+
+    texts = _narrative_texts(hub)
+    assert any("2 left" in t for t in texts)
+
+
+async def test_item_secret_give_is_not_broadcast():
+    services = _services()
+    hub = _FakeHub()
+    router = CommandRouter(services, hub=hub)
+    chat_key = "cli:dm:items"
+    await _make(services, chat_key, "p2", "Bob")
+
+    await router.dispatch(_keeper_ctx(chat_key), ".item give 密信 Bob --secret")
+
+    assert _narrative_texts(hub) == []

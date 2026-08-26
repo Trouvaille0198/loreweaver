@@ -2229,7 +2229,7 @@ async def test_botlist_zh_dialect_alias_adds_id():
 # `.skill` — per-room KP-skills layer (Layer B.1, `core.skills` +
 # `gateway.ops.get/set_enabled_skills`). `list`/`status` are open to any
 # player; `enable`/`disable` are keeper-gated, mirroring `.model`/`.lore`.
-# Only relies on the real `skills/` directory containing `mature-mode`.
+# Only relies on the real `skills/` directory containing `romance-relationships`.
 # ---------------------------------------------------------------------------
 
 
@@ -2241,7 +2241,7 @@ async def test_skill_list_shows_mature_mode_off_by_default():
 
     shown = await router.dispatch(cli, "/skill list")
     assert shown is not None
-    assert "mature-mode" in shown
+    assert "romance-relationships" in shown
     assert f"[{i18n.t('commands.skill.enabled_none')}]" in shown  # off by default
 
     bare = await router.dispatch(cli, "/skill")
@@ -2257,9 +2257,9 @@ async def test_skill_status_reports_none_enabled_then_the_enabled_id():
     before = await router.dispatch(cli, "/skill status")
     assert before == i18n.t("commands.skill.status", items=i18n.t("commands.skill.enabled_none"))
 
-    await router.dispatch(cli, "/skill enable mature-mode")
+    await router.dispatch(cli, "/skill enable romance-relationships")
     after = await router.dispatch(cli, "/skill status")
-    assert after == i18n.t("commands.skill.status", items="mature-mode")
+    assert after == i18n.t("commands.skill.status", items="romance-relationships")
 
 
 async def test_skill_enable_disable_via_command_updates_the_room_store():
@@ -2270,12 +2270,12 @@ async def test_skill_enable_disable_via_command_updates_the_room_store():
 
     assert await get_enabled_skills(services.store, cli.chat_key) == []
 
-    enabled = await router.dispatch(cli, "/skill enable mature-mode")
-    assert enabled == i18n.t("commands.skill.enable_done", id="mature-mode")
-    assert await get_enabled_skills(services.store, cli.chat_key) == ["mature-mode"]
+    enabled = await router.dispatch(cli, "/skill enable romance-relationships")
+    assert enabled == i18n.t("commands.skill.enable_done", id="romance-relationships")
+    assert await get_enabled_skills(services.store, cli.chat_key) == ["romance-relationships"]
 
-    disabled = await router.dispatch(cli, "/skill disable mature-mode")
-    assert disabled == i18n.t("commands.skill.disable_done", id="mature-mode")
+    disabled = await router.dispatch(cli, "/skill disable romance-relationships")
+    assert disabled == i18n.t("commands.skill.disable_done", id="romance-relationships")
     assert await get_enabled_skills(services.store, cli.chat_key) == []
 
 
@@ -2303,11 +2303,11 @@ async def test_skill_enable_disable_denied_for_ordinary_group_member_and_store_u
     )
     i18n = services.i18n.with_locale("en")
 
-    denied = await router.dispatch(player, ".skill enable mature-mode")
+    denied = await router.dispatch(player, ".skill enable romance-relationships")
     assert denied == i18n.t("commands.skill.denied")
     assert await get_enabled_skills(services.store, player.chat_key) == []  # nothing mutated
 
-    denied_off = await router.dispatch(player, ".skill disable mature-mode")
+    denied_off = await router.dispatch(player, ".skill disable romance-relationships")
     assert denied_off == i18n.t("commands.skill.denied")
 
     # Viewing (list/status) is still open to the same non-keeper player.

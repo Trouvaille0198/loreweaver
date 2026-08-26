@@ -60,8 +60,10 @@ def test_toolset_collects_all_static_tools_and_none_are_keeper_only():
         "delete_character",
         "update_character_status",
         "grant_item",
+        "improvise_item",
         "transfer_item",
         "remove_item",
+        "reveal_clue",
         "use_item",
         "equip_item",
         "unequip_item",
@@ -70,11 +72,11 @@ def test_toolset_collects_all_static_tools_and_none_are_keeper_only():
         "hp_manager",
         "initiative_tracker",
     }
-    assert len(expected_names) == 19
+    assert len(expected_names) == 21
     assert set(toolset.names()) == expected_names
 
     schemas = toolset.schemas()
-    assert len(schemas) == 19
+    assert len(schemas) == 21
     for name in expected_names:
         assert toolset.is_keeper_only(name) is False
 
@@ -1455,3 +1457,71 @@ async def test_a_sheet_with_no_name_is_no_character_at_every_door():
     i18n = services.i18n.with_locale(ctx.locale)
     assert await tools.get_character_sheet(ctx) == i18n.t("kp_tools.character.none")
     assert await tools.list_party_sheets(ctx) == i18n.t("kp_tools.character.party.empty")
+
+
+# ---------------------------------------------------------------------------
+# Behind-the-screen rolls (hidden=True): the frame is flagged for the keeper,
+# the record is hidden, and no player-facing aggregate ever counts it.
+# ---------------------------------------------------------------------------
+
+
+async def test_hidden_roll_dice_marks_payload_and_record_hidden():
+    """`roll_dice(hidden=True)` still emits a dice payload (the keeper's page
+    renders it) but flags it hidden, and the battle record keeps it out of every
+    player-facing aggregate — mirroring `.rh`."""
+    services, ctx = _build()
+    dice_tools = DiceTools(services)
+    char_tools = CharacterTools(services)
+    await char_tools.create_character(ctx, name="Vera", system="coc7", auto_generate=False)
+    await services.battles.start_session(ctx.chat_key)
+
+    seed_dice(3)
+    await dice_tools.roll_dice(ctx, expression="1d6", hidden=True)
+
+    assert ctx.dice_payloads[0]["hidden"] is True
+    record = await services.battles.generator.get_current_session(ctx.chat_key)
+    assert record is not None
+    assert len(record.dice_rolls) == 1
+    assert record.dice_rolls[0]["hidden"] is True
+    # The hidden roll never contributed to any player-facing aggregate.
+    assert record.player_stats.get(ctx.uid()) is None
+
+
+async def test_hidden_roll_dice_public_flag_absent_by_default():
+    services, ctx = _build()
+    dice_tools = DiceTools(services)
+    await services.battles.start_session(ctx.chat_key)
+
+    seed_dice(3)
+    await dice_tools.roll_dice(ctx, expression="1d6")
+
+    assert "hidden" not in ctx.dice_payloads[0]
+    record = await services.battles.generator.get_current_session(ctx.chat_key)
+    assert record is not None
+    assert "hidden" not in record.dice_rolls[0]
+    assert record.player_stats.get(ctx.uid()) is not None
+
+
+async def test_hidden_skill_check_marks_payload_and_record_hidden():
+    """`skill_check(hidden=True)`: the frame is flagged, the record is hidden,
+    and `rebuild_player_stats` (which runs on load) keeps it out of the counts."""
+    services, ctx = _build()
+    dice_tools = DiceTools(services)
+    char_tools = CharacterTools(services)
+    await char_tools.create_character(ctx, name="Vera", system="coc7", auto_generate=False)
+    await services.battles.start_session(ctx.chat_key)
+
+    seed_dice(5)
+    await dice_tools.skill_check(ctx, skill_name="侦查", hidden=True)
+
+    assert ctx.dice_payloads[-1]["hidden"] is True
+    record = await services.battles.generator.get_current_session(ctx.chat_key)
+    assert record is not None
+    assert len(record.skill_checks) == 1
+    check = record.skill_checks[0]
+    assert check["hidden"] is True
+    assert record.player_stats.get(ctx.uid()) is None
+
+    # A reload rebuilds the aggregates from the ledgers — hidden stays out.
+    rebuilt = type(record).from_dict(record.to_dict())
+    assert rebuilt.player_stats.get(ctx.uid()) is None

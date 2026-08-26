@@ -41,13 +41,17 @@ from agent.context import AgentCtx
 from agent.items import (
     aggregate_equipped_bonuses,
     catalog_template,
+    consume_instance,
     find_instance,
     grant_instance,
+    improvised_template,
     instances_for_owner,
     item_active,
+    parse_bonus_spec,
     render_held_items,
     render_item_views,
     set_equipped,
+    validate_improvised_bonus,
 )
 from agent.module_lifecycle import active_module
 from agent.npc import list_companions
@@ -590,6 +594,63 @@ Rules:
             return i18n.t("kp_tools.item.failed", error=str(exc))
 
     @tool
+    async def improvise_item(self, ctx: AgentCtx, character: str, name: str, description: str = "", bonus: str = "", qty: int = 1) -> str:
+        """Give a character an OFF-CATALOG item the Keeper improvises on the spot (a trinket found in a pocket, a curious stone, a small reward, a few doses of something).
+
+Args:
+    character: target character name (any member of the party)
+    name: the item's name
+    description: short description of what it is (optional)
+    bonus: optional small mechanical edge, format "stat=value,stat=value" (e.g. "spot_hidden=1"); each stat capped at +/-2, total at 4 points; leave empty for narrative-only items
+    qty: how many to grant (default 1; same-owner same-name instances merge)
+
+Rules:
+- Improvised items are a LIGHT channel: narrative trinkets, small rewards, consumables. NEVER use it for strong gear or scenario-critical artifacts - those must exist in the room's catalog (use grant_item).
+- If `name` already exists in the room's catalog, the real catalog template is granted instead (its kind/effect/bonus win over this call's bonus) - improvising a designed item's name must never degrade it.
+- The bonus cap is enforced; oversized bonuses are refused.
+- Narrate that the character now holds it after granting."""
+        i18n = self.services.i18n.with_locale(ctx.locale)
+        try:
+            if qty is None or int(qty) < 1:
+                return i18n.t("kp_tools.item.bad_qty")
+        except (TypeError, ValueError):
+            return i18n.t("kp_tools.item.bad_qty")
+        try:
+            character = (character or "").strip()
+            name = (name or "").strip()
+            if not character or not name:
+                return i18n.t("kp_tools.item.bad_args")
+            owner = await self.services.characters.get_character_owner(ctx.chat_key, character)
+            if not owner:
+                return i18n.t("kp_tools.item.character_not_found", name=character)
+            template = await catalog_template(self.services.documents, ctx.chat_key, name)
+            if template is not None:
+                # The catalog already designs this item — grant the real template
+                # (kind/effect/bonus) instead of a stripped one-off: improvising a
+                # name that exists must never degrade a designed item.
+                active = await active_module(self.services, ctx.chat_key)
+                if not item_active(active, template):
+                    return i18n.t("kp_tools.item.module_mismatch", item=name)
+                await grant_instance(self.services.documents, ctx.chat_key, character, template, int(qty))
+                await _refresh_character_bonuses(self.services, ctx, character, owner)
+                return i18n.t("kp_tools.item.granted", character=character, item=name)
+            try:
+                bonus_map = parse_bonus_spec(bonus or "")
+            except ValueError:
+                return i18n.t("kp_tools.item.improv_invalid_value")
+            error = validate_improvised_bonus(bonus_map)
+            if error:
+                return i18n.t(f"kp_tools.item.improv_{error}")
+            template = improvised_template(name, description=description or "", bonus=bonus_map)
+            await grant_instance(self.services.documents, ctx.chat_key, character, template, int(qty))
+            await _refresh_character_bonuses(self.services, ctx, character, owner)
+            return i18n.t("kp_tools.item.improvised_granted", character=character, item=name)
+        except CharacterDataError:
+            return i18n.t("kp_tools.character.data_error")
+        except Exception as exc:
+            return i18n.t("kp_tools.item.failed", error=str(exc))
+
+    @tool
     async def transfer_item(self, ctx: AgentCtx, source: str, target: str, item: str, qty: int = 1) -> str:
         """Move a real item between two characters (handed over, sold, given away). Args: source, target, item (name), qty (default 1). Source must hold it; both must exist; narrate the handover."""
         i18n = self.services.i18n.with_locale(ctx.locale)
@@ -658,7 +719,9 @@ Rules:
 
     @tool
     async def use_item(self, ctx: AgentCtx, character: str, item: str) -> str:
-        """Consume an item (drinks a potion, spends a token); phase 2 has no use-effects, so using removes it. Args: character, item. Character must hold it."""
+        """Consume one unit of a held item (drinks a potion, spends a token):
+        quantity decreases and the item disappears at zero. Args: character,
+        item. Character must hold it."""
         i18n = self.services.i18n.with_locale(ctx.locale)
         try:
             character = (character or "").strip()
@@ -668,12 +731,15 @@ Rules:
             owner = await self.services.characters.get_character_owner(ctx.chat_key, character)
             if not owner:
                 return i18n.t("kp_tools.item.character_not_found", name=character)
-            doc = await find_instance(self.services.documents, ctx.chat_key, character, item)
-            if doc is None:
+            found, remaining = await consume_instance(
+                self.services.documents, ctx.chat_key, character, item, 1
+            )
+            if not found:
                 return i18n.t("kp_tools.item.not_found", name=character, item=item)
-            await self.services.documents.delete(ctx.chat_key, "item", doc.id)
             await _refresh_character_bonuses(self.services, ctx, character, owner)
-            return i18n.t("kp_tools.item.used", character=character, item=item)
+            if remaining is None:
+                return i18n.t("kp_tools.item.used_up", character=character, item=item)
+            return i18n.t("kp_tools.item.used", character=character, item=item, remaining=remaining)
         except CharacterDataError:
             return i18n.t("kp_tools.character.data_error")
         except Exception as exc:
@@ -758,7 +824,13 @@ class DiceTools:
         self.services = services
 
     async def _record_dice_roll(
-        self, ctx: AgentCtx, expression: str, result: DiceResult, actor: str | None = None
+        self,
+        ctx: AgentCtx,
+        expression: str,
+        result: DiceResult,
+        actor: str | None = None,
+        *,
+        hidden: bool = False,
     ) -> None:
         """Best-effort battle-report recording, mirroring plugin.py's `/r` command handler.
 
@@ -782,6 +854,7 @@ class DiceTools:
                 char_name,
                 expression,
                 result,
+                hidden=hidden,
             )
         except Exception:
             pass
@@ -796,6 +869,7 @@ class DiceTools:
         label: str = "",
         actor: str | None = None,
         actor_is_npc: bool | None = None,
+        hidden: bool = False,
         **details: object,
     ) -> None:
         """Best-effort structured battle-report recording for one check."""
@@ -815,18 +889,28 @@ class DiceTools:
                 skill,
                 outcome,
                 label=label,
+                hidden=hidden,
                 **details,
             )
         except Exception:
             pass
 
     @tool
-    async def roll_dice(self, ctx: AgentCtx, expression: str, actor: str | None = None) -> str:
+    async def roll_dice(
+        self, ctx: AgentCtx, expression: str, actor: str | None = None, hidden: bool = False
+    ) -> str:
         """Roll dice and return the result.
 
         Args:
             expression: Dice expression, e.g. '1d100', '3d6+2', '2d6*5'.
             actor: Set to the NPC/creature name when rolling for a non-player actor.
+            hidden: True for a behind-the-screen roll: the dice frame reaches the
+                KEEPER only — players never see the number or even that a roll
+                happened — and the roll is recorded as hidden (excluded from every
+                player-facing report). Use it for secret world rulings (a hidden
+                perception check, an NPC's private contest, a consequence that must
+                not be revealed yet, e.g. whether foraged herbs are poisonous);
+                NEVER for a player's own declared action, which must stay public.
         """
         i18n = self.services.i18n.with_locale(ctx.locale)
         try:
@@ -855,11 +939,13 @@ class DiceTools:
         }
         if actor and actor.strip():
             payload["actor"] = actor.strip()
+        if hidden:
+            payload["hidden"] = True
         ctx.emit_dice(payload)
-        await self._record_dice_roll(ctx, expression, result, actor=actor)
+        await self._record_dice_roll(ctx, expression, result, actor=actor, hidden=hidden)
         return response
 
-    async def _pool_check(self, ctx: AgentCtx, i18n, params: dict, actor: str | None) -> str:
+    async def _pool_check(self, ctx: AgentCtx, i18n, params: dict, actor: str | None, *, hidden: bool = False) -> str:
         """Graded pool check for parameterized systems, under the ROOM's pack."""
 
         pack = await self.services.room_rulepack(ctx)
@@ -901,6 +987,7 @@ class DiceTools:
                 "total": rolled.total,
                 "outcome": outcome_wire(outcome, level),
                 "detail": {**dict(rolled.modifiers), **cleaned},
+                **({"hidden": True} if hidden else {}),
             }
         )
         lines = [
@@ -923,6 +1010,7 @@ class DiceTools:
         actor: str | None = None,
         npc_target: int | None = None,
         params: dict | None = None,
+        hidden: bool = False,
     ) -> str:
         """Run a skill check for the active character (attribute names and bridged skills resolve too).
 
@@ -941,6 +1029,12 @@ class DiceTools:
             npc_target: Required with actor: the NPC's real check number — its skill/target value or
                 its total check modifier, whichever this system's checks use — as a real integer.
                 Omit for player checks — never send 0.
+            hidden: True for a behind-the-screen check: the dice frame reaches the KEEPER only —
+                players never see the number or even that a roll happened — and the check is
+                recorded as hidden (excluded from every player-facing report). Use it for secret
+                world rulings (a hidden perception check, an NPC's private contest, a consequence
+                that must not be revealed yet); NEVER for a player's own declared action, which
+                must stay public.
         """
         i18n = self.services.i18n.with_locale(ctx.locale)
         dice = self.services.dice
@@ -949,7 +1043,7 @@ class DiceTools:
             if params:
                 # Pool-parameterized systems (the resolver declares {slot}s):
                 # the params ARE the whole input — no sheet required.
-                return await self._pool_check(ctx, i18n, params, actor)
+                return await self._pool_check(ctx, i18n, params, actor, hidden=hidden)
             character = await _get_active_character(self.services, ctx)
             if not has_character(character):
                 return i18n.t("kp_tools.character.none")
@@ -1068,6 +1162,7 @@ class DiceTools:
                         "proficient": proficient,
                         **dict(rolled.modifiers),
                     },
+                    **({"hidden": True} if hidden else {}),
                 }
             )
             await self._record_check(
@@ -1078,6 +1173,7 @@ class DiceTools:
                 label=level_label,
                 actor=display_name if actor and actor.strip() else None,
                 actor_is_npc=is_npc,
+                hidden=hidden,
                 bonus=bonus,
                 penalty=penalty,
                 modifier=modifier,

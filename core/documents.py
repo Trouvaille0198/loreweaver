@@ -248,7 +248,7 @@ def _project_note(doc: Document, viewer: Viewer) -> dict[str, Any] | None:
 # the table may READ any character's holdings, but a `secret` item stays
 # keeper-only (invisible outside the keeper) so its reveal is never spoiled.
 
-_ITEM_PUBLIC_FIELDS = ("name", "kind", "slot", "description", "effect", "owner", "quantity", "equipped_slot")
+_ITEM_PUBLIC_FIELDS = ("name", "kind", "slot", "description", "effect", "owner", "quantity", "equipped_slot", "improvised")
 
 
 def _project_clue_log(doc: Document, viewer: Viewer) -> dict[str, Any] | None:

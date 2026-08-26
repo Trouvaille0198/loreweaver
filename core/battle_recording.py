@@ -83,9 +83,15 @@ async def record_check(
     outcome: CheckOutcome,
     *,
     label: str = "",
+    hidden: bool = False,
     **extra: object,
 ) -> None:
-    """Persist one graded check with its canonical outcome fields."""
+    """Persist one graded check with its canonical outcome fields.
+
+    ``hidden`` marks a keeper/private check (mirroring ``record_dice_roll``):
+    kept in the record for the keeper's bookkeeping but excluded from every
+    player-facing report and aggregate.
+    """
     details = check_fields(outcome, label=label)
     details.update(extra)
     await battles.add_skill_check(
@@ -95,5 +101,6 @@ async def record_check(
         skill,
         int(outcome.target or 0),
         outcome.rolled.total,
+        hidden=hidden,
         **details,
     )

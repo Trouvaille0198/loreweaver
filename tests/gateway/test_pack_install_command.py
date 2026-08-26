@@ -333,7 +333,7 @@ async def test_a_skill_installed_by_another_process_enables_at_once(server, tmp_
     chat_key = "cli:dm:enable-now"
 
     # Arm the throttle the way a live room does: something resolves, recording the scan.
-    skills_module.load_skill("mature-mode")
+    skills_module.load_skill("romance-relationships")
 
     # ANOTHER PROCESS installs the pack — the desktop client shells out to the CLI, so
     # nothing in this process clears a cache. Writing the files is exactly what it leaves
@@ -498,14 +498,14 @@ license: MIT
 engine:
   protocol: "2.0"
 contents:
-  skills: [skills/mature-mode]
+  skills: [skills/romance-relationships]
 """
 
 
 def _built_shadow_pack(tmp_path: Path) -> Path:
     src = tmp_path / "shadow-src"
-    (src / "skills/mature-mode").mkdir(parents=True)
-    (src / "skills/mature-mode/SKILL.md").write_text(SKILL_MD, encoding="utf-8")
+    (src / "skills/romance-relationships").mkdir(parents=True)
+    (src / "skills/romance-relationships/SKILL.md").write_text(SKILL_MD, encoding="utf-8")
     (src / MANIFEST_NAME).write_text(SHADOW_MANIFEST, encoding="utf-8")
     return build_pack(src, tmp_path / "shadowpack.lwpack").path
 
@@ -522,10 +522,10 @@ async def test_a_skill_a_builtin_shadows_is_enabled_and_named(server, tmp_path):
     reply = await router.dispatch(_keeper(chat_key), f".pack install {_built_shadow_pack(tmp_path)}")
 
     i18n = server.i18n.with_locale("en")
-    assert i18n.t("commands.pack.live_skill", id="mature-mode") in reply
-    assert i18n.t("commands.pack.shadowed", ids="mature-mode") in reply
+    assert i18n.t("commands.pack.live_skill", id="romance-relationships") in reply
+    assert i18n.t("commands.pack.shadowed", ids="romance-relationships") in reply
     # Enabled exactly as any other skill would be — the line is a receipt, not a gate.
-    assert "mature-mode" in await get_enabled_skills(server.store, chat_key)
+    assert "romance-relationships" in await get_enabled_skills(server.store, chat_key)
 
 
 async def test_fetch_lands_a_module_pack_without_importing_it(server, tmp_path):

@@ -33,8 +33,9 @@ from agent.forge import (
 )
 from agent.services import ROOM_LLM_SELECTION_KEY, Services
 from core.rulepacks import available_systems, built_in_rulepack_ids
+from core.preset_store import list_preset_ids, load_preset, preset_source, sanitize_preset_id
 from core.skills import available_skills
-from gateway.ops import get_enabled_skills, toggle_enabled_skill
+from gateway.ops import get_enabled_preset, get_enabled_skills, set_enabled_preset, toggle_enabled_skill
 from gateway.rooms import (
     clear_bindings_for_session,
     clear_keeper_binding,
@@ -106,6 +107,12 @@ _ADMIN_REQUESTS: frozenset[str] = frozenset(
         "admin_reset_room",
         "admin_list_skills",
         "admin_enable_skill",
+        "admin_list_presets",
+        "admin_enable_preset",
+        "admin_save_preset",
+        "admin_delete_preset",
+        "admin_export_presets",
+        "admin_import_presets",
         "admin_list_rules",
         "admin_generate",
         "admin_update_server",
@@ -347,6 +354,18 @@ async def _dispatch_admin_frame(
         return await _skills_frame(services, caller_room, i18n, frame)
     if kind == "admin_enable_skill":
         return await _enable_skill(services, caller_room, frame, i18n)
+    if kind == "admin_list_presets":
+        return await _presets_frame(services, caller_room, i18n, frame)
+    if kind == "admin_enable_preset":
+        return await _enable_preset(services, caller_room, frame, i18n)
+    if kind == "admin_save_preset":
+        return await _save_preset(services, caller_room, frame, i18n)
+    if kind == "admin_delete_preset":
+        return await _delete_preset(services, caller_room, frame, i18n)
+    if kind == "admin_export_presets":
+        return await _export_presets(services, caller_room, frame, i18n)
+    if kind == "admin_import_presets":
+        return await _import_presets(services, caller_room, frame, i18n)
     if kind == "admin_list_rules":
         return _rules_frame()
     if kind == "admin_generate":
@@ -1643,6 +1662,215 @@ async def _enable_skill(services: Services, caller_room: str, frame: dict[str, A
     chat_key = chat_key_for_room(caller_room)
     await toggle_enabled_skill(services.store, chat_key, skill_id, on=bool(frame.get("on")))
     return await _skills_frame(services, caller_room, i18n, frame)
+
+
+# -- ST-style preset templates (per-room style layer) -------------------------
+
+
+def _preset_preview(preset: Any, limit: int = 160) -> str:
+    """A short text sample of the preset's first prompt for the listing."""
+    for prompt in preset.prompts:
+        text = (prompt.content or "").strip()
+        if text:
+            return text[:limit] + ("…" if len(text) > limit else "")
+    return ""
+
+
+async def _presets_frame(
+    services: Services, caller_room: str, i18n: I18n, frame: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Answer `admin_list_presets`/a fresh post-mutation reply: every installed preset
+    (`core.preset_store.list_preset_ids`), each marked `enabled` per the CALLER'S room.
+
+    A preset whose file is missing, oversized, or unparseable still appears in the list
+    with `parse_error: true` — the keeper needs to see (and be able to delete) a broken
+    file, and the prompt builder already degrades such a preset to no style layer.
+    """
+    data_dir = services.settings.data_dir
+    chat_key = chat_key_for_room(caller_room)
+    enabled = await get_enabled_preset(services.store, chat_key)
+    presets = []
+    for preset_id in list_preset_ids(data_dir):
+        source = preset_source(data_dir, preset_id)
+        preset = load_preset(data_dir, preset_id)
+        if preset is None:
+            presets.append(
+                {
+                    "id": preset_id,
+                    "name": preset_id,
+                    "enabled": preset_id == enabled,
+                    "system": source == "system",
+                    "parse_error": True,
+                    "prompt_count": 0,
+                    "preview": "",
+                    "content_rating": "",
+                }
+            )
+            continue
+        presets.append(
+            {
+                "id": preset_id,
+                "name": preset.name or preset_id,
+                "enabled": preset_id == enabled,
+                "system": source == "system",
+                "parse_error": False,
+                "prompt_count": len(preset.prompts),
+                "preview": _preset_preview(preset),
+                "content_rating": preset.content_rating,
+            }
+        )
+    return {"type": "admin_presets", "presets": presets}
+
+
+async def _enable_preset(services: Services, caller_room: str, frame: dict[str, Any], i18n: I18n) -> dict[str, Any]:
+    preset_id = str(frame.get("id") or "").strip()
+    on = bool(frame.get("on"))
+    data_dir = services.settings.data_dir
+    if on and (not preset_id or load_preset(data_dir, preset_id) is None):
+        return _error("bad_request", i18n)
+    chat_key = chat_key_for_room(caller_room)
+    await set_enabled_preset(services.store, chat_key, preset_id if on else "")
+    return await _presets_frame(services, caller_room, i18n, frame)
+
+
+async def _save_preset(services: Services, caller_room: str, frame: dict[str, Any], i18n: I18n) -> dict[str, Any]:
+    """Create or overwrite a preset from raw ST JSON text. The id is derived from the
+    request's `id` (slugified) when present, otherwise from the preset's own ST name —
+    either way through `core.preset_store.sanitize_preset_id`, so a CJK title falls
+    back to a safe slug instead of failing."""
+    from core.preset import parse_st_preset
+    from core.preset_store import sanitize_preset_id, save_preset_text
+
+    text = str(frame.get("text") or "")
+    if not text.strip():
+        return _error("bad_request", i18n)
+    try:
+        parsed = parse_st_preset(text, "preset")
+    except ValueError as exc:
+        return {
+            "type": "admin_error",
+            "code": "invalid_preset",
+            "message": i18n.t("tui.admin.error.invalid_preset"),
+            "detail": str(exc)[:300],
+        }
+    preset_id = sanitize_preset_id(str(frame.get("id") or ""))
+    if not preset_id:
+        # ST keeps names in the filename, not the file — the parser's `fallback_name`
+        # is what lands in `parsed.name`. When the request omits an id, the top-level
+        # `name` key is the best slug source (the text parsed fine, so this is safe).
+        try:
+            root = json.loads(text)
+            name_from_text = str(root.get("name") or "") if isinstance(root, dict) else ""
+        except (ValueError, RecursionError):
+            name_from_text = ""
+        preset_id = sanitize_preset_id(name_from_text)
+    if not preset_id:
+        return _error("bad_request", i18n)
+    try:
+        save_preset_text(services.settings.data_dir, preset_id, text)
+    except ValueError as exc:
+        # A read-only system preset id (e.g. `mature-mode`) — or a malformed id.
+        return {
+            "type": "admin_error",
+            "code": "op_failed",
+            "message": i18n.t("tui.admin.error.op_failed"),
+            "detail": str(exc)[:300],
+        }
+    except OSError as exc:
+        return {
+            "type": "admin_error",
+            "code": "op_failed",
+            "message": i18n.t("tui.admin.error.op_failed"),
+            "detail": str(exc)[:300],
+        }
+    return await _presets_frame(services, caller_room, i18n, frame)
+
+
+async def _delete_preset(services: Services, caller_room: str, frame: dict[str, Any], i18n: I18n) -> dict[str, Any]:
+    from core.preset_store import delete_preset, preset_source
+
+    preset_id = str(frame.get("id") or "").strip()
+    if not preset_id:
+        return _error("bad_request", i18n)
+    if preset_source(services.settings.data_dir, preset_id) == "system":
+        return _error("op_failed", i18n)
+    chat_key = chat_key_for_room(caller_room)
+    enabled = await get_enabled_preset(services.store, chat_key)
+    if not delete_preset(services.settings.data_dir, preset_id):
+        return _error("not_found", i18n)
+    if enabled == preset_id:
+        await set_enabled_preset(services.store, chat_key, "")
+    return await _presets_frame(services, caller_room, i18n, frame)
+
+
+async def _export_presets(services: Services, caller_room: str, frame: dict[str, Any], i18n: I18n) -> dict[str, Any]:
+    """Answer `admin_export_presets`: every USER-tier preset's verbatim text, one
+    portable bundle the keeper can back up or move to another room/server. System
+    presets are engine-shipped and never exported — the bundle is the user tier."""
+    from core.preset_store import list_preset_ids, load_preset_text, preset_source
+
+    data_dir = services.settings.data_dir
+    bundle = []
+    for preset_id in list_preset_ids(data_dir):
+        if preset_source(data_dir, preset_id) == "system":
+            continue
+        text = load_preset_text(data_dir, preset_id)
+        if text is not None:
+            bundle.append({"id": preset_id, "text": text})
+    return {"type": "admin_preset_export_all", "presets": bundle}
+
+
+async def _import_presets(services: Services, caller_room: str, frame: dict[str, Any], i18n: I18n) -> dict[str, Any]:
+    """Answer `admin_import_presets`: save a bundle of user presets (the same shape
+    `admin_export_presets` produces) into the USER tier, one parse per entry. A
+    broken entry or a read-only system id is skipped and reported, never fatal —
+    the keeper sees exactly what landed."""
+    from core.preset import parse_st_preset
+    from core.preset_store import preset_source, save_preset_text
+
+    data_dir = services.settings.data_dir
+    raw = frame.get("presets")
+    if not isinstance(raw, list):
+        return _error("bad_request", i18n)
+    imported: list[str] = []
+    skipped: list[dict[str, str]] = []
+    for entry in raw:
+        if not isinstance(entry, dict):
+            skipped.append({"id": "", "reason": "invalid"})
+            continue
+        text = str(entry.get("text") or "")
+        preset_id = str(entry.get("id") or "").strip()
+        if not text.strip():
+            skipped.append({"id": preset_id, "reason": "empty"})
+            continue
+        try:
+            parsed = parse_st_preset(text, preset_id or "preset")
+        except ValueError:
+            skipped.append({"id": preset_id, "reason": "invalid"})
+            continue
+        if not preset_id:
+            try:
+                root = json.loads(text)
+                name_from_text = str(root.get("name") or "") if isinstance(root, dict) else ""
+            except (ValueError, RecursionError):
+                name_from_text = ""
+            preset_id = sanitize_preset_id(name_from_text)
+        if not preset_id:
+            skipped.append({"id": preset_id, "reason": "invalid"})
+            continue
+        if preset_source(data_dir, preset_id) == "system":
+            skipped.append({"id": preset_id, "reason": "system"})
+            continue
+        try:
+            save_preset_text(data_dir, preset_id, text)
+        except (ValueError, OSError):
+            skipped.append({"id": preset_id, "reason": "write"})
+            continue
+        imported.append(preset_id)
+    reply = await _presets_frame(services, caller_room, i18n, frame)
+    reply["imported"] = imported
+    reply["skipped"] = skipped
+    return reply
 
 
 # -- rule systems (Layer A) ---------------------------------------------------

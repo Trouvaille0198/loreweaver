@@ -2,7 +2,7 @@
 folding enabled-skill bodies into the system prompt, last, per room).
 
 Uses a temporary `core.skills._SKILL_DIR` fixture skill (never the real
-`skills/` contents beyond confirming `mature-mode` exists, which
+`skills/` contents beyond confirming `romance-relationships` exists, which
 `tests/core/test_skills.py` already covers) so this stays independent of
 whatever built-in skills ship.
 """

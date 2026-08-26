@@ -240,3 +240,82 @@ async def test_tool_round_draft_reaches_keeper_only_as_narrative_draft() -> None
     chain = await load_chain(services, room, DEFAULT_HISTORY_KEY)
     assert chain[-1]["_lw_draft"] == draft_text
     assert chain[-1]["content"] == final_text
+
+
+# --- a hidden AI roll (tool hidden=True) is a KEEPER-ONLY frame, live and in the lane ----
+
+
+async def test_a_hidden_ai_roll_publishes_a_keeper_only_frame_and_stays_in_the_lane() -> None:
+    """`roll_dice(hidden=True)` emits a dice payload flagged hidden: the frame
+    reaches the keeper ONLY — a player never sees the number or that a roll
+    happened — and the replay lane keeps it, flagged, for a keeper's rejoin."""
+    services = _services()
+    room = "tui:group:hidden-ai-roll"
+    i18n = get_i18n()
+    keeper = RecordingMember("kp", "Keeper", role="keeper")
+    player = RecordingMember("pl", "Nora", role="player")
+    hub = RoomHub()
+    await hub.subscribe(room, keeper)
+    await hub.subscribe(room, player)
+
+    entry = {
+        "name": "roll_dice",
+        "arguments": {},
+        "dice_payloads": [
+            {
+                "kind": "roll",
+                "expr": "1d100",
+                "rolls": [42],
+                "total": 42,
+                "hidden": True,
+            }
+        ],
+    }
+    (event,) = _public_tool_events(entry, "Keeper", i18n)
+    assert event.kind == "dice"
+    assert event.keeper_only is True
+    assert event.data["hidden"] is True
+
+    await hub.publish(room, event)
+    await record_turn_events(services, room, [event])
+
+    kinds = lambda member: [e.kind for e in member.events if e.kind != "presence"]
+    assert kinds(keeper) == ["dice"]
+    assert kinds(player) == []
+    lane = await _lane(services, room)
+    assert len(lane) == 1
+    # The flag survives the lane so a keeper's rejoin replays it, a player's never does.
+    assert lane[0]["event"]["keeper_only"] is True
+    assert lane[0]["event"]["data"]["hidden"] is True
+
+
+async def test_a_public_ai_roll_reaches_everyone_and_is_not_flagged() -> None:
+    """The same payload without the hidden flag stays a plain public roll: no
+    keeper_only marker live, no hidden flag in the lane."""
+    services = _services()
+    room = "tui:group:public-ai-roll"
+    i18n = get_i18n()
+    keeper = RecordingMember("kp", "Keeper", role="keeper")
+    player = RecordingMember("pl", "Nora", role="player")
+    hub = RoomHub()
+    await hub.subscribe(room, keeper)
+    await hub.subscribe(room, player)
+
+    entry = {
+        "name": "roll_dice",
+        "arguments": {},
+        "dice_payloads": [{"kind": "roll", "expr": "1d100", "rolls": [42], "total": 42}],
+    }
+    (event,) = _public_tool_events(entry, "Keeper", i18n)
+    assert event.keeper_only is False
+    assert "hidden" not in event.data
+
+    await hub.publish(room, event)
+    await record_turn_events(services, room, [event])
+
+    kinds = lambda member: [e.kind for e in member.events if e.kind != "presence"]
+    assert kinds(keeper) == ["dice"]
+    assert kinds(player) == ["dice"]
+    lane = await _lane(services, room)
+    assert lane[0]["event"]["keeper_only"] is False
+    assert "hidden" not in lane[0]["event"]["data"]

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, replace
@@ -38,8 +39,10 @@ from core.yaml_safety import safe_load_no_aliases
 
 logger = logging.getLogger(__name__)
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-_SKILL_DIR = _REPO_ROOT / "skills"
+#: Optional deployment override for the engine-owned skills directory. The Docker
+#: image copies the repo's `skills/` to `/srv/skills` and sets this; the default is
+#: the repo checkout (or the installed package's sibling directory).
+_SKILL_DIR = Path(os.environ.get("TRPG_SKILLS_DIR") or Path(__file__).resolve().parent.parent / "skills")
 _FRONTMATTER_FENCE = "---"
 
 # Layer B.3a (the skill-generation engine, `agent.forge`) discovery target: a user data-dir

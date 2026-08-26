@@ -892,14 +892,14 @@ async def test_runner_keeper_identity_only_elevates_inside_its_bound_room() -> N
     await services.store.state_set(foreign_session, "bot_enabled", "1")
 
     await runner.on_inbound(
-        InboundMessage(source=foreign, text="/skill enable mature-mode", at_bot=True)
+        InboundMessage(source=foreign, text="/skill enable romance-relationships", at_bot=True)
     )
     assert await get_enabled_skills(services.store, foreign_session) == []
 
     await runner.on_inbound(
-        InboundMessage(source=own, text="/skill enable mature-mode", at_bot=True)
+        InboundMessage(source=own, text="/skill enable romance-relationships", at_bot=True)
     )
-    assert await get_enabled_skills(services.store, own_session) == ["mature-mode"]
+    assert await get_enabled_skills(services.store, own_session) == ["romance-relationships"]
 
 
 async def test_runner_bind_token_and_reply_stay_private_to_the_invoker() -> None:

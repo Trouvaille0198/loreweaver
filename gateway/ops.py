@@ -5,6 +5,7 @@ import json
 import re
 import time
 import unicodedata
+from pathlib import Path
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import IntEnum, IntFlag
@@ -450,20 +451,30 @@ async def toggle_enabled_panel_pack(store, chat_key: str, pack_id: str, *, on: b
         return enabled_ids
 
 
-async def room_content_unfiltered(store, chat_key: str) -> bool:
-    """True if `chat_key`'s room has a skill enabled whose `content_rating` is
-    mature/explicit -- the mature-mode signal `gateway.turn.run_turn` uses to bypass
-    the output word-filter for that room regardless of the configured `Censor`.
+async def room_content_unfiltered(store, chat_key: str, data_dir: str | Path | None = None) -> bool:
+    """True if `chat_key`'s room has the mature-mode signal on: a skill enabled whose
+    `content_rating` is mature/explicit, OR an enabled preset whose own
+    `x_loreweaver_content_rating` marker is (the preset tier is where mature mode
+    lives since the skill was folded into the system preset). The signal is what
+    `gateway.turn.run_turn` uses to bypass the output word-filter for that room
+    regardless of the configured `Censor`.
 
-    Imports `core.skills` locally: `core` sits below `gateway` in the layering, so a
-    module-level import would be fine too, but this keeps the import next to its one
-    use site.
+    `data_dir` locates the user preset tier; the system tier is discovered by
+    `core.preset_store` itself. Imports are local: `core` sits below `gateway` in the
+    layering, so a module-level import would be fine too, but this keeps them next to
+    their one use site.
     """
+    from core.preset_store import load_preset
     from core.skills import load_skill
 
     for skill_id in await get_enabled_skills(store, chat_key):
         skill = load_skill(skill_id)
         if skill is not None and skill.content_rating in _UNFILTERED_CONTENT_RATINGS:
+            return True
+    enabled_preset = await get_enabled_preset(store, chat_key)
+    if enabled_preset:
+        preset = load_preset(data_dir, enabled_preset)
+        if preset is not None and preset.content_rating in _UNFILTERED_CONTENT_RATINGS:
             return True
     return False
 

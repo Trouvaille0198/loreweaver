@@ -185,6 +185,196 @@ async def test_admin_skills_list_follows_the_caller_locale():
     assert romance_pinned["name"] == "恋爱与关系"
 
 
+def _st_preset_text(name: str, content: str) -> str:
+    """A minimal valid SillyTavern completion preset (mirrors tests/core/test_preset.py)."""
+    return json.dumps(
+        {
+            "name": name,
+            "prompts": [
+                {
+                    "identifier": "main",
+                    "name": "Main",
+                    "role": "system",
+                    "system_prompt": True,
+                    "content": content,
+                    "enabled": True,
+                    "injection_position": 0,
+                    "injection_depth": 4,
+                }
+            ],
+        }
+    )
+
+
+async def test_admin_presets_save_enable_delete_flow(tmp_path):
+    """`admin_save_preset` / `admin_enable_preset` / `admin_delete_preset` manage the
+    per-room style layer end to end: an id is derived from the ST name when the request
+    omits it, the list marks the caller's room's enabled preset, deleting a preset that
+    is enabled clears the room's flag."""
+    services = _services(str(tmp_path))
+    admin = AdminService(services, Keystore())
+
+    empty = await admin.dispatch("keeper", "arkham", {"type": "admin_list_presets"}, get_i18n("en"))
+    assert empty["type"] == "admin_presets"
+    assert [p["id"] for p in empty["presets"]] == ["mature-mode"]  # the system tier alone
+    assert all(p["system"] for p in empty["presets"])
+
+    saved = await admin.dispatch(
+        "keeper", "arkham", {"type": "admin_save_preset", "text": _st_preset_text("Duo", "Speak plainly. {{getvar::mood}}")}, get_i18n("en")
+    )
+    assert saved["type"] == "admin_presets"
+    row = next(p for p in saved["presets"] if p["id"] == "duo")
+    assert row["name"] == "duo"  # ST names live in the filename — the id is the display name
+    assert row["parse_error"] is False
+    assert row["prompt_count"] == 1
+    assert "Speak plainly" in row["preview"]
+    assert row["enabled"] is False
+
+    enabled = await admin.dispatch("keeper", "arkham", {"type": "admin_enable_preset", "id": "duo", "on": True}, get_i18n("en"))
+    assert next(p for p in enabled["presets"] if p["id"] == "duo")["enabled"] is True
+
+    # Explicit id wins over the ST name; the file is overwritten, the list stays flat.
+    overwritten = await admin.dispatch(
+        "keeper", "arkham", {"type": "admin_save_preset", "id": "my-template", "text": _st_preset_text("Whatever", "New content.")}, get_i18n("en")
+    )
+    assert {p["id"] for p in overwritten["presets"] if not p["system"]} == {"duo", "my-template"}
+    assert next(p for p in overwritten["presets"] if p["id"] == "my-template")["name"] == "my-template"
+
+    disabled = await admin.dispatch("keeper", "arkham", {"type": "admin_enable_preset", "id": "duo", "on": False}, get_i18n("en"))
+    assert next(p for p in disabled["presets"] if p["id"] == "duo")["enabled"] is False
+
+    deleted = await admin.dispatch("keeper", "arkham", {"type": "admin_delete_preset", "id": "duo"}, get_i18n("en"))
+    assert [p["id"] for p in deleted["presets"] if not p["system"]] == ["my-template"]
+
+
+async def test_admin_delete_preset_clears_enabled_flag(tmp_path):
+    """Deleting the preset the caller's room has enabled also clears its `preset_enabled`
+    flag, so the room degrades to no style layer instead of pointing at a missing file."""
+    services = _services(str(tmp_path))
+    admin = AdminService(services, Keystore())
+    await admin.dispatch(
+        "keeper", "arkham", {"type": "admin_save_preset", "text": _st_preset_text("Dune", "Sand.")}, get_i18n("en")
+    )
+    await admin.dispatch("keeper", "arkham", {"type": "admin_enable_preset", "id": "dune", "on": True}, get_i18n("en"))
+    reply = await admin.dispatch("keeper", "arkham", {"type": "admin_delete_preset", "id": "dune"}, get_i18n("en"))
+    assert [p["id"] for p in reply["presets"] if not p["system"]] == []
+    assert await services.store.state_get("room:arkham", "preset_enabled") in (None, "")
+
+
+async def test_admin_save_preset_rejects_invalid_text(tmp_path):
+    services = _services(str(tmp_path))
+    reply = await AdminService(services, Keystore()).dispatch(
+        "keeper", "arkham", {"type": "admin_save_preset", "text": "not json at all"}, get_i18n("en")
+    )
+    assert reply["type"] == "admin_error" and reply["code"] == "invalid_preset"
+
+    blank = await AdminService(services, Keystore()).dispatch(
+        "keeper", "arkham", {"type": "admin_save_preset", "text": "   "}, get_i18n("en")
+    )
+    assert blank["type"] == "admin_error" and blank["code"] == "bad_request"
+
+
+async def test_admin_enable_unknown_preset_is_rejected(tmp_path):
+    services = _services(str(tmp_path))
+    reply = await AdminService(services, Keystore()).dispatch(
+        "keeper", "arkham", {"type": "admin_enable_preset", "id": "nope", "on": True}, get_i18n("en")
+    )
+    assert reply["type"] == "admin_error" and reply["code"] == "bad_request"
+
+
+async def test_admin_delete_missing_preset_is_not_found(tmp_path):
+    services = _services(str(tmp_path))
+    reply = await AdminService(services, Keystore()).dispatch(
+        "keeper", "arkham", {"type": "admin_delete_preset", "id": "nope"}, get_i18n("en")
+    )
+    assert reply["type"] == "admin_error" and reply["code"] == "not_found"
+
+
+async def test_admin_presets_list_marks_system_tier_and_read_only(tmp_path):
+    """The engine-shipped `mature-mode` preset appears in the listing as a SYSTEM
+    preset: deletable nowhere, overwritable nowhere, but enable-able like any other."""
+    services = _services(str(tmp_path))
+    admin = AdminService(services, Keystore())
+
+    listed = await admin.dispatch("keeper", "arkham", {"type": "admin_list_presets"}, get_i18n("en"))
+    assert listed["type"] == "admin_presets"
+    mature = next(p for p in listed["presets"] if p["id"] == "mature-mode")
+    assert mature["system"] is True
+    assert mature["content_rating"] == "explicit"
+    assert mature["prompt_count"] == 1
+    assert mature["enabled"] is False
+
+    # A user preset is marked system=False.
+    await admin.dispatch("keeper", "arkham", {"type": "admin_save_preset", "text": _st_preset_text("Dune", "Sand.")}, get_i18n("en"))
+    relisted = await admin.dispatch("keeper", "arkham", {"type": "admin_list_presets"}, get_i18n("en"))
+    assert next(p for p in relisted["presets"] if p["id"] == "dune")["system"] is False
+
+    # Deleting a system preset is refused.
+    denied = await admin.dispatch("keeper", "arkham", {"type": "admin_delete_preset", "id": "mature-mode"}, get_i18n("en"))
+    assert denied["type"] == "admin_error"
+
+    # Saving over a system preset id is refused.
+    overwritten = await admin.dispatch(
+        "keeper", "arkham", {"type": "admin_save_preset", "id": "mature-mode", "text": _st_preset_text("Evil", "X.")}, get_i18n("en")
+    )
+    assert overwritten["type"] == "admin_error"
+
+    # It still enables for the room (one preset at a time).
+    enabled = await admin.dispatch("keeper", "arkham", {"type": "admin_enable_preset", "id": "mature-mode", "on": True}, get_i18n("en"))
+    assert next(p for p in enabled["presets"] if p["id"] == "mature-mode")["enabled"] is True
+
+
+async def test_admin_export_presets_bundles_only_user_tier(tmp_path):
+    services = _services(str(tmp_path))
+    admin = AdminService(services, Keystore())
+    text = _st_preset_text("Dune", "Sand.")
+    await admin.dispatch("keeper", "arkham", {"type": "admin_save_preset", "text": text}, get_i18n("en"))
+
+    exported = await admin.dispatch("keeper", "arkham", {"type": "admin_export_presets"}, get_i18n("en"))
+    assert exported["type"] == "admin_preset_export_all"
+    assert exported["presets"] == [{"id": "dune", "text": text}]
+    # The engine-shipped system tier is never part of the bundle.
+    assert all(p["id"] != "mature-mode" for p in exported["presets"])
+
+
+async def test_admin_import_presets_round_trips_and_skips_bad_entries(tmp_path):
+    services = _services(str(tmp_path))
+    admin = AdminService(services, Keystore())
+    good = _st_preset_text("Dune", "Sand.")
+    bad = "not json at all"
+
+    reply = await admin.dispatch(
+        "keeper", "arkham",
+        {"type": "admin_import_presets", "presets": [{"id": "dune", "text": good}, {"id": "broken", "text": bad}]},
+        get_i18n("en"),
+    )
+    assert reply["type"] == "admin_presets"
+    assert reply["imported"] == ["dune"]
+    assert reply["skipped"] == [{"id": "broken", "reason": "invalid"}]
+
+    # A system id in the bundle is skipped, never overwritten.
+    system_try = await admin.dispatch(
+        "keeper", "arkham",
+        {"type": "admin_import_presets", "presets": [{"id": "mature-mode", "text": _st_preset_text("Evil", "X.")}]},
+        get_i18n("en"),
+    )
+    assert system_try["imported"] == []
+    assert system_try["skipped"] == [{"id": "mature-mode", "reason": "system"}]
+    # Nothing landed in the USER tier under the system id.
+    assert not (tmp_path / "presets" / "mature-mode.json").exists()
+
+    # An id-less entry derives its id from the ST name, like the paste box.
+    derived = await admin.dispatch(
+        "keeper", "arkham",
+        {"type": "admin_import_presets", "presets": [{"text": _st_preset_text("Oasis", "Water.")}]},
+        get_i18n("en"),
+    )
+    assert derived["imported"] == ["oasis"]
+
+    malformed = await admin.dispatch("keeper", "arkham", {"type": "admin_import_presets", "presets": "nope"}, get_i18n("en"))
+    assert malformed["type"] == "admin_error" and malformed["code"] == "bad_request"
+
+
 async def test_admin_update_server_not_configured_is_rejected():
     services = _update_services("")  # feature off
     reply = await AdminService(services, Keystore()).dispatch(
@@ -524,7 +714,7 @@ async def test_player_role_connection_is_refused_every_admin_action():
             {"type": "admin_delete_room_data", "room": "arkham"},
             {"type": "admin_reset_room", "room": "arkham"},
             {"type": "admin_list_skills"},
-            {"type": "admin_enable_skill", "id": "mature-mode", "on": True},
+            {"type": "admin_enable_skill", "id": "romance-relationships", "on": True},
             {"type": "admin_list_rules"},
             {"type": "admin_generate", "kind": "skill", "description": "anything"},
         ):
@@ -2569,27 +2759,27 @@ async def test_admin_list_skills_reflects_the_callers_room_and_enable_toggles_it
         listed = await _send(ws, {"type": "admin_list_skills"})
         assert listed["type"] == "admin_skills"
         by_id = {skill["id"]: skill for skill in listed["skills"]}
-        assert "mature-mode" in by_id and "romance-relationships" in by_id
+        assert "romance-relationships" in by_id and "image-gen" in by_id
         # enabled reflects THIS room's store flag, set above for romance-relationships only.
         assert by_id["romance-relationships"]["enabled"] is True
-        assert by_id["mature-mode"]["enabled"] is False
-        assert by_id["mature-mode"]["content_rating"] == "explicit"
-        assert by_id["mature-mode"]["name"]
-        assert by_id["mature-mode"]["description"]
+        assert by_id["image-gen"]["enabled"] is False
+        assert by_id["romance-relationships"]["content_rating"] == "mature"
+        assert by_id["romance-relationships"]["name"]
+        assert by_id["romance-relationships"]["description"]
 
         # toggling ON another skill leaves the first one enabled and a follow-up admin_skills
         # reflects both.
-        enabled = await _send(ws, {"type": "admin_enable_skill", "id": "mature-mode", "on": True})
+        enabled = await _send(ws, {"type": "admin_enable_skill", "id": "image-gen", "on": True})
         assert enabled["type"] == "admin_skills"
         by_id = {skill["id"]: skill for skill in enabled["skills"]}
-        assert by_id["mature-mode"]["enabled"] is True
         assert by_id["romance-relationships"]["enabled"] is True
-        assert set(await get_enabled_skills(services.store, chat_key)) == {"romance-relationships", "mature-mode"}
+        assert by_id["image-gen"]["enabled"] is True
+        assert set(await get_enabled_skills(services.store, chat_key)) == {"romance-relationships", "image-gen"}
 
         # toggling it back off removes it and nothing else.
-        disabled = await _send(ws, {"type": "admin_enable_skill", "id": "mature-mode", "on": False})
+        disabled = await _send(ws, {"type": "admin_enable_skill", "id": "image-gen", "on": False})
         by_id = {skill["id"]: skill for skill in disabled["skills"]}
-        assert by_id["mature-mode"]["enabled"] is False
+        assert by_id["image-gen"]["enabled"] is False
         assert by_id["romance-relationships"]["enabled"] is True
         assert await get_enabled_skills(services.store, chat_key) == ["romance-relationships"]
 
