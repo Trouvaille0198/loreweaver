@@ -145,7 +145,7 @@ async def inject_trpg_system_prompt(ctx: Any, i18n: I18n) -> str:
         i18n.t("prompt.system.guidelines_header"),
         i18n.t("prompt.system.guidelines"),
     ]
-    return "\n".join(parts)
+    return "\n".join(parts) + "\n" + i18n.t("prompt.item_discipline")
 
 
 async def inject_game_state_prompt(ctx: Any, character_manager: Any, store: Store, i18n: I18n) -> str:
@@ -219,6 +219,14 @@ async def inject_game_state_prompt(ctx: Any, character_manager: Any, store: Stor
                         " | ".join(f"{m['label']} {m['value']}/{m['max']}" for m in member.get("resources") or [])
                         or i18n.t("common.none")
                     )
+                    # A claimed pregen's persona paragraph (the module's `background`)
+                    # keeps the keeper aligned with who the player IS, not just their
+                    # meters — truncated, the roster line stays one line.
+                    persona = str(member.get("background") or "").strip()
+                    if persona:
+                        lines.append(
+                            i18n.t("prompt.game_state.roster_background", background=persona[:80])
+                        )
                     lines.append(
                         i18n.t(
                             "prompt.game_state.roster_line",

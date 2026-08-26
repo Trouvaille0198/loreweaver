@@ -50,6 +50,7 @@ from agent.items import (
     parse_bonus_spec,
     render_held_items,
     render_item_views,
+    reveal_linked_clues,
     set_equipped,
     validate_improvised_bonus,
 )
@@ -586,6 +587,7 @@ Rules:
             if not item_active(active, template):
                 return i18n.t("kp_tools.item.module_mismatch", item=item_id)
             await grant_instance(self.services.documents, ctx.chat_key, character, template, int(qty))
+            await reveal_linked_clues(self.services, ctx, template)
             await _refresh_character_bonuses(self.services, ctx, character, owner)
             ctx.emit_item_grant(character, item_id, i18n.t("kp_tools.item.granted", character=character, item=item_id))
             return i18n.t("kp_tools.item.granted", character=character, item=item_id)
@@ -632,10 +634,16 @@ Rules:
                 active = await active_module(self.services, ctx.chat_key)
                 if not item_active(active, template):
                     return i18n.t("kp_tools.item.module_mismatch", item=name)
+                canonical_name = str(template.get("name") or name).strip()
                 await grant_instance(self.services.documents, ctx.chat_key, character, template, int(qty))
+                await reveal_linked_clues(self.services, ctx, template)
                 await _refresh_character_bonuses(self.services, ctx, character, owner)
-                ctx.emit_item_grant(character, name, i18n.t("kp_tools.item.granted", character=character, item=name))
-                return i18n.t("kp_tools.item.granted", character=character, item=name)
+                ctx.emit_item_grant(
+                    character,
+                    canonical_name,
+                    i18n.t("kp_tools.item.granted", character=character, item=canonical_name),
+                )
+                return i18n.t("kp_tools.item.granted", character=character, item=canonical_name)
             try:
                 bonus_map = parse_bonus_spec(bonus or "")
             except ValueError:

@@ -43,7 +43,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from agent.items import ensure_catalog
+from agent.items import ensure_catalog, normalize_item_links
 from core.battle_report import BattleReportManager
 from core.documents import DocumentStore
 from infra.config import Settings
@@ -140,12 +140,14 @@ _ANALYSIS_JSON_SCHEMA = """{
     "items": [
         {
             "name": "item name (e.g. 'The Sunken Bell')",
+            "aliases": ["common short, translated or alternate names"],
             "kind": "weapon/armor/consumable/gem/tool/quest/misc - pick the single best fit",
             "description": "short player-visible intro (what it is, how it looks)",
             "lore": "background story - ONLY for notable/powerful items, else leave empty",
             "origin": "the scene or NPC where it is found - be specific (a scene name, an NPC name); NEVER the investigators' starting gear",
             "original_holder": "who held it before, if the module states it - an NPC, never an investigator",
-                        "clue": "the narrative significance it reveals, if any (links to a clue/truth name)"
+            "plot_role": "equipment|evidence|quest|prop - the item's role in the scenario",
+            "reveals": ["stable clue ids or clue names this item makes known when obtained"]
         }
     ],
     "timeline": [
@@ -185,11 +187,13 @@ _ANALYSIS_JSON_SCHEMA = """{
 _ANALYSIS_ITEMS_GUIDANCE = """
 Only list items that MATTER to the module - things investigators can acquire that
 carry mechanical or plot significance. Pure scene dressing (a chair, a vase) is not
-an item. Never assign an item to a specific character: who ends up holding it is
+an item. Include common short, translated and alternate names in 'aliases' so the
+same script item cannot be mistaken for a new one. Never assign an item to a specific character: who ends up holding it is
 decided in play, not by the script. Make 'origin'/'original_holder' concrete. Only
 notable/powerful items get a 'lore'; ordinary items make do with 'description'. An
-item's 'clue' links to a clue/truth when it carries plot significance - the item is
-NOT a clue; it is a thing with an effect. Items must be FINDABLE in the world: their
+'plot_role' describes the item's role. Its 'reveals' list links to clue/truth names
+that become known when the item is obtained; the item is NOT a clue, it is a thing
+with an effect or physical presence. Items must be FINDABLE in the world: their
 'origin' is a place or an NPC who holds them, waiting for the investigators to find,
 loot or negotiate for them. NEVER list the investigators' own starting gear (items the
 script says they begin with, '随身携带'/'自备' gear) - that is character equipment, not
@@ -323,13 +327,17 @@ class ModuleInitializer:
             # Module-scoped items (scope != "universal") are stamped with the importing
             # module's id, so a plot artifact from another module contributes nothing.
             analyzed_items = outcome.analysis.get("items") or []
-            if module_id and isinstance(analyzed_items, list):
+            if isinstance(analyzed_items, list):
                 analyzed_items = [
-                    {
-                        **dict(tpl),
-                        "scope": str(tpl.get("scope") or "module"),
-                        "module_id": "" if str(tpl.get("scope") or "module") == "universal" else module_id,
-                    }
+                    normalize_item_links(
+                        {
+                            **dict(tpl),
+                            "scope": str(tpl.get("scope") or "module"),
+                            "module_id": ""
+                            if str(tpl.get("scope") or "module") == "universal"
+                            else module_id,
+                        }
+                    )
                     if isinstance(tpl, dict)
                     else tpl
                     for tpl in analyzed_items
@@ -531,7 +539,8 @@ class ModuleInitializer:
                     "effect": "",
                     "origin": "",
                     "original_holder": "",
-                    "clue": "",
+                    "plot_role": "",
+                    "reveals": [],
                 }
             )
 

@@ -31,6 +31,41 @@ def _room_ctx(room: str, *, user_id: str = "seed", locale: str = "en") -> AgentC
     return AgentCtx(chat_key=chat_key, user_id=user_id, platform="tui", locale=locale)
 
 
+async def test_build_room_state_carries_memory_source_and_relationships():
+    """A character's dossier rides the `state.character` payload: the module source
+    of a claimed pregen, the player-projected memory (summary + recent lines, newest
+    first) and the relationship tracks this character holds toward each entity
+    (non-default values only). All additive wire fields — absent when empty."""
+    from core.character_manager import CharacterSheet
+    from core.character_memory import CHARACTER_MEMORY_DOC_TYPE, append_entry, empty_memory, fold_entries
+    from core.pregen_roster import pregen_add
+    from core.relationships import RelationshipManager
+
+    services = _services()
+    ctx = _room_ctx("dossier-room")
+    sheet = CharacterSheet("林晚照", "coc7")
+    await pregen_add(services.documents, ctx.chat_key, sheet, source="forge-module:snow-villa", blurb="记者")
+    await services.characters.save_character("player-1", ctx.chat_key, sheet)
+    await services.characters.set_active_character("player-1", ctx.chat_key, "林晚照")
+
+    memory = append_entry(empty_memory(), "在雪鬼山庄发现枯井里的铜镜。", turn=1)
+    memory = fold_entries(memory, "调查员最终揭开了镜中秘密。")
+    await services.documents.put(ctx.chat_key, CHARACTER_MEMORY_DOC_TYPE, "林晚照", memory)
+
+    manager = RelationshipManager(services.store)
+    await manager.adjust(ctx.chat_key, "林晚照", "阿雪", "affection", 15)
+
+    state = await build_room_state(services, _room_ctx("dossier-room", user_id="player-1"))
+
+    character = state["character"]
+    assert character["source"] == "forge-module:snow-villa"
+    assert character["memory"] == {
+        "summary": "调查员最终揭开了镜中秘密。",
+        "entries": ["在雪鬼山庄发现枯井里的铜镜。"],
+    }
+    assert character["relationships"] == [{"target": "阿雪", "tracks": [{"track": "affection", "value": 15}]}]
+
+
 async def test_build_room_state_omits_variables_when_none_defined():
     services = _services()
     ctx = _room_ctx("vars-empty-room")
@@ -335,6 +370,7 @@ async def test_state_character_includes_private_sheet_details_for_its_owner():
     sheet.equipment = ["Oil lamp", "Brass key"]
     sheet.secondary_attributes["IDEA"] = 65
     sheet.occupation = "Archivist"
+    sheet.avatar = {"hash": "ab" * 32, "mime": "image/png", "size": 2048}
     await services.characters.save_character(ctx.user_id, ctx.chat_key, sheet)
 
     character = (await build_room_state(services, ctx))["character"]
@@ -344,6 +380,7 @@ async def test_state_character_includes_private_sheet_details_for_its_owner():
     assert character["equipment"] == sheet.equipment
     assert character["secondary_attributes"]["IDEA"] == 65
     assert character["fields"]["occupation"] == "Archivist"
+    assert character["avatar"] == sheet.avatar
 
 
 async def test_party_members_include_public_sheet_details_without_private_notes():

@@ -454,27 +454,40 @@ def test_pregens_carry_occupation_into_the_sheet_field():
     assert parsed.pregens[1]["occupation"] == ""
 
 
-def test_pregens_parse_normalizes_and_caps():
-    """`pregens:` ships a claimable cast: name required, concept|blurb merged,
-    integer skills kept, junk rows warned and skipped."""
+def test_pregens_background_is_the_persona_paragraph():
+    """`pregens[].background` — the forge's persona paragraph — survives parsing as
+    `notes` (capped at 400 chars), and hand-authored packs using the legacy `notes`
+    name keep working. The roster one-liner derives from its first sentence — no
+    separate `concept` field."""
     raw = {
         "format": "loreweaver.card",
         "format_version": 1,
-        "name": "cast-test",
+        "name": "persona-test",
         "pregens": [
-            {"name": "顾晚棠", "concept": "记者", "skills": {"潮汐学": 5, "坏的": "x"}},
-            {"blurb": "no name -> skipped"},
-            "not-an-object",
-            {"name": "白榆生", "notes": "医生", "skills": "not-a-map"},
+            {
+                "name": "林晚照",
+                "concept": "记者",
+                "background": "前军阀参谋的女儿，家道中落后靠笔杆子谋生。说话刻薄但心软，藏着一个不愿提起的姓氏。",
+            },
+            {"name": "阿禾", "notes": "老派notes写法"},
         ],
     }
     parsed = parse_lorecard_bytes(json.dumps(raw).encode("utf-8"))
-    assert [entry["name"] for entry in parsed.pregens] == ["顾晚棠", "白榆生"]
-    assert parsed.pregens[0]["blurb"] == "记者"
-    assert parsed.pregens[0]["skills"] == {"潮汐学": 5}
-    assert parsed.pregens[1]["notes"] == "医生"
-    assert any("pregens[1]" in warning for warning in parsed.warnings)
-    assert any("skills" in warning for warning in parsed.warnings)
+    assert parsed.pregens[0]["notes"].startswith("前军阀参谋的女儿")
+    # The roster one-liner is DERIVED from the persona paragraph's first sentence —
+    # no separate `concept` field: one field of truth.
+    assert parsed.pregens[0]["blurb"] == "前军阀参谋的女儿，家道中落后靠笔杆子谋生"
+    assert parsed.pregens[1]["notes"] == "老派notes写法"
+
+    # 400-char cap: an over-long background is truncated, never lost wholesale.
+    long_raw = {
+        "format": "loreweaver.card",
+        "format_version": 1,
+        "name": "persona-cap",
+        "pregens": [{"name": "长文", "background": "字" * 600}],
+    }
+    capped = parse_lorecard_bytes(json.dumps(long_raw).encode("utf-8"))
+    assert len(capped.pregens[0]["notes"]) == 400
 
 
 def test_items_parse_normalizes_and_caps():
@@ -497,6 +510,8 @@ def test_items_parse_normalizes_and_caps():
                 "quantity": 2,
                 "origin": "藏珍阁",
                 "original_holder": "冯兆辉",
+                "plot_role": "evidence",
+                "reveals": ["clue-bronze-mirror"],
             },
             {"blurb": "no name -> skipped"},
             "not-an-object",
@@ -515,11 +530,29 @@ def test_items_parse_normalizes_and_caps():
     assert parsed.items[0]["scope"] == "module"
     assert parsed.items[0]["origin"] == "藏珍阁"
     assert parsed.items[0]["original_holder"] == "冯兆辉"
+    assert parsed.items[0]["plot_role"] == "evidence"
+    assert parsed.items[0]["reveals"] == ["clue-bronze-mirror"]
     assert parsed.items[2]["scope"] == "universal"
     assert parsed.items[3]["scope"] == "module"  # invalid scope fails closed
     assert any("items[1]" in warning for warning in parsed.warnings)
     assert any("bonus" in warning for warning in parsed.warnings)
     assert any("scope" in warning for warning in parsed.warnings)
+
+
+def test_worldbook_missing_title_gets_readable_content_fallback():
+    raw = _bundle(
+        worldbook=[
+            {
+                "content": "The bronze mirror reflects a room that is not there.",
+                "keys": ["mirror"],
+                "category": "clue",
+            }
+        ]
+    )
+
+    parsed = parse_lorecard_bytes(json.dumps(raw).encode("utf-8"))
+
+    assert parsed.card.character_book[0]["comment"] == "The bronze mirror reflects a room that is not there."
 
 def test_items_skip_investigator_starter_gear():
     """The item pool holds what the party must FIND — entries whose origin reads as

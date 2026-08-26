@@ -2,7 +2,7 @@
 
 A package since 2026-08-19: `router` holds the spec table and dispatch, and each command
 domain is its own module composed into `CommandRouter` as a mixin (`checks`, `sheet`,
-`rules`, `rooms`, `cast`, `world`, `panels`, `media`, `llm`, `forge`). Import the public
+`rules`, `rooms`, `cast`, `world`, `panels`, `plot`, `media`, `llm`, `forge`). Import the public
 names from here; monkeypatch a helper where it is DEFINED (e.g. `gateway.commands.llm.flow_for`).
 """
 

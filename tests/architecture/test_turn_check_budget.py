@@ -5,10 +5,9 @@ other one does not have: the table is **rulepack-declarable**. Content packs are
 written by other people, and one of them asking for `max_rounds: 40` must be a clamp, not
 an outage. The engine clamps; this pins that it does.
 
-The number the budget note in AGENTS.md is written against is the OLD pair of correctives:
-`_CORRECTIVE_MAX_ROUNDS` 2 + `_STATE_CORRECTIVE_MAX_ROUNDS` 3 = 5 chat calls per turn. The
-runner inherits that ceiling exactly, so the milestone changes the shape of the corrective
-lane without changing its cost.
+The budget note in AGENTS.md includes the item-state correction alongside the existing
+correctives: 2 + 1 + 2 + 1 = 6 chat calls per turn. The runner inherits that ceiling
+exactly, so the table remains bounded as it grows.
 """
 
 from __future__ import annotations
@@ -22,10 +21,10 @@ from agent.turn_checks import (
 )
 from core.rulepacks import RulePack
 
-# What the old pair of hand-written correctives could spend. AGENTS.md's ~148 model calls
-# per player turn is computed from it — moving this means moving that note and
+# What the default corrective table can spend. AGENTS.md's ~162 model calls per player
+# turn is computed from it — moving this means moving that note and
 # `tests/agent/test_turn_call_budget.py` in the same commit.
-LEGACY_CORRECTIVE_ROUNDS = 5
+LEGACY_CORRECTIVE_ROUNDS = 6
 
 
 def test_the_global_ceiling_matches_what_the_budget_note_assumes():

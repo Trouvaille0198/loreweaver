@@ -46,6 +46,30 @@ def _first_attachment_name(ctx: Any) -> str:
     return str(names[0]) if isinstance(names, list) and names else ""
 
 
+async def _settle_persist_broadcast(ctx: CommandCtx, text: str) -> None:
+    """Land a settlement message as an ORDINARY room message: append it to the chat
+    log (so a page refresh replays it, exactly like any other line) and broadcast it
+    with the persisted record's id, so a reconnecting client can deduplicate the
+    live frame against the replayed one."""
+    from agent.chronicle import chronicle_turn
+    from agent.history import DEFAULT_HISTORY_KEY, append_message
+
+    turn = await chronicle_turn(ctx.services.store, ctx.chat_key) + 1
+    record_id = await append_message(
+        ctx.services,
+        ctx.chat_key,
+        DEFAULT_HISTORY_KEY,
+        role="assistant",
+        content=text,
+        turn=turn,
+        name="system",
+    )
+    if ctx.router.hub is not None:
+        event = Event.narrative(speaker="system", text=text, fmt="plain")
+        event.origin_id = record_id
+        await ctx.router.hub.publish(ctx.chat_key, event)
+
+
 def _installed_card_refs(ctx: CommandCtx) -> str:
     """`.import list` — every installed pack's card files as pack-relative refs."""
     from pathlib import Path
@@ -545,11 +569,41 @@ class WorldCommands:
             return ctx.fail(ctx.i18n.t("commands.settle.denied"))
         args = ctx.args.strip()
         if not args:
-            settlement = await build_settlement(ctx.services, ctx.chat_key)
-            if settlement is None:
+            # The pending copy is the durable record: re-show it instead of silently
+            # regenerating, so a `.settle` after a reload or a second look never wastes
+            # a model call. `.settle cancel` starts fresh.
+            existing = await load_pending(ctx.services, ctx.chat_key)
+            if existing is not None:
+                return f"{render_proposal(existing, ctx.i18n)}\n{ctx.i18n.t('commands.settle.applied_hint')}"
+            # A failed analysis must not read as "nobody is playing": distinguish an
+            # empty table (no sheets to settle) from a model that produced no proposal.
+            sheets = await ctx.services.documents.list(ctx.chat_key, "sheet")
+            if not sheets:
                 return ctx.fail(ctx.i18n.t("commands.settle.no_data"))
+            # The analysis call can take a while — tell the room it is running before
+            # the silence.
+            if ctx.router.hub is not None:
+                await ctx.router.hub.publish(
+                    ctx.chat_key,
+                    Event(kind="system", text=ctx.i18n.t("commands.settle.generating"), data={"level": "info", "spinner": True}),
+                )
+            settlement = await build_settlement(ctx.services, ctx.chat_key)
+            # Retire the in-progress notice either way — a spinner with no stop
+            # frame spins forever (the web client matches by text + spinner:false).
+            if ctx.router.hub is not None:
+                await ctx.router.hub.publish(
+                    ctx.chat_key,
+                    Event(kind="system", text=ctx.i18n.t("commands.settle.generating"), data={"level": "info", "spinner": False}),
+                )
+            if settlement is None:
+                return ctx.fail(ctx.i18n.t("commands.settle.failed"))
             await save_pending(ctx.services, ctx.chat_key, settlement)
-            return f"{render_proposal(settlement, ctx.i18n)}\n{ctx.i18n.t('commands.settle.applied_hint')}"
+            rendered = f"{render_proposal(settlement, ctx.i18n)}\n{ctx.i18n.t('commands.settle.applied_hint')}"
+            await _settle_persist_broadcast(ctx, rendered)
+            # Silently handled: the proposal already went out as an ordinary room
+            # message (broadcast + chat log). Returning no reply keeps the turn from
+            # producing a second, duplicate line.
+            return None
         word = args.casefold()
         if word in _SETTLE_APPLY_WORDS:
             pending = await load_pending(ctx.services, ctx.chat_key)
@@ -557,7 +611,9 @@ class WorldCommands:
                 return ctx.fail(ctx.i18n.t("commands.settle.nothing_pending"))
             result = await apply_settlement(ctx.services, ctx.chat_key, pending)
             await clear_pending(ctx.services, ctx.chat_key)
-            return render_result(result, ctx.i18n)
+            rendered = render_result(result, ctx.i18n)
+            await _settle_persist_broadcast(ctx, rendered)
+            return None
         if word in _SETTLE_CANCEL_WORDS:
             await clear_pending(ctx.services, ctx.chat_key)
             return ctx.i18n.t("commands.settle.cancelled")

@@ -36,6 +36,7 @@ FACET_MODULES: tuple[str, ...] = (
     "agent.scribe",
     "agent.scribe_coord",
     "agent.services",
+    "agent.settle",
     "agent.stage_director",
     "agent.tool_phase",
     "agent.undo",

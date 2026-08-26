@@ -554,6 +554,29 @@ class CharacterManager:
     async def set_active_character(self, user_id: str, chat_key: str, char_name: str) -> None:
         await self.store.state_set(chat_key, f"active_character.{user_id}", char_name)
 
+    async def list_character_sheets(self, user_id: str, chat_key: str) -> list[CharacterSheet]:
+        """Return this user's readable character sheets in the room.
+
+        Character documents are room-wide, so the owner check is mandatory before
+        deserializing anything for a player-facing view. Corrupt or malformed rows
+        are skipped here: this is a read-only roster, while `get_character` remains
+        strict for mutation paths.
+        """
+        sheets: list[CharacterSheet] = []
+        try:
+            for doc in await self.documents.list(chat_key, "sheet"):
+                if doc.corrupt or doc.data.get("owner") != user_id:
+                    continue
+                try:
+                    sheet = CharacterSheet.from_dict(doc.data)
+                except Exception:
+                    continue
+                if has_character(sheet):
+                    sheets.append(sheet)
+        except Exception:
+            pass
+        return sheets
+
     async def list_characters(self, user_id: str, chat_key: str) -> list[dict[str, Any]]:
         """`user_id`'s characters in this room — the sheet documents whose ``owner``
         is them (the old separate per-user list row is derived state, gone)."""
@@ -572,6 +595,7 @@ class CharacterManager:
         except Exception:
             pass
         return characters
+
 
     async def delete_character(
         self, user_id: str, chat_key: str, char_name: str, *, force: bool = False

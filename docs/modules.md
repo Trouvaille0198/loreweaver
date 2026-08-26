@@ -335,10 +335,27 @@ skill, and attach a meaningful consequence to failure.
 | Roll dice directly | `.r <expression>` |
 | Check a sheet skill | `.ra <skill>` |
 | Inspect / edit an allowed sheet value | `.st`, `.st <field>=<value>` |
-| Render a module panel as text | `.panel <id>` |
-| Read a spoiler-free recap | `.recap` |
-| Export the session report | `.report` |
-| List every command available at this table | `.help` |
+
+### When a scenario ends
+
+The engine never auto-ends a scenario — the final scene is a normal Keeper turn. After
+the curtain, the settlement ritual gives the characters their due:
+
+| Goal | Command |
+|---|---|
+| Read a character's durable memory | `.mem [character]` |
+| Propose the settlement (growth, memories, backstory) | `.settle` (keeper) |
+| Land the proposal — real dice, validated sheets | `.settle apply` (keeper) |
+| Discard the proposal | `.settle cancel` (keeper) |
+
+The Scribe keeps a per-character memory log as play proceeds (one player-grade line per
+turn per PC whose own experience the turn showed), so by the end every character has a
+past. `.settle` runs one model call over the room's process data — skill checks,
+chronicle, memories, sheets — and proposes, per character: which skills earned
+improvement checks (rolled with real dice on `.settle apply`, through the pack's
+`improvement_check`), small attribute changes (validated exactly like `.st`), the folded
+life-summary, and an updated backstory. The proposal changes nothing until the Keeper
+applies it; `.mem` is player-facing and shows what the table shared.
 
 ### Six practical habits
 

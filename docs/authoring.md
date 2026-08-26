@@ -175,13 +175,18 @@ keeps in range, stores and filters. Declare the things your ending depends on.
 ### `pregens[]` — a cast players can claim
 
 ```json
-{"name": "顾晚棠", "concept": "沪上小报记者，为'渔镇民俗'专栏而来",
- "notes": "侦查/图书馆见长,嘴快,潮汐学5"}
+{"name": "顾晚棠",
+ "background": "沪上小报记者，为「渔镇民俗」专栏而来。侦查、图书馆见长；嘴快；潮汐学 5"}
 ```
 
 Optionally `skills: {"侦查": 70}` to override the system defaults. Sheets are built downstream from
 the target system's defaults plus those overrides — deterministically, no model involved. Players
 run `.pc claim 顾晚棠`; claims are exclusive and a release restores the pristine sheet.
+
+`background` (legacy names `notes`/`concept`) is the single persona field — history, personality,
+manner of speech, a secret or flaw. It lands on the claimed sheet's background, so a player who
+picks the pregen can read and play it; the roster one-liner (`.pc list`, party modal) is derived
+from its first sentence, and the keeper's roster panel shows a truncated version during play.
 
 ### `hooks[]` — behaviour, not text
 

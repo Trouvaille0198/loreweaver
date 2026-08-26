@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from gateway.commands.router import CommandRouter
 
 
-Handler = Callable[["CommandCtx"], Awaitable[str]]
+Handler = Callable[["CommandCtx"], Awaitable[str | None]]
 
 
 @dataclass
@@ -54,6 +54,11 @@ class CommandCtx:
     # Set by `fail()`: this reply reports that nothing happened, so it is unicast to
     # the caller rather than broadcast to the room (F16).
     failed: bool = False
+    # A command may deliberately hand a normalized player request to the ordinary
+    # Keeper turn pipeline instead of producing a command reply. This is used by
+    # story-pacing commands such as `.hint`; keeping the hand-off here avoids a
+    # command handler starting a second, untracked model call.
+    turn_message: str | None = None
 
     @property
     def chat_key(self) -> str:
@@ -65,6 +70,10 @@ class CommandCtx:
         if hasattr(self.raw_ctx, "uid") and callable(self.raw_ctx.uid):
             return str(self.raw_ctx.uid())
         return str(getattr(self.raw_ctx, "user_id", ""))
+
+    def set_turn_message(self, message: str) -> None:
+        """Forward one validated command request into the normal Keeper turn."""
+        self.turn_message = str(message)
 
     def dice(self, kind: str, **fields: Any) -> None:
         """Attach one already-rolled public dice result to this command reply."""
@@ -84,10 +93,14 @@ class CommandCtx:
         return text
 
 
-@dataclass(frozen=True)
+@dataclass
 class CommandReply:
-    text: str
+    text: str | None
     events: tuple[Event, ...] = ()
     # F16: a reply that reports the command did NOT happen. `gateway.turn` unicasts
     # these to the invoking connection; success replies broadcast exactly as before.
     error: bool = False
+    # A non-command turn request produced by a command handler. The gateway consumes
+    # this and enters the regular Keeper pipeline; it is never rendered directly.
+    turn_message: str | None = None
+

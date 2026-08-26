@@ -20,6 +20,8 @@ What is left here is only what can be decided WITHOUT reading the fiction:
   targets and faces this turn actually produced.
 - **stale HUD** — the reply drew a scene/time heading but the turn never touched the
   deterministic scene/clock state the HUD reads.
+- **item forgery** — the reply claims that a character received, acquired, equipped or
+    used an item, but no item mutation tool successfully committed that change.
 
 Both dice checks exist because of one contract: **narration carries no roll numbers.**
 The dice frames already carry them (`gateway/render_chat.py`, `clients/tui`), so a number
@@ -65,11 +67,27 @@ logger = logging.getLogger(__name__)
 # `tests/architecture/test_turn_check_budget.py` pins both, same family as
 # `tests/agent/test_turn_call_budget.py`.
 MAX_ROUNDS_PER_CHECK = 3
-MAX_ROUNDS_PER_TURN = 5
+MAX_ROUNDS_PER_TURN = 6
 
 # Tools that resolve real dice outcomes. The engine names only its own generic ones;
 # every pack-declared subsystem tool joins at runtime.
 _BASE_DICE_TOOL_NAMES = frozenset({"skill_check", "roll_dice"})
+
+_ITEM_ACTION_RE = re.compile(
+    r"(?:\b(?:gave|grant(?:ed)?|receiv(?:e|es|ed)|obtain(?:ed)?|pick(?:ed)?\s+up|"
+    r"add(?:ed)?|hand(?:ed)?|equip(?:ped)?|use(?:d)?|consume(?:d)?|"
+    r"drop(?:ped)?|remove(?:d)?)\b|"
+    r"给(?:了|过)?|送给|交给|转交|获得|拿到|捡到|拾起|收下|装备|使用|消耗|"
+    r"丢弃|扔掉|移除|持有|拿着)",
+    re.IGNORECASE,
+)
+_ITEM_WORD_RE = re.compile(
+    r"(?:\b(?:item|gear|equipment|inventory|backpack|key|potion|amulet|weapon|"
+    r"shield|sword|map|ledger|token|torch|badge|ring|necklace|scroll)\b|"
+    r"物品|道具|装备|物品栏|背包|钥匙|药水|护符|武器|盾|剑|刀|地图|账本|信件|"
+    r"令牌|火把|徽章|戒指|项链|卷轴)",
+    re.IGNORECASE,
+)
 
 # Tools that update the deterministic HUD-backed scene/focus and game-clock state.
 _STATE_BOOKKEEPING_TOOL_NAMES = frozenset({"kp_note", "game_clock"})
@@ -274,6 +292,7 @@ class TurnState:
 
     reply: str
     tool_trace: list[dict]
+    item_names: frozenset[str] = frozenset()
 
 
 def _dice_forged(state: TurnState) -> bool:
@@ -298,6 +317,26 @@ def _stale_scene_hud(state: TurnState) -> bool:
     return bool(scene_title_lines(state.reply)) and not state_bookkeeping_done(state.tool_trace)
 
 
+def reply_claims_item_action(reply: str, item_names: frozenset[str] = frozenset()) -> bool:
+    """True when prose presents an item mutation as already completed."""
+    text = reply or ""
+    if not text or not _ITEM_ACTION_RE.search(text):
+        return False
+    lowered = text.casefold()
+    if any(name.strip().casefold() in lowered for name in item_names if name.strip()):
+        return True
+    return bool(_ITEM_WORD_RE.search(text))
+
+
+def _item_mutation_done(tool_trace: list[dict]) -> bool:
+    """True when an item tool emitted a successful state-change notice."""
+    return any(entry.get("item_lines") and not entry.get("suppressed") for entry in tool_trace)
+
+
+def _item_forged(state: TurnState) -> bool:
+    return reply_claims_item_action(state.reply, state.item_names) and not _item_mutation_done(state.tool_trace)
+
+
 # The whole condition vocabulary. Conditions are CODE (they are structural predicates over
 # the turn's real tool trace), so a pack chooses among them, reorders them, rewords their
 # instruction and shortens their cap — it never authors a new one. That boundary is what
@@ -305,6 +344,7 @@ def _stale_scene_hud(state: TurnState) -> bool:
 CONDITIONS: dict[str, Callable[[TurnState], bool]] = {
     "dice_forged": _dice_forged,
     "dice_contradicts": _dice_contradicts,
+    "item_forged": _item_forged,
     "stale_scene_hud": _stale_scene_hud,
 }
 
@@ -337,6 +377,7 @@ DEFAULT_TURN_CHECKS: tuple[TurnCheck, ...] = (
     TurnCheck(
         id="dice_contradicts", condition="dice_contradicts", instruction_key="loop.check.dice_contradicts", max_rounds=1
     ),
+    TurnCheck(id="item_forged", condition="item_forged", instruction_key="loop.check.item_forged", max_rounds=1),
     TurnCheck(id="stale_scene_hud", condition="stale_scene_hud", instruction_key="loop.check.stale_scene_hud", max_rounds=2),
 )
 

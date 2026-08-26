@@ -394,6 +394,7 @@ register_document_type(
 # `core.chronicle` (imported here at module level — that module depends on this
 # one only under TYPE_CHECKING, so there is no import cycle); registering them
 # in the same built-in table keeps `project()` the single chokepoint.
+from core import character_memory as _character_memory  # noqa: E402
 from core import chronicle as _chronicle  # noqa: E402
 from core import module_brief as _module_brief  # noqa: E402
 from core import table_habits as _table_habits  # noqa: E402
@@ -421,6 +422,15 @@ for _name, _project_fn, _validate_fn, _singleton in (
         _module_brief.BRIEF_DOC_TYPE,
         _module_brief.project_brief,
         _module_brief.validate_brief_write,
+        None,
+    ),
+    # Character memory: one durable experience log per PC, keyed by character name.
+    # Player-grade projection (what the table shared) — only the keeper margin stays
+    # keeper-side. Folded into a life-summary by the settlement lane (`agent.settle`).
+    (
+        _character_memory.CHARACTER_MEMORY_DOC_TYPE,
+        _character_memory.project_character_memory,
+        _character_memory.validate_character_memory_write,
         None,
     ),
 ):

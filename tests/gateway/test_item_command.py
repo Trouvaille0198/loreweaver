@@ -13,6 +13,7 @@ from agent.context import AgentCtx
 from agent.items import ensure_catalog, instances_for_owner
 from agent.services import build_services
 from core.character_manager import CharacterSheet
+from core.worldbook import LoreEntry
 from gateway.commands import CommandRouter
 from infra.config import Settings
 from infra.embeddings import FakeEmbeddings
@@ -73,6 +74,35 @@ async def test_item_inv_shows_own_character():
     reply = await router.dispatch(_player_ctx(chat_key), ".item inv")
 
     assert "Alice" in reply and "Torch" in reply
+
+
+async def test_item_add_reveals_linked_worldbook_evidence():
+    services = _services()
+    router = CommandRouter(services)
+    chat_key = "cli:dm:item-evidence"
+    await _make(services, chat_key, "p1", "Alice")
+    await services.worldbook.add(
+        chat_key,
+        LoreEntry(
+            id="",
+            title="Photograph evidence",
+            content="The photograph places the suspect at the pier.",
+            keys=["photograph-evidence"],
+            category="clue",
+        ),
+    )
+    await _seed(
+        services,
+        chat_key,
+        _tpl("Old Photograph", plot_role="evidence", reveals=["photograph-evidence"]),
+    )
+
+    await router.dispatch(_player_ctx(chat_key), ".item add Old Photograph")
+
+    from agent.clue_log import get_clue_log
+
+    clues = await get_clue_log(services.documents, chat_key)
+    assert [clue["title"] for clue in clues] == ["Photograph evidence"]
 
 
 async def test_item_inv_shows_any_member_table_level_read():
@@ -217,6 +247,70 @@ async def test_item_equip_marks_equipped_and_shows_in_inv():
     assert "main_hand" in reply
     inv = await router.dispatch(_player_ctx(chat_key), ".item inv")
     assert "equipped: main_hand" in inv
+
+
+async def test_item_archive_shelves_item_out_of_play():
+    """`.item archive` shelves an item: out of the active bag and the wire views,
+    its equip slot cleared so the bonus stops — but the record survives and
+    `--archived` lists it."""
+    from agent.items import render_held_items, render_item_views, set_equipped
+
+    services = _services()
+    router = CommandRouter(services)
+    chat_key = "cli:dm:items"
+    await _make(services, chat_key, "p1", "Alice")
+    await _seed(services, chat_key, _tpl("Bronze Mirror", kind="misc", bonus={"侦查": 5}))
+    await router.dispatch(_player_ctx(chat_key), ".item add Bronze Mirror")
+    doc = (await instances_for_owner(services.documents, chat_key, "Alice"))[0]
+    await set_equipped(services.documents, chat_key, doc.id, "accessory")
+
+    reply = await router.dispatch(_player_ctx(chat_key), ".item archive Bronze Mirror")
+
+    assert "Archived" in reply
+    instances = await instances_for_owner(services.documents, chat_key, "Alice")
+    assert instances[0].data.get("archived") is True
+    assert instances[0].data.get("equipped_slot") is None
+    # Out of the plain views and the active bag...
+    assert render_held_items(instances) == []
+    assert "Bronze Mirror" not in (await router.dispatch(_player_ctx(chat_key), ".item inv"))
+    assert render_item_views(instances) == [] or not any(
+        not view.get("archived") for view in render_item_views(instances)
+    )
+    # ...but the `--archived` listing shows it.
+    archived_inv = await router.dispatch(_player_ctx(chat_key), ".item inv --archived")
+    assert "Bronze Mirror" in archived_inv
+
+
+async def test_item_unarchive_restores_item_to_active_bag():
+    services = _services()
+    router = CommandRouter(services)
+    chat_key = "cli:dm:items"
+    await _make(services, chat_key, "p1", "Alice")
+    await _seed(services, chat_key, _tpl("Bronze Mirror"))
+    await router.dispatch(_player_ctx(chat_key), ".item add Bronze Mirror")
+    await router.dispatch(_player_ctx(chat_key), ".item archive Bronze Mirror")
+
+    reply = await router.dispatch(_player_ctx(chat_key), ".item unarchive Bronze Mirror")
+
+    assert "Restored" in reply
+    instances = await instances_for_owner(services.documents, chat_key, "Alice")
+    assert instances[0].data.get("archived") is False
+    assert "Bronze Mirror" in (await router.dispatch(_player_ctx(chat_key), ".item inv"))
+    assert "Bronze Mirror" not in (await router.dispatch(_player_ctx(chat_key), ".item inv --archived"))
+
+
+async def test_item_equip_rejects_archived_item():
+    services = _services()
+    router = CommandRouter(services)
+    chat_key = "cli:dm:items"
+    await _make(services, chat_key, "p1", "Alice")
+    await _seed(services, chat_key, _tpl("Sword", slot="main_hand"))
+    await router.dispatch(_player_ctx(chat_key), ".item add Sword")
+    await router.dispatch(_player_ctx(chat_key), ".item archive Sword")
+
+    reply = await router.dispatch(_player_ctx(chat_key), ".item equip Sword")
+
+    assert "archived" in reply and "unarchive" in reply
 
 
 async def test_item_unequip_drops_slot():

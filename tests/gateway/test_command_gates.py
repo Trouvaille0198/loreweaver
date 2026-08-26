@@ -775,7 +775,37 @@ async def test_var_set_and_add_write_native_modvars_with_validation():
     assert en.t("vars.commands.player_tag") in listing
 
 
-async def test_pc_roster_claim_is_player_open_but_foreign_release_is_keeper_only():
+async def test_pc_info_shows_source_memory_and_relationships():
+    """`.pc info <name>` — a character's dossier from the same player projections
+    the browser character page uses: module source, memory summary + recent lines,
+    and relationship tracks. Any player may read it; an empty dossier says so."""
+    from core.character_manager import CharacterSheet
+    from core.character_memory import CHARACTER_MEMORY_DOC_TYPE, append_entry, empty_memory, fold_entries
+    from core.pregen_roster import pregen_add
+    from core.relationships import RelationshipManager
+
+    services = _services()
+    router = CommandRouter(services)
+    chat_key = "tui:group:dossier"
+    sheet = CharacterSheet(name="林晚照", system="coc7")
+    await pregen_add(services.documents, chat_key, sheet, source="forge-module:snow-villa", blurb="记者")
+
+    memory = append_entry(empty_memory(), "在雪鬼山庄发现枯井里的铜镜。", turn=1)
+    memory = fold_entries(memory, "调查员最终揭开了镜中秘密。")
+    await services.documents.put(chat_key, CHARACTER_MEMORY_DOC_TYPE, "林晚照", memory)
+    manager = RelationshipManager(services.store)
+    await manager.adjust(chat_key, "林晚照", "阿雪", "affection", 15)
+
+    p1 = _player_ctx(chat_key)
+    reply = await router.dispatch(p1, ".pc info 林晚照")
+    assert reply is not None
+    assert "forge-module:snow-villa" in reply
+    assert "调查员最终揭开了镜中秘密" in reply
+    assert "在雪鬼山庄发现枯井里的铜镜" in reply
+    assert "阿雪" in reply and "+15" in reply
+
+    empty = await router.dispatch(p1, ".pc info 无名氏")
+    assert empty is not None and "dossier" in empty
     from core.character_manager import CharacterSheet
     from core.pregen_roster import pregen_add
 

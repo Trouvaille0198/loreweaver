@@ -341,22 +341,24 @@ async def set_media_enabled(store, chat_key: str, on: bool) -> None:
 
 
 # The room's AI reply-length mode (`ai_length` store flag): "normal" (the default —
-# no brevity directive is folded into the prompt) or "brief" (the style layer asks
-# the KP for short, to-the-point replies). A missing or unknown value always reads
-# as "normal" so a corrupt flag can never change a room's behavior.
-AI_LENGTH_VALUES = ("normal", "brief")
+# no brevity directive is folded into the prompt), "concise" (the style layer asks
+# the KP for replies on the short side — a few sentences per beat, trimmed padding),
+# or "brief" (short, to-the-point replies of one or two sentences). A missing or
+# unknown value always reads as "normal" so a corrupt flag can never change a room's
+# behavior.
+AI_LENGTH_VALUES = ("normal", "concise", "brief")
 
 
 async def get_ai_length(store, chat_key: str) -> str:
-    """This room's AI reply-length mode: ``"normal"`` (default) or ``"brief"``."""
+    """This room's AI reply-length mode: ``"normal"`` (default), ``"concise"`` or ``"brief"``."""
     value = await store.state_get(chat_key, "ai_length")
     return str(value or "") if str(value or "") in AI_LENGTH_VALUES else "normal"
 
 
 async def set_ai_length(store, chat_key: str, mode: str) -> None:
-    """Set the room's AI reply-length mode (``"normal"`` or ``"brief"``; anything
-    else is refused). Keeper-only at the call sites — it shapes every reply the
-    room's AI Keeper produces."""
+    """Set the room's AI reply-length mode (``"normal"``/``"concise"``/``"brief"``;
+    anything else is refused). Keeper-only at the call sites — it shapes every
+    reply the room's AI Keeper produces."""
     mode = str(mode or "").strip().casefold()
     if mode not in AI_LENGTH_VALUES:
         raise ValueError(f"ai_length must be one of {AI_LENGTH_VALUES}, got {mode!r}")

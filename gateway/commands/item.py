@@ -37,6 +37,8 @@ from agent.items import (
     parse_bonus_spec,
     render_held_items,
     render_item_views,
+    reveal_linked_clues,
+    set_archived,
     set_equipped,
     validate_improvised_bonus,
 )
@@ -192,8 +194,15 @@ class ItemCommands:
             return await self._item_equip(ctx, rest)
         if sub in ("unequip", "卸下", "卸裝"):
             return await self._item_unequip(ctx, rest)
+        if sub in ("archive", "归档", "封存"):
+            return await self._item_archive(ctx, rest)
+        if sub in ("unarchive", "restore", "恢复", "解封", "還原"):
+            return await self._item_unarchive(ctx, rest)
     async def _item_inv(self, ctx: CommandCtx, rest: str) -> str:
         target = rest.strip()
+        archived_only = target.casefold() in ("--archived", "已归档", "归档")
+        if archived_only:
+            target = ""
         try:
             if not target:
                 name = await _own_active_name(ctx)
@@ -206,6 +215,11 @@ class ItemCommands:
                 if not owner_uid:
                     return ctx.fail(ctx.i18n.t("commands.item.character_not_found", name=name))
             instances = await instances_for_owner(ctx.services.documents, ctx.chat_key, name)
+            # Archived items stay out of the active bag; `--archived` lists them.
+            if archived_only:
+                instances = [doc for doc in instances if doc.data.get("archived")]
+            else:
+                instances = [doc for doc in instances if not doc.data.get("archived")]
             # D5: `secret` items are keeper/owner-only — a player viewing another
             # member's bag sees none of them; the keeper and the owner see all.
             if not _is_keeper(ctx.raw_ctx) and owner_uid != ctx.user_id:
@@ -229,6 +243,7 @@ class ItemCommands:
             if not item_active(active, template):
                 return ctx.fail(ctx.i18n.t("commands.item.module_mismatch", item=item))
             await grant_instance(ctx.services.documents, ctx.chat_key, name, template, qty)
+            await reveal_linked_clues(ctx.services, ctx.raw_ctx, template)
             await _refresh_bonuses(ctx, name, ctx.user_id)
             await _publish(ctx)
             if not template.get("secret"):
@@ -282,6 +297,7 @@ class ItemCommands:
                 if not item_active(active, template):
                     return ctx.fail(ctx.i18n.t("commands.item.module_mismatch", item=item))
                 await grant_instance(ctx.services.documents, ctx.chat_key, target, template, qty)
+                await reveal_linked_clues(ctx.services, ctx.raw_ctx, template)
                 await _refresh_bonuses(ctx, target, owner)
                 await _publish(ctx)
                 if not template.get("secret"):
@@ -331,9 +347,12 @@ class ItemCommands:
         if name is None:
             return ctx.fail(ctx.i18n.t("commands.item.character_not_found", name="?"))
         try:
-            found, remaining = await consume_instance(ctx.services.documents, ctx.chat_key, name, item, qty)
-            if not found:
+            doc = await find_instance(ctx.services.documents, ctx.chat_key, name, item)
+            if doc is None:
                 return ctx.fail(ctx.i18n.t("commands.item.not_found", name=name, item=item))
+            if doc.data.get("archived"):
+                return ctx.fail(ctx.i18n.t("commands.item.archived_first", item=item))
+            found, remaining = await consume_instance(ctx.services.documents, ctx.chat_key, name, item, qty)
             await _refresh_bonuses(ctx, name, ctx.user_id)
             await _publish(ctx)
             if remaining is None:
@@ -359,6 +378,8 @@ class ItemCommands:
             doc = await find_instance(ctx.services.documents, ctx.chat_key, name, item)
             if doc is None:
                 return ctx.fail(ctx.i18n.t("commands.item.not_found", name=name, item=item))
+            if doc.data.get("archived"):
+                return ctx.fail(ctx.i18n.t("commands.item.archived_first", item=item))
             effective_slot = slot or str(doc.data.get("slot") or "equipped")
             await set_equipped(ctx.services.documents, ctx.chat_key, doc.id, effective_slot)
             await _refresh_bonuses(ctx, name, ctx.user_id)
@@ -382,5 +403,50 @@ class ItemCommands:
             await _refresh_bonuses(ctx, name, ctx.user_id)
             await _publish(ctx)
             return ctx.i18n.t("commands.item.unequipped", item=item, name=name)
+        except CharacterDataError:
+            return ctx.fail(ctx.i18n.t("kp_tools.character.data_error"))
+
+    async def _item_archive(self, ctx: CommandCtx, rest: str) -> str:
+        """`.item archive <name>` — shelf an item on your active character: out of
+        the active bag, the wire views and the bonus aggregation, so it stops
+        mattering in play and does not carry into another scenario. The record
+        survives — `.item unarchive <name>` brings it back."""
+        item = rest.strip()
+        if not item:
+            return ctx.fail(ctx.i18n.t("commands.item.usage"))
+        name = await _own_active_name(ctx)
+        if name is None:
+            return ctx.fail(ctx.i18n.t("commands.item.character_not_found", name="?"))
+        try:
+            doc = await find_instance(ctx.services.documents, ctx.chat_key, name, item)
+            if doc is None:
+                return ctx.fail(ctx.i18n.t("commands.item.not_found", name=name, item=item))
+            if doc.data.get("archived"):
+                return ctx.i18n.t("commands.item.already_archived", item=item, name=name)
+            await set_archived(ctx.services.documents, ctx.chat_key, doc.id, True)
+            await _refresh_bonuses(ctx, name, ctx.user_id)
+            await _publish(ctx)
+            return ctx.i18n.t("commands.item.archived", item=item, name=name)
+        except CharacterDataError:
+            return ctx.fail(ctx.i18n.t("kp_tools.character.data_error"))
+
+    async def _item_unarchive(self, ctx: CommandCtx, rest: str) -> str:
+        """`.item unarchive <name>` — bring a shelved item back into the active bag."""
+        item = rest.strip()
+        if not item:
+            return ctx.fail(ctx.i18n.t("commands.item.usage"))
+        name = await _own_active_name(ctx)
+        if name is None:
+            return ctx.fail(ctx.i18n.t("commands.item.character_not_found", name="?"))
+        try:
+            doc = await find_instance(ctx.services.documents, ctx.chat_key, name, item)
+            if doc is None:
+                return ctx.fail(ctx.i18n.t("commands.item.not_found", name=name, item=item))
+            if not doc.data.get("archived"):
+                return ctx.i18n.t("commands.item.not_archived", item=item, name=name)
+            await set_archived(ctx.services.documents, ctx.chat_key, doc.id, False)
+            await _refresh_bonuses(ctx, name, ctx.user_id)
+            await _publish(ctx)
+            return ctx.i18n.t("commands.item.unarchived", item=item, name=name)
         except CharacterDataError:
             return ctx.fail(ctx.i18n.t("kp_tools.character.data_error"))

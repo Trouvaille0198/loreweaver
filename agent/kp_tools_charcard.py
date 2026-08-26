@@ -31,7 +31,7 @@ from agent import npc as npc_records
 from agent.char_from_persona import build_sheet_from_persona, infer_pronoun_note
 from agent.context import AgentCtx
 from agent.hook_runtime import install_room_hooks
-from agent.items import ensure_catalog
+from agent.items import ensure_catalog, normalize_item_links
 from agent.kp_tools_npc import keeper_npc_refusal, player_name_refusal
 from agent.module_lifecycle import (
     ModuleImportTransaction,
@@ -652,9 +652,12 @@ class CharcardTools:
                     # pregen's own name during generation/refresh — the roster keys on the
                     # character's name, so pin it back after any pack defaults applied.
                     sheet.name = spec["name"]
-                    occupation = str(spec.get("occupation") or "").strip()
-                    if occupation and "occupation" in pack.sheet_spec.fields:
-                        sheet.occupation = occupation[:60]
+                    # The module's persona paragraph (history/personality/voice/secret)
+                    # lands on the sheet itself, so a player who claims the pregen can
+                    # read and play it — and the keeper's roster panel can cite it.
+                    persona = str(spec.get("notes") or "").strip()
+                    if persona:
+                        sheet.background = persona
                     for skill_name, value in dict(spec.get("skills", {})).items():
                         try:
                             set_sheet_value(sheet, pack, skill_name, int(value))
@@ -780,9 +783,23 @@ class CharcardTools:
             items_line = ""
             if lorecard is not None and lorecard.items:
                 module_tag = str(module_identity.get("pack_id") or "") or source_id
+                clue_ref_map: dict[str, str] = {}
+                for raw_entry in card.character_book:
+                    if not isinstance(raw_entry, dict) or str(raw_entry.get("category") or "").casefold() != "clue":
+                        continue
+                    stable_id = str(raw_entry.get("id") or "").strip()
+                    title = str(raw_entry.get("comment") or raw_entry.get("title") or "").strip()
+                    keys = raw_entry.get("keys")
+                    first_key = next(
+                        (str(key).strip() for key in keys if str(key).strip()),
+                        "",
+                    ) if isinstance(keys, list) else ""
+                    target = title or first_key
+                    if stable_id and target:
+                        clue_ref_map[stable_id] = target
                 tagged: list[dict[str, Any]] = []
                 for tpl in lorecard.items:
-                    entry = dict(tpl)
+                    entry = normalize_item_links(dict(tpl), clue_ref_map=clue_ref_map)
                     if str(entry.get("scope") or "") != "universal":
                         entry["module_id"] = module_tag
                     tagged.append(entry)
