@@ -13,6 +13,7 @@ from agent.context import AgentCtx
 from agent.undo import available_turns, undo_depth
 from agent.undo import restore as restore_room
 from gateway.commands.types import CommandCtx
+from gateway.hub import Event
 from gateway.ops import (
     PrivilegeLevel,
     get_ai_length,
@@ -281,6 +282,73 @@ class RoomsCommands:
                 return ctx.i18n.t("commands.botlist.empty")
             return ctx.i18n.t("commands.botlist.show", ids=", ".join(ids))
         return ctx.i18n.t("commands.botlist.usage")
+
+    async def cmd_poke(self, ctx: CommandCtx) -> str | None:
+        """`.poke <character>` — poke a party member: the room sees "<you> poked <name>",
+        and the target player (when the character is claimed) gets a browser nudge. Any
+        member may poke; the event broadcasts and the handler returns no separate reply."""
+        target = ctx.args.strip()
+        if not target:
+            return ctx.i18n.t("commands.poke.usage")
+        roster = await ctx.services.characters.get_party_roster(ctx.chat_key)
+        matches = [
+            member
+            for member in roster
+            if str(member.get("name") or "").strip().casefold() == target.casefold()
+        ]
+        if not matches:
+            return ctx.i18n.t("commands.poke.unknown", name=target)
+        target_name = str(matches[0].get("name") or "").strip()
+
+        # The poking player's own character name, falling back to the member id.
+        actor_name = ctx.user_id
+        try:
+            sheet = await ctx.services.characters.get_character(ctx.user_id, ctx.chat_key)
+            if sheet is not None and str(getattr(sheet, "name", "") or "").strip():
+                actor_name = str(sheet.name).strip()
+        except Exception:  # noqa: BLE001
+            pass
+
+        # Who the target belongs to, for the browser nudge: pregen claims carry the
+        # player's display name; every sheet records its owner uid. Either may be
+        # empty — an AI companion or an unclaimed card is still pokeable, it just
+        # nudges nobody.
+        target_name_player = ""
+        try:
+            for pregen in await ctx.services.documents.list(ctx.chat_key, "pregen"):
+                if str(pregen.data.get("name") or "").strip().casefold() == target_name.casefold():
+                    target_name_player = str(pregen.data.get("claimed_by") or "").strip()
+                    break
+        except Exception:  # noqa: BLE001
+            pass
+        target_user = ""
+        try:
+            doc = await ctx.services.documents.get(ctx.chat_key, "sheet", target_name)
+            if doc is not None:
+                target_user = str(doc.data.get("owner") or "").strip()
+        except Exception:  # noqa: BLE001
+            pass
+
+        event = Event.system(
+            "info",
+            ctx.i18n.t(
+                "commands.poke.done"
+                if target_name.casefold() != actor_name.casefold()
+                else "commands.poke.self",
+                actor=actor_name,
+                target=target_name,
+            ),
+        )
+        event.data["poke"] = {
+            "actor": actor_name,
+            "actor_user": ctx.user_id,
+            "target": target_name,
+            "target_name": target_name_player,
+            "target_user": target_user,
+        }
+        if ctx.router.hub is not None:
+            await ctx.router.hub.publish(ctx.chat_key, event)
+        return None
 
     async def cmd_undo(self, ctx: CommandCtx) -> str:
         """`.undo [n]` — rewind the room by `n` turns (default 1). Keeper only.

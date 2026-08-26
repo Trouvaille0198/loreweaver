@@ -264,12 +264,12 @@ def render_frame(event: Event) -> dict[str, Any] | None:
         return dict(event.data)
     if event.kind == "presence":
         return {"type": "presence", **event.data}
-    if event.kind == "system":
-        frame = {"type": "system", "level": event.data.get("level", ""), "text": event.text}
-        # `spinner: false` is an explicit stop signal (retire the pending line);
-        # absent = no spinner semantics at all.
-        if "spinner" in event.data:
-            frame["spinner"] = bool(event.data.get("spinner"))
+        # `.poke` nudges: the target client matches `poke.target_user`/`poke.target_name`
+        # against its own identity and shows the "poked you" notice (additive, ignored by
+        # clients that predate it).
+        if "poke" in event.data:
+            frame["poke"] = event.data["poke"]
+        return frame
         return frame
     if event.kind == "turn_status":
         return {"type": "turn_status", **event.data}
