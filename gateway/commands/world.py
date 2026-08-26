@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +34,10 @@ _CHRONICLE_NOTE_WORDS = {"note", "margin", "批注", "边注", "邊注"}
 
 # `.report` detailed-log toggle words (EN + a couple of CN synonyms) -- session report export ("团报").
 _REPORT_DETAILED_WORDS = {"detailed", "full", "log", "详细", "詳細", "完整", "全部"}
+# `.settle` subcommand vocabularies (EN + a couple of CN synonyms) -- the post-campaign
+# settlement ritual: generate a proposal, apply it, or discard it.
+_SETTLE_APPLY_WORDS = {"apply", "confirm", "land", "确认", "確認", "应用", "應用"}
+_SETTLE_CANCEL_WORDS = {"cancel", "discard", "drop", "取消", "丢弃", "丟棄"}
 
 
 def _first_attachment_name(ctx: Any) -> str:
@@ -306,6 +312,39 @@ class WorldCommands:
             lines.append(ctx.i18n.t("vars.commands.more", count=len(leaves) - max_lines))
         return "\n".join(lines)
 
+    async def cmd_share(self, ctx: CommandCtx) -> str | None:
+        """`.share` — publish a player-facing share link for the room's current module:
+        the room sees a system line with the link, and `state.module_share` carries the
+        public face (name + description) so ANY member opening the link sees the module's
+        front door without a keeper-only admin round trip. Keeper-only; requires an active
+        module (`module_brief`)."""
+        if not _is_keeper(ctx.raw_ctx):
+            return ctx.fail(ctx.i18n.t("rooms.denied"))
+        from core.module_brief import BRIEF_DOC_TYPE
+
+        briefs = [
+            doc
+            for doc in await ctx.services.documents.list(ctx.chat_key, BRIEF_DOC_TYPE)
+            if str(doc.data.get("name") or "").strip()
+        ]
+        if not briefs:
+            return ctx.i18n.t("commands.share.no_module")
+        name = str(briefs[0].data.get("name") or "").strip()
+        description = str(briefs[0].data.get("description") or "").strip()
+        await ctx.services.store.state_set(
+            ctx.chat_key,
+            "module_share",
+            json.dumps({"name": name, "description": description}, ensure_ascii=False),
+        )
+        slug = urllib.parse.quote(name, safe="")
+        url = f"/#/module-share/{slug}"
+        if ctx.router.hub is not None:
+            await ctx.router.hub.publish(
+                ctx.chat_key,
+                Event.system("info", ctx.i18n.t("commands.share.done", name=name, url=url)),
+            )
+        return None
+
     async def cmd_module(self, ctx: CommandCtx) -> str:
         """`.module <module file>` — import a module document and run module analysis.
 
@@ -481,6 +520,48 @@ class WorldCommands:
                 )
 
         return report
+
+    async def cmd_settle(self, ctx: CommandCtx) -> str:
+        """`.settle [apply|cancel]` — the post-campaign settlement ritual (keeper-only).
+
+        Bare `.settle` runs the settlement lane: one model call over the room's process data
+        (skill checks, campaign chronicle, character memories, sheets) that proposes, per
+        character, which skills earned improvement checks, small attribute changes, the folded
+        life-summary, and an updated backstory. The proposal is stored as pending and rendered
+        here for review — nothing is changed yet. `.settle apply` lands the pending proposal
+        through the engine's own deterministic paths (improvement-check dice, character_rules
+        validation, memory fold). `.settle cancel` discards it."""
+        from agent.settle import (
+            apply_settlement,
+            build_settlement,
+            clear_pending,
+            load_pending,
+            render_proposal,
+            render_result,
+            save_pending,
+        )
+
+        if not _is_keeper(ctx.raw_ctx):
+            return ctx.fail(ctx.i18n.t("commands.settle.denied"))
+        args = ctx.args.strip()
+        if not args:
+            settlement = await build_settlement(ctx.services, ctx.chat_key)
+            if settlement is None:
+                return ctx.fail(ctx.i18n.t("commands.settle.no_data"))
+            await save_pending(ctx.services, ctx.chat_key, settlement)
+            return f"{render_proposal(settlement, ctx.i18n)}\n{ctx.i18n.t('commands.settle.applied_hint')}"
+        word = args.casefold()
+        if word in _SETTLE_APPLY_WORDS:
+            pending = await load_pending(ctx.services, ctx.chat_key)
+            if pending is None:
+                return ctx.fail(ctx.i18n.t("commands.settle.nothing_pending"))
+            result = await apply_settlement(ctx.services, ctx.chat_key, pending)
+            await clear_pending(ctx.services, ctx.chat_key)
+            return render_result(result, ctx.i18n)
+        if word in _SETTLE_CANCEL_WORDS:
+            await clear_pending(ctx.services, ctx.chat_key)
+            return ctx.i18n.t("commands.settle.cancelled")
+        return ctx.fail(ctx.i18n.t("commands.settle.usage"))
 
     async def cmd_report(self, ctx: CommandCtx) -> str:
         """`.report [detailed|full]` — export the session report ("团报") for players to keep and review.

@@ -26,6 +26,7 @@ from gateway.commands.item import ItemCommands
 from gateway.commands.llm import LlmCommands
 from gateway.commands.media import MediaCommands
 from gateway.commands.panels import PanelsCommands
+from gateway.commands.plot import PlotCommands
 from gateway.commands.rooms import RoomsCommands, _is_keeper, _privilege_level
 from gateway.commands.rules import RulesCommands
 from gateway.commands.sheet import SheetCommands
@@ -67,6 +68,7 @@ class CommandRouter(
     CastCommands,
     WorldCommands,
     PanelsCommands,
+    PlotCommands,
     MediaCommands,
     LlmCommands,
 ):
@@ -217,7 +219,12 @@ class CommandRouter(
             # room's language, NAMING what it needs.
             logger.warning("resolution failed during command %s: %s", spec.canonical, exc)
             return CommandReply(_resolution_notice(get_i18n(locale), exc), error=True)
-        return CommandReply(rendered, tuple(command_ctx.events), error=command_ctx.failed)
+        return CommandReply(
+            rendered,
+            tuple(command_ctx.events),
+            error=command_ctx.failed,
+            turn_message=command_ctx.turn_message,
+        )
 
     def slash_definitions(self, locale: str = "en") -> list[dict]:
         i18n = get_i18n(locale)
@@ -297,6 +304,23 @@ class CommandRouter(
 
             CommandSpec("sheet", self.cmd_sheet, ["sheet", "st"], ["st"], {"name": "sheet"}, "commands.help.sheet"),
             CommandSpec(
+                "characters",
+                self.cmd_characters,
+                ["characters", "chars"],
+                ["角色列表", "我的角色", "角色清单"],
+                None,
+                "commands.help.characters",
+            ),
+
+            CommandSpec(
+                "mem",
+                self.cmd_mem,
+                ["mem", "memory"],
+                ["mem", "记忆", "角色记忆"],
+                {"name": "mem"},
+                "commands.help.mem",
+            ),
+            CommandSpec(
                 "item",
                 self.cmd_item,
                 ["item", "inv"],
@@ -311,6 +335,14 @@ class CommandRouter(
                 ["clue", "线索"],
                 None,
                 "commands.help.clue",
+            ),
+            CommandSpec(
+                "hint",
+                self.cmd_hint,
+                ["hint", "nudge"],
+                ["hint", "提示", "卡住", "推进"],
+                {"name": "hint"},
+                "commands.help.hint",
             ),
             CommandSpec(
                 "npc",
@@ -489,6 +521,20 @@ class CommandRouter(
                 "commands.help.report",
             ),
             CommandSpec(
+                "settle",
+                self.cmd_settle,
+                ["settle"],
+                ["settle", "结算", "結算"],
+                {"name": "settle"},
+                "commands.help.settle",
+                # Settlement writes character growth: an operational, keeper-only control,
+                # same tier as `.module`/`.room`.
+                required_level=int(PrivilegeLevel.GROUP_ADMIN),
+                # The proposal carries keeper judgments (`keeper_note`); it is feedback
+                # for the invoking keeper, never table content — same posture as `.chronicle`.
+                private_reply=True,
+            ),
+            CommandSpec(
                 "recap",
                 self.cmd_recap,
                 ["recap"],
@@ -594,6 +640,15 @@ class CommandRouter(
                 # initializer diagnostics. Keep both progress and the final reply
                 # on the invoking Keeper's connection.
                 private_reply=True,
+            ),
+            CommandSpec(
+                "share",
+                self.cmd_share,
+                ["share"],
+                ["share", "分享", "分享模組"],
+                None,
+                "commands.help.share",
+                keeper_help=True,
             ),
             CommandSpec(
                 "forge",
