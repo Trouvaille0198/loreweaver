@@ -614,7 +614,7 @@ Rules:
 - Call ONLY when the item is genuinely in that character's hands in the story - never pre-award, never for narration alone.
 - The item MUST be in the room's catalog; you cannot invent a template.
 - A character who already holds this item cannot be granted it again (non-consumables are unique per holder; the tool refuses duplicates). Handovers use transfer_item, losses use remove_item - never re-grant an item that is simply moving around.
-- Narrate that the character now holds it after granting."""
+- Narrate that the character now holds it AFTER granting, and only if this tool succeeded."""
         i18n = self.services.i18n.with_locale(ctx.locale)
         try:
             if qty is None or int(qty) < 1:
@@ -771,7 +771,11 @@ Rules:
 
     @tool
     async def transfer_item(self, ctx: AgentCtx, source: str, target: str, item: str, qty: int = 1) -> str:
-        """Move a real item between two characters (handed over, sold, given away). Args: source, target, item (name), qty (default 1). Source must hold it; both must exist; narrate the handover."""
+        """Move a real item between two characters (handed over, sold, given away). Args: source, target, item (name), qty (default 1). Source must hold it; both must exist; narrate the handover.
+        IMPORTANT: transfer ONLY when the characters genuinely do it in play — a handover,
+        a payment the player described. NEVER invent a transfer the player didn't ask for
+        (no surprise "X hands Y coins to Z"), and never narrate the handover before this
+        tool succeeds."""
         i18n = self.services.i18n.with_locale(ctx.locale)
         try:
             if qty is None or int(qty) < 1:
@@ -857,7 +861,10 @@ Rules:
             strings that carry the count ("金币 ×300", "金币×300"); the quantity lives
             in the instance's quantity field, never in the name.
         Use when the player says an item's description/effect/status is wrong or asks to
-        combine duplicate/equivalent entries; narrate the result."""
+        combine duplicate/equivalent entries; narrate the result.
+        IMPORTANT: never announce the outcome ("已合并", "现在是500枚") BEFORE calling
+        this tool and seeing it succeed — narrate only what the engine actually did,
+        with the quantity it actually returned."""
         i18n = self.services.i18n.with_locale(ctx.locale)
         try:
             character = (character or "").strip()
