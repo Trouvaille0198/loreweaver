@@ -118,8 +118,8 @@ class ModuleAdminService:
             return await self._detail(caller_room, root, str(payload.get("name") or ""))
         if kind == "module_upload":
             return await self._upload(root, payload)
-        if kind == "module_update":
-            return await self._update(caller_room, root, payload)
+        if kind == "module_delete":
+            return await self._delete(caller_room, root, payload)
         if kind == "module_bundle_upload":
             return await self._bundle_upload(root, payload)
         if kind == "module_import":
