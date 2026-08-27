@@ -466,5 +466,10 @@
   "commands.trace.off_done": "✅ 已关闭工具调用追踪",
   "commands.trace.denied": "只有守秘人可以开关工具调用追踪。",
   "commands.trace.usage": "用法：.trace [on [路径] | off]——裸 .trace 查看状态；on/off 开关 JSONL 探针。",
-  "commands.help.trace": "工具调用追踪：.trace [on [路径] | off]——记录 AI 调用的每个工具与参数（守秘人）。"
+  "commands.help.trace": "工具调用追踪：.trace [on [路径] | off]——记录 AI 调用的每个工具与参数（守秘人）。",
+  "commands.sheet.retired": "已退出本剧本队伍（角色卡保留，可在角色页随时加入）：{name}",
+  "commands.sheet.retire_failed": "退队失败：{name}",
+  "commands.sheet.joined": "已加入本剧本队伍：{name}",
+  "commands.sheet.join_failed": "加入失败：{name}",
+  "commands.sheet.join_usage": "用法：.st join <角色名> — 让该角色加入本剧本队伍"
 }

@@ -466,5 +466,10 @@
   "commands.trace.off_done": "✅ Tool trace disabled",
   "commands.trace.denied": "Only the keeper may toggle the tool trace.",
   "commands.trace.usage": "Usage: .trace [on [path] | off] — bare .trace reports; on/off toggles the JSONL probe.",
-  "commands.help.trace": "Tool-call trace: .trace [on [path] | off] — which tools the AI called, with what arguments (keeper)."
+  "commands.help.trace": "Tool-call trace: .trace [on [path] | off] — which tools the AI called, with what arguments (keeper).",
+  "commands.sheet.retired": "Retired from this scenario's party (sheet kept — re-join anytime): {name}",
+  "commands.sheet.retire_failed": "Retire failed: {name}",
+  "commands.sheet.joined": "Joined this scenario's party: {name}",
+  "commands.sheet.join_failed": "Join failed: {name}",
+  "commands.sheet.join_usage": "Usage: .st join <name> — bring that character into this scenario's party"
 }

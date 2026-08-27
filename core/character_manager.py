@@ -272,6 +272,12 @@ class CharacterSheet:
         self.background = ""
         self.notes = ""
         self.avatar: dict[str, Any] | None = None
+        # Retired = stepped out of this scenario's party (kept off the party
+        # roster and out of the active slot) while the SHEET survives, so the
+        # owner can re-join the table from the character library at any time.
+        # The flag rides the sheet: a retired card stays retired across saves
+        # and module swaps until the owner explicitly joins again.
+        self.retired = False
 
         pack = _pack_for(self)
         spec = None if pack is None else pack.sheet_spec
@@ -318,6 +324,7 @@ class CharacterSheet:
             "background": getattr(self, "background", ""),
             "notes": getattr(self, "notes", ""),
             "avatar": getattr(self, "avatar", None),
+            "retired": bool(getattr(self, "retired", False)),
             "fields": self.field_values(),
             "created_time": self.created_time,
             "last_updated": self.last_updated,
@@ -356,6 +363,7 @@ class CharacterSheet:
             character.equipped_bonuses = {str(k): int(v) for k, v in equipped_bonuses.items()}
         character.background = data.get("background", "")
         character.notes = data.get("notes", "")
+        character.retired = bool(data.get("retired", False))
         avatar = data.get("avatar")
         character.avatar = avatar if isinstance(avatar, dict) else None
         fields = data.get("fields")
@@ -522,8 +530,9 @@ class CharacterManager:
             chat_key, "sheet", character.name, dict(character.to_dict(), owner=user_id)
         )
 
-        await self.set_active_character(user_id, chat_key, character.name)
-        await self.sync_party_roster(chat_key, character)
+        if not getattr(character, "retired", False):
+            await self.set_active_character(user_id, chat_key, character.name)
+            await self.sync_party_roster(chat_key, character)
 
     async def sync_party_roster(
         self, chat_key: str, character: CharacterSheet, status_effects: list | None = None
@@ -535,8 +544,12 @@ class CharacterManager:
         declared meta fields — no engine knowledge of any system's vitals.
         When `status_effects` is omitted (`None`), the character's previously
         recorded `status_effects` in the roster are preserved rather than
-        cleared.
+        cleared. A retired character never gets (re)added — retirement is a
+        roster-exclusion decision, and a stale row must not resurrect through
+        an unrelated sync.
         """
+        if getattr(character, "retired", False):
+            return
         try:
             roster_data = await self.store.state_get(chat_key, "party_roster")
             roster = json.loads(roster_data) if roster_data else {}
@@ -655,6 +668,51 @@ class CharacterManager:
             if await self.store.state_get(chat_key, f"active_character.{user_id}") == char_name:
                 await self.store.state_delete(chat_key, f"active_character.{user_id}")
             await self.remove_from_party_roster(chat_key, char_name)
+            return True
+        except Exception:
+            return False
+
+    async def retire_character(self, user_id: str, chat_key: str, char_name: str) -> bool:
+        """Step `char_name` OUT of this scenario's party: removed from the party
+        roster and the active slot, while the sheet survives so the owner can
+        re-join from the character library. Returns whether it happened; a sheet
+        owned by another uid is refused (`False`), like `delete_character`."""
+        owner = await self._sheet_owner(chat_key, char_name)
+        if owner and owner != user_id:
+            return False
+        try:
+            doc = await self.documents.get(chat_key, "sheet", char_name)
+            if doc is None:
+                return False
+            character = await self.get_character(user_id, chat_key, char_name)
+            if character.name != char_name:
+                return False
+            character.retired = True
+            await self.save_character(user_id, chat_key, character)
+            active = await self.store.state_get(chat_key, f"active_character.{user_id}")
+            if active == char_name:
+                await self.store.state_delete(chat_key, f"active_character.{user_id}")
+            await self.remove_from_party_roster(chat_key, char_name)
+            return True
+        except Exception:
+            return False
+
+    async def join_character(self, user_id: str, chat_key: str, char_name: str) -> bool:
+        """Bring a retired (or fresh) sheet `char_name` back into the party:
+        clears the retired flag, makes it the active character and syncs it into
+        the party roster. Refuses a sheet owned by another uid (`False`)."""
+        owner = await self._sheet_owner(chat_key, char_name)
+        if owner and owner != user_id:
+            return False
+        try:
+            doc = await self.documents.get(chat_key, "sheet", char_name)
+            if doc is None:
+                return False
+            character = await self.get_character(user_id, chat_key, char_name)
+            if character.name != char_name:
+                return False
+            character.retired = False
+            await self.save_character(user_id, chat_key, character)
             return True
         except Exception:
             return False

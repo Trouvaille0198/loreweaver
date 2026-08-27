@@ -47,7 +47,7 @@ from agent.forge import (
 from agent.services import Services
 from core.pack import DEV_PACK_HOMES, MANIFEST_NAME, parse_manifest_text
 from core.yaml_safety import safe_load_no_aliases
-from gateway.imagegen import allow_imagegen_request
+from gateway.imagegen import allow_imagegen_request, refund_imagegen_request
 from gateway.panels import installed_pack_homes
 from infra.file_permissions import atomic_write_private
 from infra.media_store import ALLOWED_IMAGE_MIMES, MediaStore
@@ -272,6 +272,26 @@ def _update_job(home: Path, job_id: str, **fields: Any) -> None:
             job.update(fields)
             break
     save_jobs(home, data)
+
+
+_CAPACITY_POLL_SECONDS = 20.0
+_CAPACITY_WAIT_CAP_SECONDS = 3600.0
+_FAILURE_BACKOFF_SECONDS = 30.0
+
+
+async def _wait_for_imagegen_capacity(services: Any, room: str) -> bool:
+    """Wait until the room's hourly image budget refills one token, or the cap
+    window elapses. Returns True only once a token has been GRANTED (the caller
+    must render without asking `allow_imagegen_request` again — it has already
+    consumed the token). Leaving the queue pending on timeout keeps the retry
+    button meaningful instead of force-failing every job."""
+    waited = 0.0
+    while waited < _CAPACITY_WAIT_CAP_SECONDS:
+        if allow_imagegen_request(services, room):
+            return True
+        await asyncio.sleep(_CAPACITY_POLL_SECONDS)
+        waited += _CAPACITY_POLL_SECONDS
+    return False
 
 
 def _fail_all_pending(home: Path, error: str) -> None:
@@ -598,11 +618,10 @@ async def run_pack_media_jobs(services: Services, pack_id: str) -> dict[str, Any
         if job is None:
             break
         job_id = str(job.get("id") or "")
-        if not allow_imagegen_request(services, room):
-            # The room's hourly image cap is exhausted: fail the whole remaining queue with a
-            # retryable reason (same stop-and-report stance as the old synchronous pass), so
-            # every pending plate surfaces on the detail page with its retry button.
-            _fail_all_pending(home, "rate_limited")
+        if not await _wait_for_imagegen_capacity(services, room):
+            # The room's hourly image budget refilled nothing inside the cap window —
+            # leave the queue pending instead of force-failing it: a retry must drain
+            # ALL jobs at the provider's refill pace, not one per manual click.
             break
         _update_job(home, job_id, status="generating")
         try:
@@ -617,7 +636,12 @@ async def run_pack_media_jobs(services: Services, pack_id: str) -> dict[str, Any
             )
         except Exception as exc:  # noqa: BLE001 — provider down after bounded retries
             logger.warning("[module-media] imagegen failed for %s (%s): %s", job.get("id"), job.get("subject"), exc)
+            # A failed render is NOT a quota consumption: give the room's hourly
+            # budget back, then pace the next attempt so a rate-limited provider
+            # (which failed inside the retry lane) is not hammered again at once.
+            refund_imagegen_request(services, room)
             _update_job(home, job_id, status="failed", error=("job_timeout" if isinstance(exc, TimeoutError) else str(exc)[:300]))
+            await asyncio.sleep(_FAILURE_BACKOFF_SECONDS)
             continue
         stem = str(job.get("asset_stem") or f"module-{pack_id}-{job.get('kind')}")
         asset_name = f"{stem}{_IMAGE_MIME_EXTS.get(mime, '.png')}"

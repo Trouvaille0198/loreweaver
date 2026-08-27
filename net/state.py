@@ -275,6 +275,10 @@ async def _character_payload(
         "attributes": attrs,
         "skills": projected_skills(sheet, pack) if pack is not None else _wire_skills(sheet),
         "status_effects": status_effects,
+        # Retired = out of this scenario's party, sheet kept. The character
+        # library renders a "join" affordance on retired cards and a "retire"
+        # one on active cards; the party roster excludes them structurally.
+        "retired": bool(getattr(sheet, "retired", False)),
     }
     # Character prose and the pack-declared secondary surfaces are private to
     # the owning player's sheet. They are additive wire fields: old clients

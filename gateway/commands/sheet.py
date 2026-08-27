@@ -308,6 +308,25 @@ class SheetCommands:
         if args.casefold() in {"clr", "clear", "del", "delete"}:
             await ctx.services.characters.delete_character(ctx.user_id, ctx.chat_key, character.name)
             return ctx.i18n.t("commands.sheet.deleted", name=character.name)
+        retire_word = args.casefold().split(None, 1)[0] if args else ""
+        if retire_word in {"retire", "ret", "退队", "退役"}:
+            # Step a character out of this scenario's party — the sheet survives,
+            # so the owner can re-join from the character library. A bare `.st
+            # retire` retires the ACTIVE character; `.st retire <name>` retires a
+            # named owned sheet (the party-row context menu uses the named form).
+            name = args.split(None, 1)[1].strip() if len(args.split(None, 1)) > 1 else character.name
+            if await ctx.services.characters.retire_character(ctx.user_id, ctx.chat_key, name):
+                return ctx.i18n.t("commands.sheet.retired", name=name)
+            return ctx.fail(ctx.i18n.t("commands.sheet.retire_failed", name=name))
+        join_word = args.casefold().split(None, 1)[0] if args else ""
+        if join_word in {"join", "入队", "回队"}:
+            # Bring a named (retired) sheet back into the party and make it active.
+            name = args.split(None, 1)[1].strip() if len(args.split(None, 1)) > 1 else ""
+            if not name:
+                return ctx.i18n.t("commands.sheet.join_usage")
+            if await ctx.services.characters.join_character(ctx.user_id, ctx.chat_key, name):
+                return ctx.i18n.t("commands.sheet.joined", name=name)
+            return ctx.fail(ctx.i18n.t("commands.sheet.join_failed", name=name))
         _migrate_legacy_luck(character, pack)
         if args.casefold() in _SHEET_FINALIZE_WORDS:
             # A manual build (a make-char word with DEFAULT characteristics, then one or
