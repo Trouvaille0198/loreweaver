@@ -595,14 +595,17 @@ class CharacterTools:
             return i18n.t("kp_tools.item.catalog_failed", error=str(exc))
 
     @tool
-    async def grant_item(self, ctx: AgentCtx, character: str, item_id: str, qty: int = 1) -> str:
+    async def grant_item(self, ctx: AgentCtx, character: str, item_id: str, qty: int = 1, common: bool = False) -> str:
         """Grant a real item to a character once the party has ACTUALLY obtained it in play (picked up, looted, bought, rewarded).
 
 Args:
     character: target character name (any member of the party)
     item_id: the item's catalog template name (must exist in the room's item catalog)
     qty: how many to grant (default 1; same-owner same-name instances merge)
-
+    common: set True for a GENERIC everyday good (coins, rations, arrows — the same
+        thing no matter which scenario it came from). A common item merges into the
+        holder's existing same-name instance (quantity stacks) instead of refusing
+        a duplicate; narrative/plot items stay common=False.
 Rules:
 - Call ONLY when the item is genuinely in that character's hands in the story - never pre-award, never for narration alone.
 - The item MUST be in the room's catalog; you cannot invent a template.
@@ -646,7 +649,7 @@ Rules:
     @tool  # off-catalog improv lane must be live during play: evidence trinkets and
     # scene objects a party picks up mid-session need a real grant channel, or the
     # model can only narrate a holding claim that the item system never records.
-    async def improvise_item(self, ctx: AgentCtx, character: str, name: str, description: str = "", bonus: str = "", qty: int = 1) -> str:
+    async def improvise_item(self, ctx: AgentCtx, character: str, name: str, description: str = "", bonus: str = "", qty: int = 1, common: bool = False) -> str:
         """Give a character an OFF-CATALOG item the Keeper improvises on the spot (a trinket found in a pocket, a curious stone, a small reward, a few doses of something).
 
 Args:
@@ -662,7 +665,11 @@ Rules:
 - Give a bonus whenever the improvised object grants a real edge (a lucky charm, a sharpened tool, a warm cloak); a bonus-bearing item is EQUIPPED automatically, so its edge applies immediately. The player can unequip it later.
 - The bonus cap is enforced; oversized bonuses are refused. A bonus key the character's sheet cannot resolve is reported as a warning and kept as-is (it will not apply).
 - A character who already holds the item cannot be granted it again (the tool refuses duplicates; a second dose of a consumable is granted via qty, not by calling twice). Handovers use transfer_item, losses use remove_item - never re-grant an item that is simply moving around.
-- Narrate that the character now holds it after granting."""
+- Narrate that the character now holds it after granting.
+- common=True marks a GENERIC everyday good (coins, rations, arrows — the same thing
+  no matter which scenario it came from): it merges into the holder's existing
+  same-name instance (quantity stacks) instead of refusing a duplicate. Narrative
+  or plot items keep common=False."""
         i18n = self.services.i18n.with_locale(ctx.locale)
         try:
             if qty is None or int(qty) < 1:
@@ -690,6 +697,15 @@ Rules:
                 canonical_name = str(template.get("name") or name).strip()
                 existing = await find_instance(self.services.documents, ctx.chat_key, character, canonical_name)
                 if existing is not None and not template_is_consumable(template):
+                    # A common item (coins, rations, arrows — the same thing from any
+                    # scenario) merges into the existing instance instead of refusing:
+                    # the keeper/AI marks it common, and quantity stacks.
+                    if common or existing.data.get("common"):
+                        template = {**template_with_source(template, active), "common": True}
+                        await grant_instance(self.services.documents, ctx.chat_key, character, template, int(qty))
+                        await _refresh_character_bonuses(self.services, ctx, character, owner)
+                        ctx.emit_item_grant(character, canonical_name, i18n.t("kp_tools.item.granted", character=character, item=canonical_name))
+                        return i18n.t("kp_tools.item.granted", character=character, item=canonical_name)
                     if existing.data.get("archived"):
                         return i18n.t("kp_tools.item.archived_held", character=character, item=canonical_name)
                     held = int(existing.data.get("quantity", 1))
@@ -718,9 +734,18 @@ Rules:
                 description=description or "",
                 bonus=bonus_map,
                 source_module_id=module_source_id(active),
+                common=common,
             )
             existing = await find_instance(self.services.documents, ctx.chat_key, character, name)
             if existing is not None:
+                # A common item merges into the existing instance (quantity stacks)
+                # instead of refusing — the keeper/AI marked it common.
+                if common or existing.data.get("common"):
+                    template = {**template, "common": True}
+                    await grant_improvised_instance(self.services.documents, ctx.chat_key, character, template, int(qty))
+                    await _refresh_character_bonuses(self.services, ctx, character, owner)
+                    ctx.emit_item_grant(character, name, i18n.t("kp_tools.item.improvised_granted", character=character, item=name))
+                    return i18n.t("kp_tools.item.improvised_granted", character=character, item=name)
                 if existing.data.get("archived"):
                     return i18n.t("kp_tools.item.archived_held", character=character, item=name)
                 held = int(existing.data.get("quantity", 1))
@@ -801,6 +826,65 @@ Rules:
             await _refresh_character_bonuses(self.services, ctx, character, owner)
             ctx.emit_item_grant(character, item, i18n.t("kp_tools.item.removed", item=item, character=character))
             return i18n.t("kp_tools.item.removed", item=item, character=character)
+        except CharacterDataError:
+            return i18n.t("kp_tools.character.data_error")
+        except Exception as exc:
+            return i18n.t("kp_tools.item.failed", error=str(exc))
+
+    @tool
+    async def merge_items(self, ctx: AgentCtx, character: str, item: str, into: str = "") -> str:
+        """Merge every instance `character` holds as `item` into a SINGLE instance —
+        quantities stack. `into` (optional) names the canonical entry to keep when the
+        player says two DIFFERENTLY-named entries are the same thing (e.g. "金币" and
+        "50枚金币"): those entries merge into it. Defaults to `item`. Use whenever the
+        player asks to combine duplicate/equivalent entries; narrate the consolidated
+        count afterwards. Common items (coins/rations) always merge; a merged instance
+        keeps the common flag so future grants stack too."""
+        i18n = self.services.i18n.with_locale(ctx.locale)
+        try:
+            character = (character or "").strip()
+            item = (item or "").strip()
+            into = (into or "").strip()
+            if not character or not item:
+                return i18n.t("kp_tools.item.bad_args")
+            owner = await self.services.characters.get_character_owner(ctx.chat_key, character)
+            if not owner:
+                return i18n.t("kp_tools.item.character_not_found", name=character)
+            from agent.items import instances_for_owner
+
+            instances = await instances_for_owner(self.services.documents, ctx.chat_key, character)
+            folded = item.casefold()
+            srcs = [d for d in instances if str(d.data.get("name", "")).casefold() == folded]
+            target_name = into or item
+            target_folded = target_name.casefold()
+            src_ids = {s.id for s in srcs}
+            targets = [
+                d for d in instances
+                if str(d.data.get("name", "")).casefold() == target_folded and d.id not in src_ids
+            ]
+            if targets:
+                target = targets[0]
+                drops = srcs
+            elif srcs:
+                target = srcs[0]
+                drops = [d for d in srcs if d.id != target.id]
+            else:
+                return i18n.t("kp_tools.item.not_found", name=character, item=item)
+            total = int(target.data.get("quantity", 1)) + sum(
+                int(d.data.get("quantity", 1)) for d in drops
+            )
+            merged_data = dict(target.data)
+            merged_data["quantity"] = total
+            if bool(target.data.get("common")) or any(bool(d.data.get("common")) for d in srcs):
+                merged_data["common"] = True
+            if target_name != item:
+                merged_data["name"] = target_name
+            await self.services.documents.put(ctx.chat_key, "item", target.id, merged_data)
+            for d in drops:
+                await self.services.documents.delete(ctx.chat_key, "item", d.id)
+            await _refresh_character_bonuses(self.services, ctx, character, owner)
+            ctx.emit_item_grant(character, target_name, i18n.t("kp_tools.item.merged", character=character, item=target_name, qty=total))
+            return i18n.t("kp_tools.item.merged", character=character, item=target_name, qty=total)
         except CharacterDataError:
             return i18n.t("kp_tools.character.data_error")
         except Exception as exc:
