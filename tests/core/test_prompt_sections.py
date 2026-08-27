@@ -22,6 +22,7 @@ from core.prompt_sections import (
     inject_document_context_prompt,
     inject_game_state_prompt,
     inject_interaction_style_prompt,
+    inject_item_catalog_prompt,
     inject_system_expertise_prompt,
     inject_trpg_system_prompt,
     summarize_knowledge_item,
@@ -393,6 +394,9 @@ async def test_inject_game_state_prompt_roster_shows_held_items():
                 "items": [
                     {"name": "The Bronze Mirror", "quantity": 1},
                     {"name": "Ration", "quantity": 3},
+                    # A shelved item stays out of the keeper's roster panel: it is
+                    # out of play and must not read as held gear.
+                    {"name": "Shelved Dagger", "quantity": 1, "archived": True},
                 ],
             },
             {"name": "Bob", "system": "CoC", "resources": [], "status_effects": [], "items": []},
@@ -402,6 +406,7 @@ async def test_inject_game_state_prompt_roster_shows_held_items():
     result = await inject_game_state_prompt(ctx, manager, store, EN)
 
     assert EN.t("prompt.game_state.roster_items", items="The Bronze Mirror, Ration×3") in result
+    assert "Shelved Dagger" not in result
     # Bob holds nothing: no items suffix on his line.
     assert EN.t("prompt.game_state.roster_line", name="Bob", meters="None", effects="None") in result
 
@@ -610,6 +615,7 @@ async def test_all_sections_survive_fully_empty_state():
 
     results = [
         await inject_trpg_system_prompt(ctx, EN),
+        await inject_item_catalog_prompt(ctx, _FakeDocuments(None), EN),
         await inject_game_state_prompt(ctx, character_manager, store, EN),
         await inject_system_expertise_prompt(ctx, character_manager, EN),
         await inject_document_context_prompt(ctx, vector_db, store, EN),
@@ -620,6 +626,56 @@ async def test_all_sections_survive_fully_empty_state():
     # the pure-framing + always-on sections must still be non-empty.
     assert all(isinstance(r, str) for r in results)
     assert results[0]  # trpg_system
-    assert results[1]  # game_state (always renders the fixed header)
-    assert results[2]  # system_expertise (defaults to CoC guidance)
-    assert results[4]  # interaction_style
+    assert results[2]  # game_state (always renders the fixed header)
+    assert results[3]  # system_expertise (defaults to CoC guidance)
+    assert results[5]  # interaction_style
+
+# ---------------------------------------------------------------------------
+# inject_item_catalog_prompt — the room's designed-item names in the stable head
+# ---------------------------------------------------------------------------
+
+
+class _FakeDocuments:
+    """Minimal DocumentStore fake: only the item_catalog singleton lookup."""
+
+    def __init__(self, catalog_items: list[dict] | None = None):
+        self._items = catalog_items
+
+    async def get_singleton(self, chat_key: str, doc_id: str):
+        if doc_id != "item_catalog" or self._items is None:
+            return None
+        return type("Doc", (), {"data": {"items": self._items}})()
+
+
+async def test_inject_item_catalog_prompt_lists_designed_names():
+    ctx = _Ctx(chat_key="chat-catalog")
+    docs = _FakeDocuments(
+        [
+            {"name": "瓦拉娜的雷藤枝条", "kind": "quest", "bonus": {"安抚": 1}},
+            {"name": "治疗药水", "kind": "consumable"},
+        ]
+    )
+
+    result = await inject_item_catalog_prompt(ctx, docs, EN)
+
+    assert EN.t("prompt.item_catalog_header", names="x").split("\n")[0] in result
+    assert "瓦拉娜的雷藤枝条" in result
+    assert "治疗药水" in result
+
+
+async def test_inject_item_catalog_prompt_localized_zh():
+    ctx = _Ctx(chat_key="chat-catalog")
+    docs = _FakeDocuments([{"name": "撬棍"}])
+
+    result = await inject_item_catalog_prompt(ctx, docs, ZH)
+
+    assert ZH.t("prompt.item_catalog_header", names="x").split("\n")[0] in result
+    assert "撬棍" in result
+
+
+async def test_inject_item_catalog_prompt_empty_when_no_catalog():
+    ctx = _Ctx(chat_key="chat-nocatalog")
+
+    assert await inject_item_catalog_prompt(ctx, _FakeDocuments(None), EN) == ""
+    assert await inject_item_catalog_prompt(ctx, _FakeDocuments([]), EN) == ""
+    assert await inject_item_catalog_prompt(ctx, _FakeDocuments(), EN) == ""

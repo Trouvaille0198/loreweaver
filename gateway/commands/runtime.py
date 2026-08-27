@@ -6,6 +6,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any
+import math
 
 from core.action_resolver import ActionResolution, ActionResolutionError, public_action_event, resolve_action
 from core.character_manager import has_character
@@ -27,7 +28,8 @@ from core.combat import (
 from core.game_clock import advance_clock_state
 from core.resources import ResourceError, ResourceLedger, resource_projection, resource_values
 from core.rests import RestError, complete_rest
-from core.runtime import ResourceCostSpec
+from core.runtime import ActionSpec, ResourceCostSpec
+from core.spells import SpellError, spell_to_action
 from gateway.commands.rooms import _is_keeper
 from gateway.commands.types import CommandCtx
 
@@ -401,23 +403,35 @@ class RuntimeCommands:
         parts = ctx.args.split()
         if (kind == "action" and len(parts) < 1) or (kind != "action" and len(parts) < 2):
             return ctx.fail(ctx.i18n.t(f"commands.{kind}.usage"))
-        action_id = parts[0]
+        action: ActionSpec | None = None
+        spell = None
         slot: str | None = None
         targets: list[str] = []
-        for part in parts[1:]:
-            if part.casefold().startswith("slot="):
-                slot = part.split("=", 1)[1]
-            else:
-                targets.append(part)
-        action = runtime.actions.get(action_id)
-        if action is None:
-            return ctx.fail(ctx.i18n.t(f"commands.{kind}.unknown_action", id=action_id))
+        action_id = ""
+        if kind == "cast":
+            spell, action, slot, targets, parse_error = self._parse_spell_cast(pack, parts)
+            if parse_error:
+                if parse_error == "unknown":
+                    return ctx.fail(ctx.i18n.t("commands.spell.unknown", name=parts[0]))
+                return ctx.fail(ctx.i18n.t(f"commands.spell.{parse_error}"))
+            action_id = action.id
+        else:
+            action_id = parts[0]
+            for part in parts[1:]:
+                if part.casefold().startswith("slot="):
+                    slot = part.split("=", 1)[1]
+                else:
+                    targets.append(part)
+            action = runtime.actions.get(action_id)
+            if action is None:
+                return ctx.fail(ctx.i18n.t(f"commands.{kind}.unknown_action", id=action_id))
         resolution_kind = action.resolution.get("kind") if isinstance(action.resolution, Mapping) else None
         if kind == "attack" and resolution_kind not in {None, "attack"}:
             return ctx.fail(ctx.i18n.t("commands.attack.unknown_action", id=action_id))
         if kind == "cast" and resolution_kind not in {None, "spell", "save", "attack"}:
             return ctx.fail(ctx.i18n.t("commands.cast.unknown_action", id=action_id))
-        action = _action_slot(action_id, slot, action)
+        if kind != "cast":
+            action = _action_slot(action_id, slot, action)
         manager = CombatManager(ctx.services.store, ctx.chat_key)
         state = await manager.get()
         if state is None or state.phase != "active" or state.current is None:
@@ -434,6 +448,16 @@ class RuntimeCommands:
             if has_character(candidate):
                 actor_sheet = candidate
                 actor_document = await ctx.services.store.doc_get(ctx.chat_key, "sheet", actor_id)
+        if kind == "cast" and spell is not None:
+            if actor_sheet is None:
+                return ctx.fail(ctx.i18n.t("commands.spell.requires_sheet"))
+            if spell.id not in {str(value) for value in (actor_sheet.known_spells or [])}:
+                return ctx.fail(ctx.i18n.t("commands.spell.not_known", name=spell.display_name(ctx.locale)))
+            if action.resource_costs:
+                pool_id = action.resource_costs[0].pool
+                current = {pool: value.current for pool, value in resource_values(actor_sheet, pack).items()}
+                if current.get(pool_id, 0) < 1:
+                    return ctx.fail(ctx.i18n.t("commands.spell.no_slots", pool=pool_id))
         action_key = f"{state.id}:{state.round}:{state.turn_index}:{actor_id}:{action.id}" + (
             f":{','.join(targets)}" if targets else ""
         )
@@ -476,6 +500,23 @@ class RuntimeCommands:
                         ),
                         0,
                     )
+            if kind == "cast" and spell is not None and spell.save:
+                # Save spells roll the TARGET's save against the caster's DC; a
+                # successful save halves (or negates) the damage via the
+                # `save_half` factor on that target's defenses.
+                dc = self._spell_dc(actor_sheet, pack, spell)
+                ability = str(spell.save.get("ability") or "")
+                for target_id in targets:
+                    target = claimed.combatants.get(target_id)
+                    modifier = self._target_save_modifier(target, ability)
+                    rolled = ctx.services.dice.roll_detail("1d20")
+                    if rolled.total + modifier >= dc:
+                        factor = 0.0 if str(spell.save.get("success") or "none") == "none" else 0.5
+                        target_defense = dict(defenses.get(target_id) or {})
+                        factors = dict(target_defense.get("factors") or {})
+                        factors["save_half"] = factor
+                        target_defense["factors"] = factors
+                        defenses[target_id] = target_defense
             check_target = 10 if resolution_kind == "death_save" else (target_values.get(targets[0]) if targets else None)
             check_modifier = actor.get("modifier", 0)
             if isinstance(check_modifier, bool) or not isinstance(check_modifier, (int, float)):
@@ -636,11 +677,129 @@ class RuntimeCommands:
                 pass
             return ctx.fail(ctx.i18n.t(f"commands.{kind}.failed", error=str(exc)))
 
+    def _parse_spell_cast(
+        self, pack: Any, parts: list[str]
+    ) -> tuple[Any, ActionSpec | None, str | None, list[str], str]:
+        """`.cast <spell> [@N] [targets]` — resolve the catalog entry, casting
+        slot level and targets. Spell names may span tokens ("magic missile
+        goblin" resolves Magic Missile with target goblin); `@N` casts at a
+        higher level (scaling damage, consuming that slot pool). Returns
+        ``(spell, action, slot, targets, error)`` — error is a commands.cast.*
+        i18n key suffix, "" when resolved."""
+        catalog = getattr(pack, "spells", None)
+        if catalog is None:
+            return None, None, None, [], "no_catalog"
+        slot_level: int | None = None
+        name_tokens: list[str] = []
+        for token in parts[1:]:
+            if token.startswith("@") and token[1:].isdigit():
+                slot_level = int(token[1:])
+            else:
+                name_tokens.append(token)
+        spell = None
+        targets: list[str] = []
+        for index in range(len(name_tokens), 0, -1):
+            candidate = " ".join(name_tokens[:index])
+            found = catalog.get(candidate)
+            if found is not None:
+                spell = found
+                targets = name_tokens[index:]
+                break
+        if spell is None:
+            spell = catalog.get(parts[0])
+            if spell is None:
+                return None, None, None, [], "unknown"
+            targets = name_tokens
+        try:
+            action = spell_to_action(spell, slot_level=slot_level)
+        except SpellError:
+            return None, None, None, [], "bad_slot"
+        return spell, action, (str(slot_level) if slot_level is not None else None), targets, ""
+
+    def _spell_dc(self, sheet: Any, pack: Any, spell: Any) -> int:
+        """A spell's save DC: 8 + proficiency bonus + the casting ability modifier."""
+        from core.sheets import sheet_value
+
+        proficiency = sheet_value(sheet, pack, "熟练加值")
+        ability = str(spell.dc_ability or "") or "智力"
+        modifier = sheet_value(sheet, pack, f"{ability}调整值")
+        return 8 + int(proficiency) + int(modifier)
+
+    def _target_save_modifier(self, combatant: Mapping[str, Any] | None, ability: str) -> int:
+        """The target's save bonus for `ability`: a statblock instance's declared
+        saves win, then a public ability score's modifier, then a bare d20 (0)."""
+        if combatant is None or not ability:
+            return 0
+        saves = combatant.get("saves")
+        if isinstance(saves, Mapping) and ability in saves:
+            return int(saves[ability])
+        public = combatant.get("public")
+        attributes = public.get("attributes") if isinstance(public, Mapping) else None
+        if isinstance(attributes, Mapping) and ability in attributes:
+            value = attributes[ability]
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                return math.floor((int(value) - 10) / 2)
+        return 0
+
     async def cmd_attack(self, ctx: CommandCtx) -> str:
         return await self._run_typed_action(ctx, "attack")
 
     async def cmd_typed_cast(self, ctx: CommandCtx) -> str:
         return await self._run_typed_action(ctx, "cast")
+
+    async def cmd_spells(self, ctx: CommandCtx) -> str:
+        """`.spells [learn <spell> | forget <spell>]` — this character's known
+        spells and available spell slots. Known spells are sheet data (enforced
+        at cast time); learn/forget are player or keeper commands."""
+        pack = await ctx.services.room_rulepack(ctx.raw_ctx)
+        catalog = getattr(pack, "spells", None)
+        if catalog is None:
+            return ctx.fail(ctx.i18n.t("commands.spell.no_catalog"))
+        character = await ctx.services.characters.get_character(ctx.user_id, ctx.chat_key)
+        if not has_character(character):
+            return ctx.fail(ctx.i18n.t("commands.spell.requires_sheet"))
+        parts = ctx.args.split()
+        sub = parts[0].casefold() if parts else "list"
+        known = [str(value) for value in (character.known_spells or [])]
+        if sub in {"learn", "学", "學習"} and len(parts) > 1:
+            name = " ".join(parts[1:])
+            spell = catalog.get(name)
+            if spell is None:
+                return ctx.fail(ctx.i18n.t("commands.spell.unknown", name=name))
+            if spell.id not in known:
+                character.known_spells = known + [spell.id]
+                await ctx.services.characters.save_character(ctx.user_id, ctx.chat_key, character)
+            return ctx.i18n.t("commands.spell.learned", name=spell.display_name(ctx.locale))
+        if sub in {"forget", "忘", "遺忘"} and len(parts) > 1:
+            name = " ".join(parts[1:])
+            spell = catalog.get(name)
+            if spell is not None and spell.id in known:
+                character.known_spells = [value for value in known if value != spell.id]
+                await ctx.services.characters.save_character(ctx.user_id, ctx.chat_key, character)
+                return ctx.i18n.t("commands.spell.forgotten", name=spell.display_name(ctx.locale))
+            return ctx.fail(ctx.i18n.t("commands.spell.not_known", name=name))
+        if sub not in {"list", "列表"}:
+            return ctx.fail(ctx.i18n.t("commands.spell.usage"))
+
+        from core.resources import resource_values
+
+        slot_rows = []
+        for pool_id, value in resource_values(character, pack).items():
+            if pool_id.startswith("spell_slot_") and value.maximum and value.maximum > 0:
+                slot_rows.append(f"{pool_id}:{value.current}/{value.maximum}")
+        spell_rows = []
+        for spell_id in known:
+            spell = catalog.get(spell_id)
+            if spell is None:
+                continue
+            ring = "cantrip" if spell.level == 0 else f"L{spell.level}"
+            kind = "save" if spell.save else ("attack" if spell.attack else "")
+            spell_rows.append(f"{spell.display_name(ctx.locale)} ({ring}{'/' + kind if kind else ''})")
+        return ctx.i18n.t(
+            "commands.spell.list",
+            spells=", ".join(spell_rows) if spell_rows else ctx.i18n.t("commands.spell.list_empty"),
+            slots=", ".join(slot_rows) if slot_rows else "-",
+        )
 
     async def cmd_combat(self, ctx: CommandCtx) -> str:
         """Read or mutate the strict current-actor combat state."""
@@ -672,6 +831,7 @@ class RuntimeCommands:
                         "initiative": int(item.get("initiative", 0) or 0),
                         "controller": "human",
                         "controller_id": ctx.user_id,
+                        "mechanics_ref": f"sheet:{str(item.get('name'))}",
                     }
                     for item in roster
                     if isinstance(item, dict) and str(item.get("name") or "").strip()
@@ -695,10 +855,15 @@ class RuntimeCommands:
                 if len(parts) < 2:
                     return ctx.fail(ctx.i18n.t("commands.combat.usage"))
                 initiative = int(parts[2]) if len(parts) > 2 else 0
+                mechanics_ref = ""
+                owner = await ctx.services.characters.get_character_owner(ctx.chat_key, parts[1])
+                if owner:
+                    mechanics_ref = f"sheet:{parts[1]}"
                 updated = join_combat(
                     state,
                     parts[1],
                     initiative=initiative,
+                    mechanics_ref=mechanics_ref,
                     controller="keeper",
                     controller_id="keeper",
                     budget=_budget_template(pack),

@@ -300,6 +300,7 @@
   "kp_tools.item.improv_invalid_value": "❌ Improvised bonus values must be integers (stat=value, comma-separated)",
   "kp_tools.item.improv_stat_cap": "❌ Improvised bonus is capped at ±2 per stat",
   "kp_tools.item.improv_total_cap": "❌ Improvised bonus total is capped at 4 points",
+  "kp_tools.item.improv_unresolved_bonus": "Note: these bonus keys are not skills/attributes on this character's sheet and were kept as-is (they will not apply): {keys}",
   "kp_tools.item.not_in_catalog": "❌ \"{item}\" is not in this room's item catalog",
   "kp_tools.item.module_mismatch": "❌ \"{item}\" belongs to a different module and does not work in this room's current scenario",
   "kp_tools.item.equipped": "✅ {character} equipped {item} ({slot})",
@@ -307,5 +308,14 @@
   "kp_tools.clue.not_found": "❌ No worldbook clue matches \"{name}\".",
   "kp_tools.clue.already_added": "\"{name}\" is already in the clue log.",
   "kp_tools.clue.revealed": "✅ Clue recorded: \"{name}\" — players can now see it.",
-  "kp_tools.clue.failed": "Could not record the clue: {error}"
+  "kp_tools.clue.failed": "Could not record the clue: {error}",
+  "kp_tools.item.catalog_header": "📦 Room item catalog ({count}):",
+  "kp_tools.item.catalog_empty": "The room has no item catalog.",
+  "kp_tools.item.catalog_failed": "❌ Failed to load the item catalog: {error}",
+  "kp_tools.know.clues_header": "🧩 Discovered clues ({count}):",
+  "kp_tools.know.clues_empty": "The party has not discovered any clues yet.",
+  "kp_tools.know.clues_failed": "❌ Failed to load the clue log: {error}",
+  "kp_tools.image.media_header": "🖼 Published room illustrations ({count}) — valid reference_subject values:",
+  "kp_tools.image.media_none": "The room has no published illustrations yet.",
+  "kp_tools.image.media_failed": "❌ Failed to load the media index: {error}"
 }

@@ -148,6 +148,26 @@ def _pool_specs(pack: Any) -> Mapping[str, ResourcePoolSpec]:
     return {} if runtime is None else runtime.pools
 
 
+def _slot_table_for(sheet: Any, runtime: Any) -> tuple[tuple[int, ...], ...]:
+    """The slot table matching the sheet's class: `spell_slot_class` picks the
+    half (paladin/ranger) or pact (warlock) table; everything else uses the
+    full caster's `spell_slots_by_level`."""
+    class_name = str(getattr(sheet, "character_class", "") or "").strip().casefold()
+    table_kind = (runtime.spell_slot_class or {}).get(class_name)
+    if table_kind is None:
+        for canonical, names in (runtime.class_aliases or {}).items():
+            if class_name in {str(alias).casefold() for alias in names}:
+                table_kind = (runtime.spell_slot_class or {}).get(canonical)
+                break
+    if table_kind in (None, "none"):
+        return ()
+    if table_kind == "half":
+        return tuple(runtime.spell_slots_half or ())
+    if table_kind == "pact":
+        return tuple(runtime.spell_slots_pact or ())
+    return tuple(runtime.spell_slots_by_level or ())
+
+
 def _initial_state(sheet: Any, pack: Any) -> dict[str, ResourceValue]:
     specs = _pool_specs(pack)
     raw = _raw_resources(sheet)
@@ -175,6 +195,18 @@ def _initial_state(sheet: Any, pack: Any) -> dict[str, ResourceValue]:
         )
         if maximum is not None:
             maximum = max(0, maximum)
+        # A spell_slot pool's maximum is driven by the pack's per-caster-type
+        # slot tables (selected by the sheet's class), when declared — the
+        # pack's static `max` is the pre-table fallback (0 = ring locked).
+        if spec.role == "spell_slot" and getattr(pack, "runtime_spec", None) is not None:
+            runtime = pack.runtime_spec
+            table = _slot_table_for(sheet, runtime)
+            if table:
+                level = _resolve_value({"ref": "等级"}, sheet=sheet, pack=pack, pools=resolved, path=f"resources.{pool_id}.level")
+                ring_text = str(pool_id).rsplit("_", 1)[-1]
+                ring = int(ring_text) if ring_text.isdigit() else 0
+                if 1 <= ring <= 9 and 1 <= int(level) <= len(table):
+                    maximum = max(0, int(table[int(level) - 1][ring - 1]))
         stored = raw.get(pool_id)
         if isinstance(stored, Mapping) and "current" in stored:
             current = _as_int(stored.get("current"), path=f"resources.{pool_id}.current")
@@ -303,12 +335,30 @@ def recover_resource(sheet: Any, pack: Any, pool_id: str, amount: int | None = N
     return _mutate(sheet, pack, pool_id, target)
 
 
+def _is_pact_caster(sheet: Any, pack: Any) -> bool:
+    """Whether the sheet's class is a pact caster (warlock) — its spell slots
+    recover on a SHORT rest, unlike every other caster."""
+    runtime = getattr(pack, "runtime_spec", None)
+    if runtime is None:
+        return False
+    class_name = str(getattr(sheet, "character_class", "") or "").strip().casefold()
+    return (runtime.spell_slot_class or {}).get(class_name) == "pact"
+
+
 def recover_by_reset(sheet: Any, pack: Any, tag: str) -> tuple[ResourceMutation, ...]:
-    """Recover every pool carrying ``tag`` according to its declared maximum."""
+    """Recover every pool carrying ``tag`` according to its declared maximum.
+
+    Spell slots are the exception to the reset-tag rule: a pact caster (warlock)
+    recovers them on a SHORT rest; every other caster only on a LONG rest (the
+    pack's reset tag), even if a tag happens to match."""
     values = resource_values(sheet, pack)
+    pact_short = tag == "short" and _is_pact_caster(sheet, pack)
     mutations: list[ResourceMutation] = []
     for pool_id, value in values.items():
-        if tag not in value.reset_tags:
+        is_slot = value.role == "spell_slot"
+        if is_slot and tag == "short" and not pact_short:
+            continue
+        if tag not in value.reset_tags and not (is_slot and pact_short):
             continue
         if value.maximum is None:
             continue

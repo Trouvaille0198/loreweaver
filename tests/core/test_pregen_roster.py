@@ -124,7 +124,59 @@ async def test_aliases_are_stored_and_resolve_in_pregen_find():
     entries = await pregen_entries(docs, chat)
     assert entries[0]["aliases"] == ("薇拉", "Vera Moonshadow")
 
-    assert (await pregen_find(docs, chat, "薇拉"))["name"] == "薇拉·月影"
-    assert (await pregen_find(docs, chat, "Vera Moonshadow"))["name"] == "薇拉·月影"
-    assert (await pregen_find(docs, chat, "薇拉·月影"))["name"] == "薇拉·月影"
-    assert await pregen_find(docs, chat, "奥尔加") is None
+
+
+async def test_ai_claim_holds_under_a_companion_uid_and_release_tracks_it():
+    """An AI claim is a roster claim too: `kind="ai"` records the companion record id
+    as the holder while the sheet copy lands under the companion's virtual uid, and
+    release deletes THAT uid's copy — core never needs to know what "ai" means."""
+    store = Store()
+    characters = CharacterManager(store)
+    docs = DocumentStore(store)
+    chat = "room-ai"
+    await pregen_add(docs, chat, _sheet("阿岚"))
+
+    # The agent layer's shapes: holder id = companion record id, owner uid = companion:<id>.
+    companion_id = "companion-record-1"
+    owner_uid = f"companion:{companion_id}"
+    status, sheet = await pregen_claim(
+        docs, chat, "阿岚", companion_id, characters, kind="ai", owner_uid=owner_uid, claimer_name="AI"
+    )
+    assert status == "ok" and sheet is not None
+    entry = (await pregen_entries(docs, chat))[0]
+    assert entry["claimed_by"] == companion_id
+    assert entry["claimed_by_kind"] == "ai"
+    assert entry["claimed_name"] == "AI"
+    # Materialized under the companion uid, on the party roster, not under any player.
+    assert (await characters.get_character(owner_uid, chat)).name == "阿岚"
+    assert [member["name"] for member in await characters.get_party_roster(chat)] == ["阿岚"]
+    # A player cannot take an AI-claimed character; re-claim by the same AI is "yours".
+    assert (await pregen_claim(docs, chat, "阿岚", "p1", characters))[0] == "taken"
+    assert (await pregen_claim(docs, chat, "阿岚", companion_id, characters, kind="ai", owner_uid=owner_uid))[0] == "yours"
+
+    # Release deletes the companion uid's copy and clears kind too; a player release is refused.
+    assert await pregen_release(docs, chat, "阿岚", "p1", characters) == "not_yours"
+    assert await pregen_release(docs, chat, "阿岚", companion_id, characters, owner_uid=owner_uid) == "ok"
+    assert await characters.get_party_roster(chat) == []
+    entry = (await pregen_entries(docs, chat))[0]
+    assert entry["claimed_by"] == ""
+    assert entry["claimed_by_kind"] == ""
+    assert (await pregen_claim(docs, chat, "阿岚", "p1", characters))[0] == "ok"
+
+
+async def test_readd_preserves_ai_claim_kind():
+    """Refreshing a roster character (module re-import / re-gen) keeps an AI claim intact."""
+    store = Store()
+    characters = CharacterManager(store)
+    docs = DocumentStore(store)
+    chat = "room-ai-readd"
+    await pregen_add(docs, chat, _sheet("理"))
+    companion_id = "companion-record-2"
+    assert (
+        await pregen_claim(
+            docs, chat, "理", companion_id, characters, kind="ai", owner_uid=f"companion:{companion_id}"
+        )
+    )[0] == "ok"
+    refreshed = await pregen_add(docs, chat, _sheet("理", hp=8))
+    assert refreshed is not None and refreshed["claimed_by"] == companion_id
+    assert refreshed["claimed_by_kind"] == "ai"

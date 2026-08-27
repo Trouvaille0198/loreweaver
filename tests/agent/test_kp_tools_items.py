@@ -222,9 +222,38 @@ async def test_grant_item_allows_module_item_in_its_module():
         {"source_id": "pack:shadows-over-shanghai@0.1.0:cards/x.json", "pack_id": "shadows-over-shanghai"},
     )
 
-    reply = await CharacterTools(services).grant_item(ctx, "Alice", "The Bronze Mirror")
-    assert "The Bronze Mirror" in reply
-    assert await _instance_names(services, ctx.chat_key, "Alice") == ["The Bronze Mirror"]
+async def test_instances_record_source_module():
+    """Every granted item records which scenario it came from (`source_module_id`):
+    module-scoped designs keep their own module_id, universal catalog and improvised
+    items get the active module's id. Origin traceability only — never gates scope."""
+    from agent.module_lifecycle import publish_active_module
+
+    services, ctx = _build()
+    await _make_character(services, ctx.chat_key, "u1", "Alice")
+    await _seed(
+        services,
+        ctx.chat_key,
+        _tpl("The Bronze Mirror", scope="module", module_id="shadows-over-shanghai"),
+        _tpl("Flashlight", scope="universal"),
+    )
+    await publish_active_module(
+        services,
+        ctx.chat_key,
+        {"source_id": "pack:shadows-over-shanghai@0.1.0:cards/x.json", "pack_id": "shadows-over-shanghai"},
+    )
+    tools = CharacterTools(services)
+
+    await tools.grant_item(ctx, "Alice", "The Bronze Mirror")
+    await tools.grant_item(ctx, "Alice", "Flashlight")
+    await tools.improvise_item(ctx, "Alice", "Muddy Scrap", description="a torn cloth")
+
+    instances = {
+        doc.data["name"]: doc.data
+        for doc in await instances_for_owner(services.documents, ctx.chat_key, "Alice")
+    }
+    assert instances["The Bronze Mirror"]["source_module_id"] == "shadows-over-shanghai"
+    assert instances["Flashlight"]["source_module_id"] == "shadows-over-shanghai"
+    assert instances["Muddy Scrap"]["source_module_id"] == "shadows-over-shanghai"
 
 
 # ---------------------------------------------------------------------------
@@ -511,18 +540,41 @@ async def test_improvise_item_creates_off_catalog_instance():
     assert data["description"] == "石质护符，刻着看不懂的符文"
     assert data["scope"] == "universal"
     assert data["bonus"] == {}
+    assert data["effect"] == ""  # narrative trinket has no effect line
+    assert data["equipped_slot"] is None  # narrative trinket stays in the bag
 
 
 async def test_improvise_item_with_small_bonus():
     services, ctx = _build()
     await _make_character(services, ctx.chat_key, "u1", "Alice")
     tools = CharacterTools(services)
+    pack = load_rulepack("coc7")
+    base = sheet_value(await services.characters.get_character("u1", ctx.chat_key, "Alice"), pack, "侦查")
 
     reply = await tools.improvise_item(ctx, "Alice", "幸运石", bonus="spot_hidden=1")
 
     assert "improvised" in reply
     instances = await instances_for_owner(services.documents, ctx.chat_key, "Alice")
-    assert instances[0].data["bonus"] == {"spot_hidden": 1}
+    assert instances[0].data["bonus"] == {"侦查": 1}  # alias resolved to the pack's canonical key
+    assert instances[0].data["effect"] == "侦查 +1"  # player-readable effect line for the card
+    assert instances[0].data["equipped_slot"] == "equipped"  # auto-equipped, so the edge applies now
+    sheet = await services.characters.get_character("u1", ctx.chat_key, "Alice")
+    assert sheet.equipped_bonuses == {"侦查": 1}
+    assert sheet_value(sheet, pack, "侦查") == base + 1
+
+
+async def test_improvise_item_unresolvable_bonus_warns():
+    """A bonus key the pack cannot resolve is kept as-is and reported — without
+    the warning it would silently never apply to any check."""
+    services, ctx = _build()
+    await _make_character(services, ctx.chat_key, "u1", "Alice")
+    tools = CharacterTools(services)
+
+    reply = await tools.improvise_item(ctx, "Alice", "奇怪石头", bonus="nonexistent_skill=1")
+
+    assert "kept as-is" in reply
+    instances = await instances_for_owner(services.documents, ctx.chat_key, "Alice")
+    assert instances[0].data["bonus"] == {"nonexistent_skill": 1}
 
 
 async def test_improvise_item_rejects_duplicate():
@@ -686,3 +738,34 @@ async def test_improvise_item_uses_catalog_template_for_an_alias():
     assert instances[0].data["bonus"] == {"spot_hidden": 1}
     notices = ctx.consume_item_lines()
     assert notices[0]["item"] == "The Sunken Bell"
+# ---------------------------------------------------------------------------
+# list_item_catalog — the AI KP can see the room's designed items (names +
+# mechanics) instead of improvising substitutes for them.
+# ---------------------------------------------------------------------------
+
+
+async def test_list_item_catalog_returns_designed_items():
+    services, ctx = _build()
+    await _make_character(services, ctx.chat_key, "u1", "Alice")
+    await _seed(
+        services,
+        ctx.chat_key,
+        _tpl("撬棍", kind="weapon", slot="weapon", effect="伤害1d6", bonus={"attack": 2}),
+        _tpl("治疗药水", kind="consumable", effect="恢复1d4"),
+    )
+    tools = CharacterTools(services)
+
+    reply = await tools.list_item_catalog(ctx)
+
+    assert "撬棍" in reply
+    assert "治疗药水" in reply
+    assert "attack +2" in reply  # the bonus renders so the KP can weigh designed gear
+
+
+async def test_list_item_catalog_empty_room():
+    services, ctx = _build()
+    tools = CharacterTools(services)
+
+    reply = await tools.list_item_catalog(ctx)
+
+    assert "no item catalog" in reply

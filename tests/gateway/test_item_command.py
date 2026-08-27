@@ -361,6 +361,7 @@ async def test_item_give_improvised_off_catalog():
     assert data["scope"] == "universal"
     assert data["bonus"] == {}
     assert data["improvised"] is True
+    assert data["equipped_slot"] is None  # no bonus → stays in the bag
     denied = await router.dispatch(_player_ctx(chat_key, uid="p2"), ".item add 神秘护符")
     assert "not in this room's item catalog" in denied
 
@@ -386,17 +387,41 @@ async def test_item_give_improvised_with_desc_qty_and_secret():
     assert "治疗药水" not in inv
 
 
-async def test_item_give_improvised_small_bonus_applies_when_equipped():
+async def test_item_give_improvised_small_bonus_applies_immediately():
+    """A bonus-bearing improvised give is equipped automatically, so the edge
+    applies without a separate equip step (the old flow required one)."""
     services = _services()
     router = CommandRouter(services)
     chat_key = "cli:dm:items"
     await _make(services, chat_key, "p2", "Bob")
 
-    await router.dispatch(_keeper_ctx(chat_key), ".item give 幸运石 Bob --bonus 侦查=1")
+    reply = await router.dispatch(_keeper_ctx(chat_key), ".item give 幸运石 Bob --bonus 侦查=1")
+    assert "improvised" in reply
+    instances = await instances_for_owner(services.documents, chat_key, "Bob")
+    assert instances[0].data["equipped_slot"] == "equipped"
+    sheet = await services.characters.get_character("p2", chat_key)
+    assert sheet.equipped_bonuses == {"侦查": 1}
+
+    # The holder can still move it to a real slot without losing the edge.
     reply = await router.dispatch(_player_ctx(chat_key, uid="p2"), ".item equip 幸运石 as necklace")
     assert "necklace" in reply
     sheet = await services.characters.get_character("p2", chat_key)
     assert sheet.equipped_bonuses == {"侦查": 1}
+
+
+async def test_item_give_improvised_unresolvable_bonus_warns():
+    """A bonus key the pack cannot resolve is kept as-is and reported — without
+    the warning it would silently never apply to any check."""
+    services = _services()
+    router = CommandRouter(services)
+    chat_key = "cli:dm:items"
+    await _make(services, chat_key, "p2", "Bob")
+
+    reply = await router.dispatch(_keeper_ctx(chat_key), ".item give 怪石 Bob --bonus 不存在技能=1")
+
+    assert "kept as-is" in reply
+    instances = await instances_for_owner(services.documents, chat_key, "Bob")
+    assert instances[0].data["bonus"] == {"不存在技能": 1}
 
 
 async def test_item_give_improvised_bonus_over_cap_rejected():

@@ -101,6 +101,7 @@ from core.prompt_sections import (
     inject_document_context_prompt,
     inject_game_state_prompt,
     inject_interaction_style_prompt,
+    inject_item_catalog_prompt,
     inject_system_expertise_prompt,
     inject_trpg_system_prompt,
 )
@@ -275,6 +276,7 @@ async def build_system_prompt_parts(
     room_rulepack = await services.room_rulepack(ctx)
     stable: list[str] = [
         await inject_trpg_system_prompt(ctx, i18n),
+        await inject_item_catalog_prompt(ctx, services.documents, i18n),
         await inject_system_expertise_prompt(
             ctx, services.characters, i18n, default_system=room_rulepack.system
         ),

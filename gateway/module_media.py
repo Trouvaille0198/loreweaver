@@ -182,11 +182,15 @@ async def plan_media_jobs(
     pending job per accepted shot. Returns ``(new_jobs, note)`` where ``note`` is empty on
     success and a localized reason when nothing could be planned. ``home`` supplies the
     existing jobs (dedupe + per-kind index continuity); ``pack_id`` names the asset stems."""
-    pregen_names = [
-        str(p.get("name"))
-        for p in (card.get("pregens") or [])
-        if isinstance(p, dict) and p.get("name")
-    ]
+    pregen_names = []
+    for p in (card.get("pregens") or []):
+        if not isinstance(p, dict) or not p.get("name"):
+            continue
+        name = str(p.get("name") or "").strip()
+        appearance = str(p.get("appearance") or "").strip()
+        # Fold each investigator's appearance into the cast list the shot designer sees,
+        # so a `pregens` portrait prompt depicts the ACTUAL character, not an invented one.
+        pregen_names.append(f"{name}（{appearance}）" if appearance else name)
     subject_names = _worldbook_subject_names(card)
     raw, failure = await _llm_authored(
         services,
@@ -520,6 +524,16 @@ async def _update_claimed_avatars(
             await services.store.state_set(room, "party_roster", json.dumps(roster, ensure_ascii=False))
         except Exception as exc:  # noqa: BLE001
             logger.warning("[module-media] roster update failed for %s in %s: %s", subject, room, exc)
+        # The claimed character's SHEET carries the avatar too (the character screen and
+        # future re-claims read it) — repoint it best-effort.
+        try:
+            sheet_doc = await services.documents.get(room, "sheet", subject)
+            if sheet_doc is not None and isinstance(sheet_doc.data, dict):
+                sheet_data = dict(sheet_doc.data)
+                sheet_data["avatar"] = record.ref()
+                await services.documents.put(room, "sheet", subject, sheet_data)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[module-media] claimed sheet avatar update failed for %s in %s: %s", subject, room, exc)
 
 
 async def _register_in_rooms(
@@ -638,3 +652,183 @@ async def run_pack_media_jobs(services: Services, pack_id: str) -> dict[str, Any
             await _update_claimed_avatars(services, rooms, subject, data_bytes, mime, asset_name)
         logger.info("[module-media] %s rendered %s (%s)", pack_id, asset_name, subject)
     return load_jobs(home)
+
+
+# ---------------------------------------------------------------------------
+# Room-scoped pregen portrait lane — the chat-side "生成头像" entry.
+#
+# A roster character (module-imported OR `.pc gen`-born) gets ONE portrait job
+# queued under the room, rendered by the same worker discipline as the pack lane
+# (bounded timeout, retry lane, failure keeps the prompt for a re-queue). On
+# completion the pregen document's `avatar` updates and every room member who
+# claimed that character gets the new portrait repointed in the party roster.
+# ---------------------------------------------------------------------------
+
+_PREGEN_JOBS_KEY = "pregen_media_jobs"
+
+
+async def load_room_pregen_jobs(services: Any, room: str) -> list[dict[str, Any]]:
+    try:
+        raw = await services.store.state_get(room, _PREGEN_JOBS_KEY)
+        jobs = json.loads(raw) if raw else []
+        return [j for j in jobs if isinstance(j, dict)]
+    except (json.JSONDecodeError, TypeError):
+        return []
+
+
+async def _save_room_pregen_jobs(services: Any, room: str, jobs: list[dict[str, Any]]) -> None:
+    try:
+        await services.store.state_set(room, _PREGEN_JOBS_KEY, json.dumps(jobs, ensure_ascii=False))
+    except Exception:  # noqa: BLE001 — job persistence must never break generation
+        logger.warning("[module-media] room pregen jobs write failed for %s", room)
+
+
+def build_pregen_portrait_prompt(name: str, appearance: str = "", blurb: str = "", renderer: Any | None = None) -> str:
+    """The portrait prompt for one roster character: appearance first (the primary
+    source), persona as support. A character without an appearance still gets a
+    portrait from its persona text. The prompt text is i18n'd (it goes to the image
+    provider, and the material language is the room's)."""
+    t = renderer.t if renderer is not None and hasattr(renderer, "t") else None
+
+    def line(key: str, **kwargs: str) -> str:
+        return t(key, **kwargs) if t is not None else key
+
+    parts = [line("agent.forge.pregen_portrait_head", name=name)]
+    if appearance.strip():
+        parts.append(line("agent.forge.pregen_portrait_appearance", appearance=appearance.strip()))
+    if blurb.strip():
+        parts.append(line("agent.forge.pregen_portrait_blurb", blurb=blurb.strip()))
+    parts.append(line("agent.forge.pregen_portrait_style"))
+    return "\n".join(parts)
+
+
+async def queue_pregen_avatar(services: Any, room: str, name: str) -> tuple[bool, str]:
+    """Queue one roster character's portrait through the async illustration lane.
+    Returns ``(ok, detail)`` — ``detail`` is the job id on success, a refusal reason
+    otherwise. The background worker renders it; the pregen document and any claimed
+    party members pick up the new portrait on completion."""
+    from core.pregen_roster import pregen_find
+
+    entry = await pregen_find(services.documents, room, name)
+    if entry is None:
+        return False, "unknown"
+    prompt = build_pregen_portrait_prompt(
+        str(entry.get("name") or ""),
+        str(entry.get("appearance") or ""),
+        str(entry.get("blurb") or ""),
+        renderer=services.i18n.with_locale(getattr(services, "locale", "zh") or "zh"),
+    )
+    jobs = await load_room_pregen_jobs(services, room)
+    existing = next((j for j in jobs if j.get("subject") == name and j.get("status") in ("pending", "generating")), None)
+    if existing is not None:
+        return True, str(existing.get("id") or "")
+    job_id = f"pregen-{int(time.time())}"
+    jobs.append(
+        {
+            "id": job_id,
+            "subject": name,
+            "prompt": prompt,
+            "status": "pending",
+            "asset": "",
+            "hash": "",
+            "mime": "",
+            "error": "",
+        }
+    )
+    await _save_room_pregen_jobs(services, room, jobs)
+    asyncio.get_running_loop().create_task(_run_room_pregen_jobs(services, room))
+    return True, job_id
+
+
+async def _fail_room_pregen_jobs(services: Any, room: str, error: str) -> None:
+    jobs = await load_room_pregen_jobs(services, room)
+    for job in jobs:
+        if job.get("status") in ("pending", "generating"):
+            job["status"] = "failed"
+            job["error"] = error
+    await _save_room_pregen_jobs(services, room, jobs)
+
+
+async def _run_room_pregen_jobs(services: Any, room: str) -> None:
+    """Render every unfinished room pregen portrait (the worker body). Re-loops on a
+    FRESH job list every round, so a queue that lands mid-render is picked up."""
+    try:
+        imagegen = await services.imagegen_for_room(room)
+        if imagegen is None:
+            await _fail_room_pregen_jobs(services, room, "not_configured")
+            return
+        settings = services.settings.tui
+        store = MediaStore(
+            services.store,
+            services.settings.data_dir,
+            max_file_bytes=settings.media_max_file_bytes,
+            room_quota_bytes=settings.media_room_quota_bytes,
+            allowed_mimes=ALLOWED_IMAGE_MIMES,
+        )
+        while True:
+            jobs = await load_room_pregen_jobs(services, room)
+            job = next((j for j in jobs if j.get("status") in ("pending", "generating")), None)
+            if job is None:
+                return
+            job_id = str(job.get("id") or "")
+            subject = str(job.get("subject") or "")
+            job["status"] = "generating"
+            await _save_room_pregen_jobs(services, room, jobs)
+            try:
+                data_bytes, mime = await asyncio.wait_for(
+                    _imagegen_generate_retry(
+                        imagegen, str(job.get("prompt") or ""), size=services.settings.imagegen.size
+                    ),
+                    timeout=_JOB_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:  # noqa: BLE001 — provider down after bounded retries
+                logger.warning("[module-media] room pregen portrait failed for %s (%s): %s", subject, room, exc)
+                job["status"] = "failed"
+                job["error"] = "job_timeout" if isinstance(exc, TimeoutError) else str(exc)[:300]
+                await _save_room_pregen_jobs(services, room, jobs)
+                continue
+            name = f"pregen-{subject}-{job_id}.{_IMAGE_MIME_EXTS.get(mime, 'png')}"
+            try:
+                record = await store.register_blob(room=room, data=data_bytes, mime=mime, name=name, uploader="keeper")
+            except Exception as exc:  # noqa: BLE001 — quota rejection fails only this job
+                job["status"] = "failed"
+                job["error"] = f"register: {exc}"
+                await _save_room_pregen_jobs(services, room, jobs)
+                continue
+            await _update_pregen_avatar(services, room, subject, record.ref())
+            await _update_claimed_avatars(services, [room], subject, data_bytes, mime, name)
+            job.update(status="done", asset=record.name, hash=record.hash, mime=mime)
+            await _save_room_pregen_jobs(services, room, jobs)
+            logger.info("[module-media] room %s pregen portrait rendered %s (%s)", room, name, subject)
+    except Exception:  # noqa: BLE001 — the worker must never take the process down
+        logger.exception("[module-media] room pregen worker failed for %s", room)
+
+
+async def _update_pregen_avatar(services: Any, room: str, name: str, avatar_ref: str) -> None:
+    """Stamp the finished portrait onto the roster character's pregen document AND its
+    pristine sheet's avatar — the state projection reads ``sheet.avatar`` for the
+    roster card, and a fresh claim materializes the sheet copy (avatar included) to
+    the claiming player."""
+    try:
+        from core.pregen_roster import slug_for
+
+        doc = await services.documents.get(room, "pregen", slug_for(name))
+        if doc is None:
+            return
+        data = dict(doc.data)
+        data["avatar"] = avatar_ref
+        sheet = data.get("sheet")
+        if isinstance(sheet, dict):
+            sheet["avatar"] = avatar_ref
+        await services.documents.put(room, "pregen", slug_for(name), data)
+    except Exception:  # noqa: BLE001 — best-effort binding
+        logger.warning("[module-media] pregen avatar update failed for %s in %s", name, room)
+
+
+async def drop_pregen_job(services: Any, room: str, name: str) -> None:
+    """Remove every portrait job for one roster character (used when the character
+    itself is deleted — a `.pc delete` must not leave a stray job record behind)."""
+    jobs = await load_room_pregen_jobs(services, room)
+    kept = [j for j in jobs if j.get("subject") != name]
+    if len(kept) != len(jobs):
+        await _save_room_pregen_jobs(services, room, kept)

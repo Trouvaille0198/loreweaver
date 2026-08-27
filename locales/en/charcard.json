@@ -10,9 +10,15 @@
   "charcard.commands.import.unknown_option": "Unrecognized option \"{option}\" — expected a rule system (a rulepack id or one of its names) or pc/companion/world. Nothing was imported.",
   "charcard.commands.import.usage": "Usage: .import <card file|pack ref> [coc7|dnd5e] [pc|companion|world] — `.import list` shows the refs installed packs ship.",
   "charcard.commands.import.world_denied": "Only an authenticated Keeper can import a world card (it installs room hooks and seeds shared variables).",
-  "charcard.concept_prompt": "You convert a SillyTavern persona into a TRPG character concept for {system}. Use the persona and module context only as inspiration; do not invent numeric stats. Return JSON only with keys: occupation/class, attribute_emphasis as a ranked list of attribute codes, signature_skills as a short list, backstory as 1-2 lines, and optionally attribute_tweaks as an object of small zero-sum attribute-code deltas (e.g. {{\"STR\": 10, \"APP\": -10}}) when the persona clearly justifies it — deltas are engine-validated and any invalid set is dropped entirely, so never write absolute stat values. Optionally also skill_allocations: an object mapping skill names to target values for skills the persona clearly trained. {skill_rules}Module context: {module_context}\nPersona:\n{persona}",
+  "charcard.concept_prompt": "You convert a SillyTavern persona into a TRPG character concept for {system}. Use the persona and module context only as inspiration; do not invent numeric stats. Return JSON only with keys: {identity_fields}attribute_emphasis as a ranked list of attribute codes, signature_skills as a short list, backstory as 1-2 lines, and optionally attribute_tweaks as an object of small zero-sum attribute-code deltas (e.g. {{\"STR\": 10, \"APP\": -10}}) when the persona clearly justifies it — deltas are engine-validated and any invalid set is dropped entirely, so never write absolute stat values. Optionally also skill_allocations: an object mapping skill names to target values for skills the persona clearly trained. {skill_rules}Module context: {module_context}\nPersona:\n{persona}",
   "charcard.concept_skill_rules": "Hard rules for skill_allocations: each target value {min}-{max}; the total spend above each skill's base value must stay within roughly {budget} points — the engine clamps and scales overspend down proportionally, so stay inside the budget. ",
-  "charcard.tools.import.done_companion": "Imported \"{name}\" as an AI companion (id {id}, {system}). Key stats: {stats}. Lore entries added: {lore}.",
+  "charcard.roster_concept_prompt": "You are the keeper's casting assistant for {system}. The adventure's summary:\n{module_context}\n\nWrite ONE claimable character fitted to this adventure. Return JSON with exactly three keys: \"name\" (a fitting name), \"description\" (1-2 lines of who they are, tied to the adventure), and \"appearance\" (2-3 sentences of concrete appearance — build, age, hair, eyes, clothing, distinguishing marks — written so an artist can draw them from this text alone). The keeper's reference — keep it or refine it, may be empty: {reference}\nInvent nothing beyond the adventure summary and the reference.",
+  "charcard.tools.import.done_companion": "Claimed \"{name}\" for the AI as a companion (id {id}, {system}). Key stats: {stats}. Lore entries added: {lore}.",
+  "charcard.tools.import.companion_roster_full": "Could not import \"{name}\" as a companion: the roster is full.",
+  "charcard.tools.import.companion_unknown": "Could not import \"{name}\" as a companion: the character never reached the roster.",
+  "charcard.tools.import.companion_taken": "❌ \"{name}\" is already claimed — re-importing refreshes the character, not the claim.",
+  "charcard.tools.import.companion_corrupt": "Could not import \"{name}\" as a companion: the stored sheet is unreadable.",
+  "charcard.tools.import.companion_name_conflict": "Could not import \"{name}\" as a companion: the name belongs to a character another player created.",
   "charcard.tools.import.done_pc": "Imported \"{name}\" as your player character ({system}). Key stats: {stats}. Lore entries added: {lore}.",
   "charcard.tools.import.failed": "Failed to import character: {error}",
   "charcard.tools.import.no_file": "Could not read the character card at {path}.",
@@ -47,5 +53,6 @@
   "charcard.tools.brief.label.opening": "Authored opening",
   "charcard.tools.brief.label.alt_opening": "Alternate opening {index}",
   "charcard.tools.world.specs_line": "Typed variables: {count} tracker(s) defined from the native bundle.",
-  "charcard.tools.world.system_pinned": "Room system pinned to {system} — the module's pack ships it, so the cast and new characters are built on it (name a system on import to override)."
+  "charcard.tools.world.system_pinned": "Room system pinned to {system} — the module's pack ships it, so the cast and new characters are built on it (name a system on import to override).",
+  "charcard.concept_identity_fields": "identity fields to fill when the persona implies them ({fields} — return them under these exact keys), "
 }

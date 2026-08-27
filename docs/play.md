@@ -210,5 +210,5 @@ Worth knowing, because it changes how you play:
 
 ---
 
-*Next: [how modules become a played campaign](modules.md) · [running a table](operating.md) · [authoring a module](authoring.md) ·
+*Next: [items: granting, using, removing gear](items.md) · [how modules become a played campaign](modules.md) · [running a table](operating.md) ·
 [the full command manual](https://1a7432.site/commands-en.html)*

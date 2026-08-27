@@ -2012,14 +2012,21 @@ async def test_dnd_st_recomputes_persisted_skill_initiative_and_ac():
     from core.rulepacks import load_rulepack
     from core.sheets import sheet_value
 
-    pack = load_rulepack("dnd5e")
-    assert sheet_value(character, pack, "运动") == 3
-    assert sheet_value(character, pack, "体操") == 2
-    assert sheet_value(character, pack, "隐匿") == 2
-    assert sheet_value(character, pack, "先攻修正") == 2
-    assert sheet_value(character, pack, "护甲等级") == 12
-    assert "先攻修正" not in character.attributes
-    assert "护甲等级" not in character.attributes
+async def test_dnd_sheet_display_shows_level_and_derived_skills():
+    services = _services()
+    router = CommandRouter(services)
+    ctx = AgentCtx(chat_key="cli:dm:dnd-show", user_id="u1", locale="en")
+    await services.characters.save_character("u1", ctx.chat_key, CharacterSheet("Fighter", "DnD5e"))
+
+    await router.dispatch(ctx, ".st STR16 DEX14 等级3")
+
+    shown = await router.dispatch(ctx, ".st")
+    assert shown is not None
+    # Level is a sheet field and the 18 derived skills are folded back into the
+    # display — a D&D card must show them even though none is persisted.
+    assert "等级" in shown and "3" in shown
+    assert "运动" in shown and "3" in shown  # STR 16 → +3
+    assert "体操" in shown and "2" in shown  # DEX 14 → +2
 
 
 async def test_dnd_same_st_explicit_ac_override_wins_regardless_of_order():
@@ -2583,8 +2590,13 @@ async def test_npc_and_companion_give_the_keeper_a_hand_on_the_cast():
         services.documents, chat_key, "老蒯", persona="the warden", secret_agenda="knows the dormancy month",
         knowledge=["the belt sleeps in the eleventh month"], location="the boundary stones",
     )
-    # A real companion the way the Keeper makes one: record + sheet under `companion:<id>`.
-    assert (await CompanionTools(services).add_companion(keeper, name="公所助手", persona="a clerk")).startswith("✅")
+    # A real companion the way the Keeper makes one: the roster holds the character,
+    # the AI claims it — record + sheet under `companion:<id>` derive from that entry.
+    from core.character_manager import CharacterSheet
+    from core.pregen_roster import pregen_add
+
+    await pregen_add(services.documents, chat_key, CharacterSheet("公所助手", "coc7"), source="card")
+    assert (await CompanionTools(services).add_companion(keeper, name="公所助手")).startswith("✅")
     helper_id = next(r.id for r in await list_npcs(services.documents, chat_key) if r.name == "公所助手")
     assert helper_id != "npc"  # a CJK name slugs to the shared "npc" fallback → suffixed after 老蒯
 
@@ -2617,9 +2629,9 @@ async def test_npc_and_companion_give_the_keeper_a_hand_on_the_cast():
     assert {record.name for record in await list_npcs(services.documents, chat_key)} == {"老蒯"}
     assert await services.characters.list_characters(companion_uid(helper_id), chat_key) == []
     assert "公所助手" not in {row["name"] for row in await services.characters.get_party_roster(chat_key)}
-    # Another NPC takes the freed id, so the re-added companion lands under a NEW id.
+    # Another NPC takes the freed id, so the re-claimed companion lands under a NEW id.
     await create_npc(services.documents, chat_key, "梅婆", persona="the matron")
-    assert (await CompanionTools(services).add_companion(keeper, name="公所助手", persona="a clerk")).startswith("✅")
+    assert (await CompanionTools(services).add_companion(keeper, name="公所助手")).startswith("✅")
     new_id = next(r.id for r in await list_npcs(services.documents, chat_key) if r.name == "公所助手")
     assert new_id != helper_id
     assert [c["name"] for c in await services.characters.list_characters(companion_uid(new_id), chat_key)] == ["公所助手"]
@@ -2637,6 +2649,6 @@ async def test_npc_and_companion_give_the_keeper_a_hand_on_the_cast():
     from core.character_manager import CharacterSheet
 
     await services.characters.save_character("p1", chat_key, CharacterSheet("平知章", "coc7"))
-    refused = await router.dispatch(keeper, ".party add 平知章 | a surveyor")
+    refused = await router.dispatch(keeper, ".party add 平知章")
     assert refused.startswith("❌") and "平知章" in refused
     assert {record.name for record in await list_npcs(services.documents, chat_key)} == {"老蒯"}

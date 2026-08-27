@@ -41,8 +41,8 @@ _CUSTOM_KINDS = frozenset(
         "module_update",
         "module_bundle_upload",
         "module_media_generate",
+        "pregen_avatar",
         "worldbook_list",
-        "worldbook_detail",
         "worldbook_upload",
         "worldbook_select",
         "worldbook_disable",
@@ -127,6 +127,8 @@ class ModuleAdminService:
             return await self._import(caller_room, root, payload, import_i18n)
         if kind == "module_media_generate":
             return await self._media_generate(caller_room, payload, i18n)
+        if kind == "pregen_avatar":
+            return await self._pregen_avatar(caller_room, payload, i18n)
         worldbook_root = self._worldbook_root()
         worldbook_root.mkdir(parents=True, exist_ok=True)
         if kind == "worldbook_list":
@@ -270,7 +272,10 @@ class ModuleAdminService:
             if not world_cards:
                 return _module_reply("module_detail", False, raw_name, {"error": "source_not_found"})
         title = dict(manifest.name).get("en") or pack_id
-        description = dict(manifest.description).get("en") or ""
+        # The card's own description is the AUTHORED pitch ("死亡级难度的 1-2 级短模组…"),
+        # which carries the difficulty/level the keeper chose; the manifest template
+        # description is only the fallback for hand-written packs that skip it.
+        description = ""
 
         # Read the pack's own world card(s): its lore, variables, pregens, and prose. The world
         # card is the pack's module content — showing it needs no room import.
@@ -280,6 +285,8 @@ class ModuleAdminService:
         items: list[dict[str, Any]] = []
         scenario = ""
         opening = ""
+        levels = ""
+        difficulty = ""
         for _card_entry, card_path in world_cards:
             try:
                 card = json.loads(card_path.read_text(encoding="utf-8"))
@@ -344,6 +351,30 @@ class ModuleAdminService:
                 )
             scenario = str(card.get("scenario") or "") or scenario
             opening = str(card.get("opening") or "") or opening
+            # The forge stamps a machine difficulty tier on the card; legacy packs only
+            # carry it as a tag (e.g. "死亡级" for deadly) — fall back to tag matching so
+            # the detail UI's difficulty chip works for both.
+            description = str(card.get("description") or "") or description
+            levels = str(card.get("recommended_levels") or "") or levels
+            difficulty = str(card.get("difficulty") or "") or difficulty
+            if not difficulty:
+                for _tag in card.get("tags") or []:
+                    _t = str(_tag).strip().casefold()
+                    if _t in {"easy", "standard", "hard", "deadly"}:
+                        difficulty = _t
+                        break
+                    if _t in {"简单", "轻松", "容易"}:
+                        difficulty = "easy"
+                        break
+                    if _t in {"标准", "普通"}:
+                        difficulty = "standard"
+                        break
+                    if _t in {"困难", "艰难"}:
+                        difficulty = "hard"
+                        break
+                    if _t in {"死亡级", "极限", "致命"}:
+                        difficulty = "deadly"
+                        break
 
         # The pack's bundled rulepack(s) and KP skill(s) install into the shared discovery dirs
         # (`data/rulepacks/`, `data/skills/`) — not the pack home — so resolve them by the
@@ -474,6 +505,8 @@ class ModuleAdminService:
                 "items": items,
                 "rulepacks": rulepacks,
                 "skills": skills,
+                "levels": levels,
+                "difficulty": difficulty,
             },
         )
 
@@ -959,6 +992,84 @@ class ModuleAdminService:
 
         asyncio.get_running_loop().create_task(_plan_and_queue())
         return _module_reply("module_media_generate", True, pack_id, {"queued": 0, "planning": True})
+
+
+    async def _pregen_avatar(self, caller_room: str, payload: dict[str, Any], i18n: Any) -> dict[str, Any]:
+        """Generate a roster character's portrait through the SAME async illustration
+        lane the module detail page uses: one room-scoped job (prompt built from the
+        character's appearance + persona), rendered by the background worker. The
+        chat-side "生成头像" entry — works for module-imported AND `.pc gen`-born
+        characters. Returns immediately; the portrait lands on the pregen document
+        and any claimed party member when the worker finishes."""
+        from gateway.hub import Event
+        from gateway.module_media import queue_pregen_avatar
+
+        name = str(payload.get("name") or "").strip()
+        if not name:
+            return _module_reply("pregen_avatar", False, "", {"error": "bad_request"})
+        chat_key = chat_key_for_room(caller_room)
+        ok, detail = await queue_pregen_avatar(self.services, chat_key, name)
+        if ok:
+            # An avatar render runs off the turn lock — the table sees a pending
+            # spinner right away, then the outcome when the worker finishes.
+            logger.warning("[pregen-avatar] hub=%s room=%s name=%s", self.hub is not None, chat_key, name)
+            if self.hub is not None:
+                await self.hub.publish(
+                    chat_key,
+                    Event(
+                        kind="system",
+                        text=i18n.t("agent.forge.pregen_avatar_pending", name=name),
+                        data={"level": "info", "spinner": True},
+                    ),
+                )
+            asyncio.get_running_loop().create_task(
+                self._publish_after_pregen_avatar(caller_room, chat_key, name, i18n)
+            )
+        return _module_reply("pregen_avatar", ok, name, {} if ok else {"error": detail})
+
+    async def _publish_after_pregen_avatar(self, caller_room: str, chat_key: str, name: str, i18n: Any) -> None:
+        """Poll the room's pregen portrait job until it settles, then retire the pending
+        spinner in place, broadcast the outcome, and push a fresh room-state frame (the
+        pregen document and any claimed party member now carry the new portrait).
+        Bounded: a hung render stops being polled after ~4 minutes, and the portrait
+        still lands whenever the worker eventually finishes."""
+        from gateway.hub import Event
+        from gateway.module_media import load_room_pregen_jobs
+
+        try:
+            outcome = "done"
+            for _ in range(120):
+                await asyncio.sleep(2)
+                jobs = await load_room_pregen_jobs(self.services, chat_key)
+                job = next((j for j in jobs if j.get("subject") == name), None)
+                if job is None or job.get("status") in ("done", "failed"):
+                    outcome = str(job.get("status") or outcome) if job else outcome
+                    break
+            if self.hub is not None:
+                from gateway.turn import publish_state
+
+                await self.hub.publish(
+                    chat_key,
+                    Event(
+                        kind="system",
+                        text=i18n.t("agent.forge.pregen_avatar_pending", name=name),
+                        data={"level": "info", "spinner": False},
+                    ),
+                )
+                await self.hub.publish(
+                    chat_key,
+                    Event(
+                        kind="system",
+                        text=i18n.t(
+                            "agent.forge.pregen_avatar_failed" if outcome != "done" else "agent.forge.pregen_avatar_done",
+                            name=name,
+                        ),
+                        data={"level": "info"},
+                    ),
+                )
+                await publish_state(self.hub, self.services, AgentCtx(chat_key=chat_key))
+        except Exception:  # noqa: BLE001 — state push must never break the admin reply
+            logger.exception("pregen avatar state push failed for %s in %s", name, caller_room)
 
 
     async def _delete(self, caller_room: str, root: Path, payload: dict[str, Any]) -> dict[str, Any]:

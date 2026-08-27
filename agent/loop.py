@@ -143,6 +143,7 @@ import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 
 from agent.chronicle import (
     advance_chronicle_turn,
@@ -166,6 +167,7 @@ from agent.kp_tools_subsystems import dispatch_subsystem, subsystem_schemas
 from agent.prompt_builder import build_system_prompt_parts
 from agent.services import Services
 from agent.tool_phase import room_capabilities, room_phase
+from agent.module_lifecycle import active_module
 from agent.tool_trace import record_tool_call, tool_trace_enabled
 from agent.tools import Toolset
 from agent.turn_checks import (
@@ -205,6 +207,14 @@ _TEXT_TOOL_CALL_WRAPPER_RE = re.compile(
 _TEXT_TOOL_CALL_MARKER_RE = re.compile(r"<\s*(?:name|tool_name|args|arguments|parameter)\b|mcp__", re.IGNORECASE)
 
 
+# Streaming is coalesced to keep the connection's write lock free for OTHER frames
+# (an admin read like `.module`/keeper-settings list must not queue behind a fast
+# narrator's delta flood). A delta fires at a paragraph boundary, or when enough
+# text has piled up, or after a short interval — never on every token.
+_STREAM_FLUSH_INTERVAL = 0.08  # seconds — max cadence between streamed deltas
+_STREAM_MAX_PENDING = 200  # chars — force a flush even inside the interval
+
+
 # The FOUR coarse activity categories a room may be told a turn is in (protocol 2.3.1's
 # optional `turn_status.activity`). Deliberately coarse and closed: a tool's own name or
 # arguments would put keeper-side material on a room-wide frame, so the wire only ever
@@ -238,6 +248,44 @@ def _strip_text_tool_calls(reply: str) -> str:
     if cleaned == reply:
         return reply
     return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+
+# The final reply must preserve a tool round's discarded narration (the events happened
+# and the players saw them stream); `loop.draft_resume` asks the model to fold it back
+# in, but that is a soft constraint. These helpers detect the dropped-whole-scene case
+# so the engine can rescue it (see the merge in `_run_kp_turn_body`).
+# The item_forged NONE protocol accepts the model's bare "NONE" plus common
+# decorations it may wrap around it ("NONE。", "NONE（仅桌外讨论，未发生物品变动）").
+# Anything else is a real rewrite and replaces the reply.
+_ITEM_NONE_REPLY_RE = re.compile(r"^\s*none\b", re.IGNORECASE)
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Split narration into sentences on CJK/Latin end punctuation and line breaks."""
+    return [part.strip() for part in _SENTENCE_BOUNDARY_RE.split(text) if part.strip()]
+
+
+def _reply_covers_draft(draft: str, reply: str) -> bool:
+    """Whether the final reply plausibly preserves the discarded tool-round draft.
+
+    A model that folds the narration back in rewrites it, so exact containment
+    never matches; but a reply sharing no substantive sentence with the draft has
+    plainly dropped the whole scene. Sentence-level longest-common-substring
+    check: any draft sentence carrying a run of >= 6 chars inside some reply
+    sentence counts as preserved. Noise (short filler, bullets) is skipped.
+    """
+    if not draft.strip() or not reply.strip():
+        return True
+    reply_sentences = [s for s in _split_sentences(reply) if len(s) >= _DRAFT_COVERAGE_MIN_RUN]
+    if not reply_sentences:
+        return True
+    for ds in _split_sentences(draft):
+        if len(ds) < 12:
+            continue
+        for rs in reply_sentences:
+            if SequenceMatcher(None, ds, rs, autojunk=False).find_longest_match().size >= _DRAFT_COVERAGE_MIN_RUN:
+                return True
+    return False
 
 
 # Tag-name prefixes that may open a machinery block (`_TEXT_TOOL_CALL_WRAPPER_RE`) or an
@@ -275,6 +323,7 @@ class _ReplyStreamGate:
         self._flushed = ""
         self._discarded = ""
         self._tasks: list[asyncio.Task] = []
+        self._last_flush = time.monotonic()
 
     def begin_round(self) -> None:
         self._epoch += 1
@@ -282,12 +331,19 @@ class _ReplyStreamGate:
         self._pending = ""
         self._held = ""
         self._flushed = ""
+        self._last_flush = time.monotonic()
 
     def feed(self, delta: str) -> None:
         self._held += delta
         self._release_safe()
-        if len(self._pending) >= 48 or "\n" in self._pending:
+        now = time.monotonic()
+        if (
+            len(self._pending) >= _STREAM_MAX_PENDING
+            or "\n" in self._pending
+            or now - self._last_flush >= _STREAM_FLUSH_INTERVAL
+        ):
             self._flush()
+            self._last_flush = now
 
     def finish_round(self, *, discard: bool) -> str:
         """Round over: a tool round discards its draft (the client clears on the next
@@ -452,6 +508,14 @@ async def run_kp_turn(
     round open their own scope and restore this one.
     """
     with lane_scope("keeper", chat_key=ctx.chat_key, nested=True if ctx.platform == "companion" else None):
+        # Stamp the active module onto the lane so every model-call row in this
+        # turn names its scenario (and routes to the module's trace file).
+        try:
+            active = await active_module(services, ctx.chat_key)
+            if active:
+                set_lane_field(module=str(active.get("pack_id") or active.get("source_id") or ""))
+        except Exception:
+            pass
         return await _run_kp_turn_body(
             ctx,
             services,
@@ -564,12 +628,14 @@ async def _run_kp_turn_body(
     phase = await room_phase(services.store, ctx.chat_key)
     # …and what this ROOM actually has behind those tools: a world-card room has no
     # module knowledge pool, so the five pool-backed tools could only ever fail there.
+    # The room's rulepack adds its deterministic runtime capabilities (rest/combat/
+    # spells) so a non-D&D room never sees D&D's cast/rest/advance tooling.
     # Same filter family, same once-per-turn threading (see `agent.tool_phase`).
-    capabilities = await room_capabilities(services.documents, ctx.chat_key)
+    room_pack = await services.room_rulepack(ctx)
+    capabilities = await room_capabilities(services.documents, ctx.chat_key, pack=room_pack)
     # Stage D tool materialization: the room's rulepack declares which subsystem
     # tools exist here (a system that declares none materializes none), and their
     # schemas ride alongside the static toolset for this turn.
-    room_pack = await services.room_rulepack(ctx)
     subsystem_tools = subsystem_schemas(room_pack)
 
     # M20 A2: history is APPEND-ONLY between folds — the sliding window is gone, because
@@ -937,6 +1003,24 @@ async def _run_kp_turn_body(
         reply = output_review(reply)
 
     if gate is not None:
+        # Draft rescue: a tool round's narration is discarded while dice/tool results
+        # settle, and `loop.draft_resume` asks the model to fold it back into the final
+        # reply. That is a prompt-level request, and models sometimes miss it — the
+        # reply then never mentions the scene the players watched stream, and the
+        # events vanish from the fiction (the keeper still sees them as a draft).
+        # The engine guarantees what the prompt only requests — but ONLY when the
+        # draft could not have been overturned: a dice-class tool result is exactly
+        # what discards a narration (the model must correct the contradicted parts,
+        # and its corrected reply is authoritative). When no dice ran this turn,
+        # nothing could contradict the draft, so it is the only record of events the
+        # players already saw stream — and if the final reply shares no substantive
+        # sentence with it, the scene was dropped and the engine prepends the draft
+        # so the published reply preserves the events. Machinery-shaped leftovers
+        # are stripped first (the discarded archive holds pre-strip text).
+        dice_ran = any(item.get("name") in dice_tool_names() for item in tool_trace)
+        round_draft = _strip_text_tool_calls(gate.discarded_text())
+        if round_draft and not dice_ran and not _reply_covers_draft(round_draft, reply):
+            reply = round_draft.rstrip() + "\n\n" + reply.lstrip()
         await gate.drain()
     reply_record_id = await append_message(
         services,
@@ -1425,7 +1509,16 @@ async def _dispatch_one(
                 call.name, ctx, call.arguments, unlocked, phase=phase, capabilities=capabilities
             )
         suppressed = False
-    if tool_trace_enabled():
+    if tool_trace_enabled(ctx.chat_key):
+        # The module active for this call (pack_id or source_id) rides the trace row,
+        # so a room's file stays filterable by scenario after a module switch.
+        module_id = ""
+        try:
+            active = await active_module(services, ctx.chat_key)
+            if active:
+                module_id = str(active.get("pack_id") or active.get("source_id") or "")
+        except Exception:
+            module_id = ""
         record_tool_call(
             chat_key=ctx.chat_key,
             phase=phase,
@@ -1434,6 +1527,7 @@ async def _dispatch_one(
             result=tool_result,
             keeper_only=toolset.is_keeper_only(call.name),
             started=started,
+            module=module_id,
         )
     return tool_result, suppressed
 
@@ -1654,7 +1748,7 @@ async def _run_turn_checks(
                 # item confirmation while players see only the clean narration.
                 notes = check_notes if check_notes is not None else []
                 notes.append(f"[{check.id}] {instruction}\n{reply_text}")
-            if check.condition == "item_forged" and reply_text.casefold() == "none":
+            if check.condition == "item_forged" and _ITEM_NONE_REPLY_RE.match(reply_text):
                 # The NONE protocol: the model confirms that the item's holder did not
                 # change and the original prose stands. The confirmation is an answer
                 # TO THE ENGINE, never table text — keeping it out of the reply is what

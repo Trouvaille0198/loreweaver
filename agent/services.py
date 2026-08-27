@@ -17,7 +17,7 @@ from typing import Any
 from agent.context import AgentCtx
 from agent.document_manager import VectorDatabaseManager
 from agent.module_initializer import ModuleInitializer
-from agent.tool_trace import enable_tool_trace
+from agent.tool_trace import enable_tool_trace, persisted_trace_paths_sync
 from core.battle_report import BattleReportManager
 from core.character_manager import CharacterManager, has_character
 from core.dice_engine import DiceRoller
@@ -381,16 +381,19 @@ def build_services(
     initially offline app can hot-switch when credentials arrive."""
     settings = settings or get_settings()
     i18n = i18n or get_i18n(settings.locale)
-    # TRPG_DEBUG__TOOL_TRACE: off unless an operator asked for it. A relative path lands
-    # under data_dir, which is already private-mode — the file holds keeper-grade content
-    # (tool arguments and results), so it must never sit somewhere casually shared.
-    trace = (settings.debug.tool_trace or "").strip()
-    if not trace:
-        enable_tool_trace(None)
-    else:
-        path = Path(trace)
-        enable_tool_trace(path if path.is_absolute() else Path(settings.data_dir) / path)
     store = store or Store(db_path)
+    # TRPG_DEBUG__TOOL_TRACE / `.trace` runtime toggles: every persisted per-room
+    # choice (`.trace on` writes `runtime_config.tool_trace`) is restored so the
+    # toggles survive restarts; the env var stays the legacy GLOBAL fallback (room
+    # "") for rooms with no dedicated toggle. Relative paths land under data_dir,
+    # which is already private-mode — the files hold keeper-grade content (tool
+    # arguments and results), so they must never sit somewhere casually shared.
+    for room, trace_path in persisted_trace_paths_sync(store).items():
+        enable_tool_trace(trace_path, room=room)
+    env_trace = (settings.debug.tool_trace or "").strip()
+    if env_trace and "" not in persisted_trace_paths_sync(store):
+        path = Path(env_trace)
+        enable_tool_trace(path if path.is_absolute() else Path(settings.data_dir) / path, room="")
     runtime_config = RuntimeConfig(store)
     # One-shot: merge any legacy `runtime_config.credentials` data into the
     # unified `runtime_config.llm_profiles` book and drop the legacy key.

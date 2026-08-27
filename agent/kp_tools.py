@@ -59,7 +59,7 @@ def build_kp_toolset(
         prep_scripts,
         CharacterTools(services),
         DiceTools(services),
-        InitiativeTools(services),
+        InitiativeTools(services, command_router=command_router),
         ModuleTools(services),
         DocumentTools(services),
         NoteTools(services),

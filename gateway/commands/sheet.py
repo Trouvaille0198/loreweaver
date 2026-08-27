@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from dataclasses import dataclass
 
@@ -20,6 +21,7 @@ from core.sheets import set_sheet_value, sheet_value
 from gateway.commands.checks import _pack_for_character
 from gateway.commands.rooms import _is_keeper
 from gateway.commands.types import CommandCtx
+from gateway.hub import Event
 from gateway.turn import publish_state
 
 # Matches only the VALUE half of a `.st` assignment (a signed number or dice
@@ -278,7 +280,14 @@ def _render_sheet(ctx: CommandCtx, character: CharacterSheet, pack: RulePack) ->
         if value is None:
             value = sheet_value(character, pack, str(name))
         items.append(ctx.i18n.t("commands.sheet.item", name=name, value=value))
-    result = ctx.i18n.t("commands.sheet.show", name=character.name, items=", ".join(items))
+    items_per_line = int(pack.st_show.get("itemsPerLine") or 0)
+    if items_per_line > 0 and len(items) > items_per_line:
+        rendered = "\n".join(
+            ", ".join(items[index : index + items_per_line]) for index in range(0, len(items), items_per_line)
+        )
+    else:
+        rendered = ", ".join(items)
+    result = ctx.i18n.t("commands.sheet.show", name=character.name, items=rendered)
     # The character's backstory is part of who they are — show it on the card,
     # not only in the keeper's roster line.
     background = str(getattr(character, "background", "") or "").strip()
@@ -518,21 +527,24 @@ class SheetCommands:
         return ctx.i18n.t("commands.rename.changed", old=old_name, new=new_name)
 
     async def cmd_pc(self, ctx: CommandCtx) -> str:
-        """`.pc [list]|claim <name>|release [name]|info <name>` — the room's pre-generated
-        character roster (`core.pregen_roster`): the cast a keeper's world imports ship.
-        Listing and claiming are PLAYER actions (claiming is the whole point); releasing
-        someone else's claim is keeper-only; `info` shows any character's dossier."""
-        from core.pregen_roster import pregen_claim, pregen_entries, pregen_release
+        """.pc [list]|gen [reference]|claim <name>|release [name]|delete <name>|info <name>`
+        — the room's pre-generated character roster (`core.pregen_roster`): module
+        imports AND the keeper's `.pc gen` (a room-born character, fitted to the module's
+        summary) fill it. Listing and claiming are PLAYER actions (claiming is the whole
+        point) — the AI claims the same characters through its companion tools; releasing
+        someone else's claim is keeper-only; `delete` (keeper-only) removes a ROOM-BORN,
+        UNCLAIMED character entirely; `info` shows any character's dossier."""
+        from core.pregen_roster import pregen_claim, pregen_entries, pregen_find, pregen_release
 
         tokens = ctx.args.split()
         sub = tokens[0].casefold() if tokens else "list"
         rest = " ".join(tokens[1:]).strip()
         documents = ctx.services.documents
         chat_key = ctx.chat_key
-        if sub in {"info", "详情", "詳情"}:
-            if not rest:
-                return ctx.i18n.t("pregen.commands.info_usage")
-            return await self._pc_info(ctx, rest)
+        if sub in {"gen", "generate", "生成"}:
+            return await self._pc_gen(ctx, rest)
+        if sub in {"delete", "del", "remove", "删除", "刪除"}:
+            return await self._pc_delete(ctx, rest)
         if sub in {"claim", "认领", "認領"}:
             if not rest:
                 return ctx.i18n.t("pregen.commands.claim_usage")
@@ -553,9 +565,20 @@ class SheetCommands:
         if sub in {"release", "放弃", "放棄", "释放", "釋放"}:
             if not rest:
                 return ctx.i18n.t("pregen.commands.release_usage")
-            status = await pregen_release(
-                documents, chat_key, rest, ctx.user_id, ctx.services.characters, force=_is_keeper(ctx.raw_ctx)
-            )
+            entry = await pregen_find(documents, chat_key, rest)
+            if entry is not None and entry.get("claimed_by_kind") == "ai":
+                # An AI claim is the companion's whole (record + sheet + marker), and
+                # only the keeper has a hand on it — the AI has no CLI. Releasing goes
+                # through the agent layer's whole-or-nothing path.
+                if not _is_keeper(ctx.raw_ctx):
+                    return ctx.fail(ctx.i18n.t("pregen.commands.release_not_yours", name=rest))
+                from agent.kp_tools_companion import release_pregen_companion
+
+                status = await release_pregen_companion(ctx.services, chat_key, rest, force=True)
+            else:
+                status = await pregen_release(
+                    documents, chat_key, rest, ctx.user_id, ctx.services.characters, force=_is_keeper(ctx.raw_ctx)
+                )
             if status == "ok":
                 if ctx.router.hub is not None:
                     await publish_state(ctx.router.hub, ctx.services, ctx.raw_ctx)
@@ -574,7 +597,155 @@ class SheetCommands:
             if claimer:
                 line += ctx.i18n.t("pregen.commands.claimed_by_suffix", claimer=claimer)
             lines.append(line)
-        return "\n".join(lines)
+    async def _pc_gen(self, ctx: CommandCtx, rest: str) -> str:
+        """.pc gen [reference] — author a CLAIMABLE roster character (.pc list).
+        Keeper-only: it spends model calls and grows the room's claimable cast.
+
+        The AI writes the character's NAME and DESCRIPTION from the module's summary
+        (always) and your optional `reference` text (a name, a concept, or both —
+        e.g. `.pc gen 阿岚 | 瘴雾镇的调查员`) as a hint; the sheet is built on the
+        ROOM's active rule system, never a picked one. The character lives in the
+        ROOM, not in any module pack: it rides no `.lwpack`, survives a module swap
+        (`source="room"` is exempt from the purge), and is claimable by players
+        (`.pc claim`) and by the AI (`.party add` / the companion tools) exactly
+        like a module-imported pregen. The description doubles as the character's
+        blurb — the persona an AI claim builds its companion record from.
+
+        In a live room the generation runs ASYNCHRONOUSLY: a pending spinner is
+        broadcast first, the two model calls happen in a background task (never
+        holding the turn lock), and the outcome lands as a system message when it
+        finishes. The CLI path (no hub) stays synchronous."""
+        if not _is_keeper(ctx.raw_ctx):
+            return ctx.fail(ctx.i18n.t("rooms.denied"))
+        try:
+            from agent.kp_tools_charcard import _module_full_context
+
+            system = (await ctx.services.room_rulepack(ctx.raw_ctx)).system
+            module_context = await _module_full_context(ctx.services, ctx.chat_key)
+            if not module_context.strip():
+                # No adventure to fit the character to: the model would only invent a
+                # placeholder (a "待定" nobody asked for) — refuse loudly instead.
+                return ctx.fail(ctx.i18n.t("pregen.commands.gen_no_module"))
+        except Exception as exc:
+            return ctx.fail(ctx.i18n.t("pregen.commands.gen_error", error=str(exc)))
+        if ctx.router.hub is not None:
+            # Two model calls can take tens of seconds — never under the room's turn
+            # lock. Broadcast a pending spinner, generate in the background, publish
+            # the outcome when it lands (spinner retired in place, like `.image`).
+            await ctx.router.hub.publish(
+                ctx.chat_key,
+                Event(
+                    kind="system",
+                    text=ctx.i18n.t("pregen.commands.gen_pending"),
+                    data={"level": "info", "spinner": True},
+                ),
+            )
+            asyncio.get_running_loop().create_task(
+                self._pc_gen_worker(ctx, system, module_context, rest.strip())
+            )
+            return ""
+        return await self._pc_gen_sync(ctx, system, module_context, rest.strip())
+
+    async def _pc_gen_sync(self, ctx: CommandCtx, system: str, module_context: str, reference: str) -> str:
+        """The generation proper — concept call, sheet build, roster write. Shared by
+        the CLI path (returns the outcome text) and the hub worker (whose caller
+        publishes that text)."""
+        try:
+            from agent.char_from_persona import roster_character_concept
+            from core.pregen_roster import pregen_add
+
+            concept = await roster_character_concept(
+                ctx.services, system, module_context, reference=reference
+            )
+            name = concept.get("name") or ""
+            description = concept.get("description") or ""
+            if not name:
+                return ctx.fail(ctx.i18n.t("pregen.commands.gen_no_name"))
+            sheet = await build_sheet_from_description(
+                ctx.services,
+                description or name,
+                system,
+                name=name,
+                module_context=module_context,
+                creation="pregen",
+            )
+            sheet.name = name
+            sheet, violations = validate_sheet(sheet, system, initialize_vitals=True)
+            entry = await pregen_add(
+                ctx.services.documents,
+                ctx.chat_key,
+                sheet,
+                source="room",
+                blurb=description or name,
+                appearance=concept.get("appearance") or "",
+            )
+            if entry is None:
+                return ctx.fail(ctx.i18n.t("pregen.commands.gen_failed", name=name))
+            if ctx.router.hub is not None:
+                await publish_state(ctx.router.hub, ctx.services, ctx.raw_ctx)
+            result = ctx.i18n.t(
+                "pregen.commands.gen_done", name=sheet.name, system=sheet.system
+            )
+            notice = render_validation_notice(ctx.i18n, violations)
+            return f"{result}\n{notice}" if notice else result
+        except Exception as exc:
+            return ctx.fail(ctx.i18n.t("pregen.commands.gen_error", error=str(exc)))
+
+    async def _pc_gen_worker(self, ctx: CommandCtx, system: str, module_context: str, reference: str) -> None:
+        """Hub-mode background generation: run the sync core, then retire the pending
+        spinner in place and broadcast the outcome."""
+        try:
+            result = await self._pc_gen_sync(ctx, system, module_context, reference)
+        except Exception as exc:  # noqa: BLE001 — the worker must never die silently
+            result = ctx.fail(ctx.i18n.t("pregen.commands.gen_error", error=str(exc)))
+        await ctx.router.hub.publish(
+            ctx.chat_key,
+            Event(
+                kind="system",
+                text=ctx.i18n.t("pregen.commands.gen_pending"),
+                data={"level": "info", "spinner": False},
+            ),
+        )
+        await ctx.router.hub.publish(
+            ctx.chat_key,
+            Event(kind="system", text=result, data={"level": "info"}),
+        )
+
+
+    async def _pc_delete(self, ctx: CommandCtx, rest: str) -> str:
+        """.pc delete <name> — remove a ROOM-BORN, UNCLAIMED roster character entirely.
+        Keeper-only. Only `.pc gen` characters (`source="room"`) that nobody has claimed
+        can be deleted: a module-imported cast member is the module's own asset, and a
+        claimed character is someone's active seat — neither is a delete."""
+        if not _is_keeper(ctx.raw_ctx):
+            return ctx.fail(ctx.i18n.t("rooms.denied"))
+        if not rest:
+            return ctx.i18n.t("pregen.commands.delete_usage")
+        from core.pregen_roster import pregen_find, slug_for
+
+        entry = await pregen_find(ctx.services.documents, ctx.chat_key, rest)
+        if entry is None:
+            return ctx.fail(ctx.i18n.t("pregen.commands.delete_unknown", name=rest))
+        name = str(entry.get("name") or rest)
+        if str(entry.get("source") or "") != "room":
+            return ctx.fail(ctx.i18n.t("pregen.commands.delete_module_denied", name=name))
+        if entry.get("claimed_by"):
+            return ctx.fail(ctx.i18n.t("pregen.commands.delete_claimed", name=name))
+        deleted = await ctx.services.documents.delete(ctx.chat_key, "pregen", slug_for(name))
+        if not deleted:
+            return ctx.fail(ctx.i18n.t("pregen.commands.delete_unknown", name=name))
+        # The character's portrait jobs die with it — no stray job record in the
+        # room's async lane for a character that no longer exists.
+        try:
+            from gateway.module_media import drop_pregen_job
+
+            await drop_pregen_job(ctx.services, ctx.chat_key, name)
+        except Exception:  # noqa: BLE001 — job cleanup must never fail the delete
+            pass
+        if ctx.router.hub is not None:
+            await publish_state(ctx.router.hub, ctx.services, ctx.raw_ctx)
+        return ctx.i18n.t("pregen.commands.delete_done", name=name)
+
 
     async def _pc_info(self, ctx: CommandCtx, name: str) -> str:
         """`.pc info <name>` — a character's dossier: module source, memory

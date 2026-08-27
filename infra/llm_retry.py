@@ -44,7 +44,7 @@ from collections.abc import Callable
 from typing import Any
 
 from infra.llm import ChatResult, LLMClient
-from infra.model_call_trace import record_model_call
+from infra.model_call_trace import record_model_call, sink_installed
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +258,7 @@ class RetryingLLM:
                         model=model or "",
                         error=error,
                         status=status_of(error),
+                        prompt=_messages_digest(messages) if sink_installed() else "",
                     )
                     raise
                 delay = backoff_delay(attempt, rand=self._rand)
@@ -277,15 +278,62 @@ class RetryingLLM:
                     self._on_retry(attempt, delay, error)
                 await self._sleep(delay)
             else:
+                want_content = sink_installed()
                 record_model_call(
                     ms=(time.perf_counter() - started) * 1000.0,
                     attempts=attempt,
                     usage=getattr(result, "usage", None),
                     model=model or "",
+                    prompt=_messages_digest(messages) if want_content else "",
+                    completion=_completion_digest(result) if want_content else "",
                 )
                 return result
         # Unreachable — the loop above either returns or re-raises.
         raise last_error if last_error is not None else RuntimeError("retry loop exited without a result")  # i18n-exempt: developer invariant, never player-facing
+
+
+def _messages_digest(messages: list[dict]) -> str:
+    """The call's INPUT as one bounded text: `role: content` per message, image
+    blocks collapsed to `[image]`. The sink caps the final row, so the digest is
+    only bounded here for the cheap (no-call) path."""
+    lines: list[str] = []
+    for message in messages:
+        role = str(message.get("role") or "?")
+        content = message.get("content")
+        if isinstance(content, str):
+            lines.append(f"{role}: {content}")
+        elif isinstance(content, list):
+            parts: list[str] = []
+            for block in content:
+                if isinstance(block, dict):
+                    block_type = str(block.get("type") or "")
+                    if block_type == "text":
+                        parts.append(str(block.get("text") or ""))
+                    elif block_type == "image_url":
+                        parts.append("[image]")
+                    else:
+                        parts.append(f"[{block_type}]")
+                else:
+                    parts.append(str(block))
+            lines.append(f"{role}: {' '.join(parts)}")
+        else:
+            lines.append(f"{role}: {content}")
+    return "\n".join(lines)
+
+
+def _completion_digest(result: Any) -> str:
+    """The call's OUTPUT as one bounded text: the reply text plus any tool calls."""
+    parts: list[str] = []
+    content = getattr(result, "content", None)
+    if content:
+        parts.append(str(content))
+    for call in getattr(result, "tool_calls", None) or []:
+        name = str(getattr(call, "name", "") or "")
+        arguments = getattr(call, "arguments", None)
+        if arguments is None:
+            arguments = getattr(call, "raw_arguments", "")
+        parts.append(f"[tool_call {name}({arguments})]")
+    return "\n".join(parts)
 
 
 def unwrap_llm(client: Any) -> Any:

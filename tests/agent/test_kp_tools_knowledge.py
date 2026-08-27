@@ -479,3 +479,30 @@ async def test_pool_backed_tools_are_absent_from_a_room_that_has_no_pool():
 
     # An unfiltered caller (every pre-capability call site) still sees everything.
     assert pool_tools <= {schema["function"]["name"] for schema in toolset.schemas()}
+# ---------------------------------------------------------------------------
+# list_discovered_clues — the AI KP can see what the party already knows
+# ---------------------------------------------------------------------------
+
+
+async def test_list_discovered_clues_returns_the_room_log():
+    services = build_services(Settings(), llm=FakeLLM(), embeddings=FakeEmbeddings(8))
+    tools = ModuleTools(services)
+    from agent.clue_log import reveal_clue
+
+    await reveal_clue(services.documents, CHAT_KEY, title="The ledger", content="The ledger names the missing sailors.")
+    await reveal_clue(services.documents, CHAT_KEY, title="Tide table", content="Three circled dates.")
+
+    result = await tools.list_discovered_clues(_ctx(locale="en"))
+
+    assert "The ledger" in result
+    assert "Tide table" in result
+    assert "2" in result  # the header count
+
+
+async def test_list_discovered_clues_empty_room_does_not_raise():
+    services = build_services(Settings(), llm=FakeLLM(), embeddings=FakeEmbeddings(8))
+    tools = ModuleTools(services)
+
+    result = await tools.list_discovered_clues(_ctx(locale="en"))
+
+    assert isinstance(result, str) and result

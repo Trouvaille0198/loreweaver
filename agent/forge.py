@@ -786,6 +786,8 @@ def _build_module_messages(
     services: Services,
     description: str,
     *,
+    difficulty: str = "",
+    levels: str = "",
     locale: str | None = None,
 ) -> list[dict]:
     """Build the module-authoring messages in the caller's locale.
@@ -802,10 +804,46 @@ def _build_module_messages(
             i18n.t("agent.forge.module_id_requirement"),
         )
     )
+    difficulty_note = _difficulty_note(i18n, difficulty, levels)
+    if difficulty_note:
+        system_prompt = f"{system_prompt}\n\n{difficulty_note}"
     return [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": description},
     ]
+
+
+def _pack_has_levels(pack: Any) -> bool:
+    """Whether a rule system has character levels (D&D) — the ONLY systems the
+    module difficulty/level-range design drivers apply to. CoC/WoD have no level
+    concept, so they never get difficulty/level guidance or metadata."""
+    runtime = getattr(pack, "runtime_spec", None)
+    if runtime is None:
+        return False
+    return bool((runtime.advancement or {}).get("level_field"))
+
+
+def _difficulty_note(i18n: Any, difficulty: str, levels: str) -> str:
+    """The module-difficulty design driver injected into authoring prompts.
+
+    A named difficulty tier (easy/standard/hard/deadly) maps to a concrete
+    environment-and-challenge design brief; `levels` pins the recommended
+    character level range the module is tuned for. Returns "" when the
+    keeper gave neither — plain authoring as before.
+    """
+    parts: list[str] = []
+    difficulty = difficulty.strip().casefold()
+    if difficulty in {"easy", "standard", "hard", "deadly"}:
+        parts.append(i18n.t("agent.forge.module_difficulty_guidance", difficulty=difficulty))
+    levels = levels.strip()
+    if levels:
+        parts.append(
+            i18n.t(
+                "agent.forge.module_levels_requirement",
+                levels=levels,
+            )
+        )
+    return "\n\n".join(parts)
 
 
 def _build_module_prompt_messages(
@@ -898,6 +936,8 @@ async def generate_and_install_module(
     *,
     media: list[str] | None = None,
     companion: list[str] | None = None,
+    difficulty: str = "",
+    levels: str = "",
     progress: ProgressCb = None,
     auto_import: bool = True,
 ) -> ForgeResult:
@@ -946,9 +986,22 @@ async def generate_and_install_module(
         return repeated
 
     await _emit(progress, "authoring")
+    # Difficulty/level-range design drivers apply ONLY to level-based systems
+    # (D&D); CoC/WoD rooms never get them.
+    levels_ok = False
+    try:
+        levels_ok = _pack_has_levels(await services.room_rulepack(ctx))
+    except Exception:
+        pass
     content, failure = await _llm_authored(
         services,
-        _build_module_messages(services, description, locale=ctx.locale),
+        _build_module_messages(
+            services,
+            description,
+            difficulty=difficulty if levels_ok else "",
+            levels=levels if levels_ok else "",
+            locale=ctx.locale,
+        ),
         chat_key=ctx.chat_key,
     )
     if failure is not None:
@@ -1524,7 +1577,13 @@ def _parse_card_concepts(raw: str) -> list[dict[str, str]]:
         if not name or not description or name.casefold() in seen:
             continue
         seen.add(name.casefold())
-        concepts.append({"name": name, "description": description})
+        concepts.append(
+            {
+                "name": name,
+                "description": description,
+                "appearance": str(entry.get("appearance") or "").strip(),
+            }
+        )
     return concepts
 
 
@@ -1565,6 +1624,7 @@ async def _module_cards_pass(services: Services, ctx: AgentCtx, content: str, mo
                 source=f"forge-module:{module_id}",
                 blurb=re.split(r"[。！？!?；;\n]", concept["description"].strip(), maxsplit=1)[0].strip()[:200]
                 or concept["description"][:200],
+                appearance=concept.get("appearance") or "",
             )
         except Exception:  # one bad concept must not sink the rest of the cast
             continue
@@ -1656,6 +1716,7 @@ _PACK_MODULE_CARD_SCHEMA = """{
     "scenario": "the situation at turn zero (players' starting point)",
     "opening": "the module's opening text the keeper can quote at the table",
     "alternate_openings": ["other ways to enter the scenario (optional)"],
+    "recommended_levels": "recommended character level range for this module, e.g. '1-3' (REQUIRED for systems with character levels like D&D 5e; omit for systems without levels like CoC)",
     "tags": ["free-form keywords"],
     "worldbook": [
         {
@@ -1682,6 +1743,7 @@ _PACK_MODULE_CARD_SCHEMA = """{
             "name": "a claimable investigator's name in the module's OWN language — NEVER append an English or any other gloss in parentheses (put short forms and the English name in aliases)",
             "aliases": ["short forms of the name and its English/translated name, e.g. for 顾晚棠: 小棠, Gu Wantang"],
             "background": "2-4 sentences of persona: their history, personality, manner of speech, and a secret or flaw — the first sentence also serves as the roster one-liner",
+            "appearance": "the character's concrete appearance — build, age, hair, eyes, clothing, distinguishing marks — written so an artist can draw them from this text alone (2-3 sentences)",
             "occupation": "the character's job or occupation (e.g. 'Detective', 'Archaeologist', 'journalist'); empty if genuinely unemployed",
             "skills": {"Spot Hidden": 60, "Fast Talk": 45, "Library Use": 50}
         }
@@ -1804,6 +1866,8 @@ async def generate_and_install_pack_module(
     *,
     media: list[str] | None = None,
     companion: list[str] | None = None,
+    difficulty: str = "",
+    levels: str = "",
     progress: ProgressCb = None,
     auto_import: bool = True,
     extends_base: str = "",
@@ -1843,7 +1907,14 @@ async def generate_and_install_pack_module(
     # .lwpack the way it used to.
     raw, failure = await _llm_authored_retry(
         services,
-        _build_pack_module_messages(services, description, ctx.locale, system=system),
+        _build_pack_module_messages(
+            services,
+            description,
+            difficulty=difficulty if _pack_module_system_has_levels(system, extends_base) else "",
+            levels=levels if _pack_module_system_has_levels(system, extends_base) else "",
+            locale=ctx.locale,
+            system=system,
+        ),
         chat_key=ctx.chat_key,
     )
     if failure is not None:
@@ -1864,6 +1935,12 @@ async def generate_and_install_pack_module(
         # record it in the card so the room pins it on import. Mutually exclusive with
         # `extends_base` — a card that declares a system is not also generating a patch.
         card_text["system"] = system
+    # Machine-readable difficulty/level metadata, stamped from the keeper's choices (not the
+    # model's): the difficulty tier is an enum the detail UI keys on, and the level range is
+    # the authoritative fallback when the model did not author `recommended_levels`.
+    if difficulty and _pack_module_system_has_levels(system, extends_base):
+        card_text["difficulty"] = difficulty
+        card_text.setdefault("recommended_levels", str(levels))
 
     missing_labels = _missing_pack_module_labels(card_text, ctx.locale)
     if missing_labels:
@@ -1992,7 +2069,9 @@ async def generate_and_install_pack_module(
         if kind == "skills":
             await _emit(progress, "skill")
             logger.info("[pack-forge] generating companion skill")
-            skill_dir, note = await _pack_skill(services, ctx, description, source, i18n)
+            skill_dir, note = await _pack_skill(
+                services, ctx, description, source, i18n, difficulty=difficulty, levels=levels
+            )
             if skill_dir is not None:
                 packed_skills.append(skill_dir)
             # A failure note is still surfaced so the keeper knows the bundle is missing it.
@@ -2028,6 +2107,8 @@ async def generate_and_install_pack_module(
             _pack_module_manifest(
                 pack_id,
                 name,
+                levels=str(card_text.get("recommended_levels") or "").strip() if _pack_module_system_has_levels(system, extends_base) else "",
+                difficulty=str(difficulty).strip() if _pack_module_system_has_levels(system, extends_base) else "",
                 skills=packed_skills,
                 rulepacks=packed_rulepacks,
                 assets=asset_paths,
@@ -2121,7 +2202,13 @@ def _pack_module_skill_guidance(pack: Any, i18n: Any) -> str:
 
 
 def _build_pack_module_messages(
-    services: Services, description: str, locale: str | None = None, system: str = ""
+    services: Services,
+    description: str,
+    *,
+    locale: str | None = None,
+    system: str = "",
+    difficulty: str = "",
+    levels: str = "",
 ) -> list[dict]:
     """The two-message pack-module authoring prompt: localized framing + the fixed JSON schema.
 
@@ -2140,10 +2227,22 @@ def _build_pack_module_messages(
         description=description,
         schema=_PACK_MODULE_CARD_SCHEMA,
     )
+    difficulty_note = _difficulty_note(i18n, difficulty, levels)
+    if difficulty_note:
+        user_content = f"{user_content}\n\n{difficulty_note}"
     if system:
         try:
-            guidance = _pack_module_skill_guidance(rulepacks.load_rulepack(system), i18n)
+            pack = rulepacks.load_rulepack(system)
+            guidance = _pack_module_skill_guidance(pack, i18n)
             user_content = f"{user_content}\n\n{guidance}"
+            # Level-based systems (D&D): the recommended level range is REQUIRED
+            # module metadata — it is the module's difficulty identifier.
+            level_field = None
+            runtime = getattr(pack, "runtime_spec", None)
+            if runtime is not None:
+                level_field = (runtime.advancement or {}).get("level_field")
+            if level_field:
+                user_content = f"{user_content}\n\n{i18n.t('agent.forge.pack_module_levels_requirement')}"
         except Exception:
             pass  # unknown system: fall back to the schema's own generic example
     return [
@@ -2165,10 +2264,26 @@ def _extract_json_object(raw: str) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
+def _pack_module_system_has_levels(system: str, extends_base: str = "") -> bool:
+    """Whether the pack-module's declared system has character levels (D&D) —
+    the only systems the difficulty/level-range metadata applies to. Both the
+    direct-use system and a patched base system count (``patch:dnd5e`` is still
+    D&D)."""
+    candidate = system or extends_base
+    if not candidate:
+        return False
+    try:
+        return _pack_has_levels(rulepacks.load_rulepack(candidate))
+    except Exception:
+        return False
+
+
 def _pack_module_manifest(
     pack_id: str,
     name: str,
     *,
+    levels: str = "",
+    difficulty: str = "",
     skills: list[str] | None = None,
     rulepacks: list[str] | None = None,
     assets: list[str] | None = None,
@@ -2192,6 +2307,10 @@ def _pack_module_manifest(
         "description": {"en": "AI-authored module generated by the pack forge."},  # i18n-exempt  pack metadata, not UI text
         "contents": contents,
     }
+    if levels:
+        manifest["levels"] = str(levels).strip()
+    if difficulty:
+        manifest["difficulty"] = str(difficulty).strip()
     if assets:
         titles = asset_titles or {}
         manifest["assets"] = [
@@ -2218,16 +2337,24 @@ async def _pack_skill(
     description: str,
     source: Path,
     i18n,
+    *,
+    difficulty: str = "",
+    levels: str = "",
 ) -> tuple[str | None, str]:
     """Generate a KP skill and write it into the pack source tree as `skills/<id>/SKILL.md`.
     Returns `(pack-relative skill dir, localized note)` or `(None, note)` when generation fails
-    (best-effort: a bad skill never fails the pack)."""
+    (best-effort: a bad skill never fails the pack). ``difficulty``/``levels`` (the keeper's
+    module-difficulty choices) are injected so the skill's keeper guidance actually reflects
+    the scenario's threat intensity and level range instead of reading as generic boilerplate."""
     request = i18n.t(
         "agent.forge.module_companion_skill_request",
         title=description,
         description=description,
         module=description,
     )
+    difficulty_note = _difficulty_note(i18n, difficulty, levels)
+    if difficulty_note:
+        request = f"{request}\n\n{difficulty_note}"
     content, failure = await _llm_authored_retry(services, _build_messages(services, request), chat_key=ctx.chat_key)
     if failure is not None:
         logger.warning("[pack-forge] skill LLM failed: %s", failure.error)

@@ -219,6 +219,9 @@ class PackManifest:
     card_entries: tuple[PackCard, ...] = ()
     manifest_version: int = MANIFEST_VERSION
     files: tuple[PackFile, ...] = ()
+    # Recommended character level range ("1-3") for modules that run a
+    # level-based system (D&D); "" when the module declares none.
+    levels: str = "" 
 
     def display_name(self, locale: str) -> str:
         return self.name.get(locale) or self.name.get("en") or next(iter(self.name.values()), self.id)
@@ -525,6 +528,7 @@ def parse_manifest_text(text: str, *, expect_trust: bool) -> PackManifest:
         card_entries=card_entries,
         manifest_version=MANIFEST_VERSION,
         files=tuple(files),
+        levels=str(raw.get("levels") or "").strip()[:32],
     )
 
 

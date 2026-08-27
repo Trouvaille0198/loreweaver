@@ -71,12 +71,18 @@ def test_toolset_collects_all_static_tools_and_none_are_keeper_only():
         "skill_check",
         "hp_manager",
         "initiative_tracker",
+        "cast_spell",
+        "rest_manager",
+        "attack_target",
+        "advance_level",
+        "manage_resource",
+        "manage_spells",
     }
-    assert len(expected_names) == 21
+    assert len(expected_names) == 27
     assert set(toolset.names()) == expected_names
 
     schemas = toolset.schemas()
-    assert len(schemas) == 21
+    assert len(schemas) == 27
     for name in expected_names:
         assert toolset.is_keeper_only(name) is False
 

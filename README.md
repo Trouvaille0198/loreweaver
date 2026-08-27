@@ -361,6 +361,7 @@ ship on npm as [`loreweaver-protocol`](https://www.npmjs.com/package/loreweaver-
 | Understanding modules | [docs/modules.md](docs/modules.md) — definition, import, room state, turn-time behavior, player techniques, and implementation audit |
 | Module authors | [docs/authoring.md](docs/authoring.md) — build a `.lwpack` from zero, with a real module as the worked example |
 | Keepers & operators | [docs/operating.md](docs/operating.md) — models, quota, caching, backups, reset, self-update |
+| Item mechanics | [docs/items.md](docs/items.md) — granting, using, equipping, transferring, removing, archiving gear |
 | Server operators | [docs/deploy.md](docs/deploy.md) — always-on deployment, keys, trust boundaries |
 | Card authors | [docs/cards.md](docs/cards.md) — what imports, what runs, what differs from SillyTavern |
 | Hook authors | [docs/hooks.md](docs/hooks.md) — the sandboxed turn-lifecycle API |

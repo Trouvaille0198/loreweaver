@@ -40,19 +40,24 @@ from agent.clue_log import reveal_clue as _log_clue
 from agent.context import AgentCtx
 from agent.items import (
     aggregate_equipped_bonuses,
+    canonicalize_bonus_keys,
     catalog_template,
     consume_instance,
     find_instance,
+    get_item_catalog,
+    grant_improvised_instance,
     grant_instance,
     improvised_template,
     instances_for_owner,
     item_active,
+    module_source_id,
     parse_bonus_spec,
     render_held_items,
     render_item_views,
     reveal_linked_clues,
     set_equipped,
     template_is_consumable,
+    template_with_source,
     validate_improvised_bonus,
 )
 from agent.module_lifecycle import active_module
@@ -555,6 +560,39 @@ class CharacterTools:
     # mutation refreshes the sheet's equipped_bonuses. These verbs are the cross-owner
     # write path an AI Keeper uses to grant/move/consume gear on ANY member.
 
+    @tool(read_only=True)
+    async def list_item_catalog(self, ctx: AgentCtx) -> str:
+        """List the room's item CATALOG — every designed item (name, kind, slot, plot role, effect, bonus) the loaded module ships.
+
+        Check this BEFORE granting or improvising gear: catalog items carry the module's real mechanics (kind/effect/bonus/slot). When the party obtains one of them, grant it by its exact catalog name with grant_item — never improvise a substitute for a designed item. Improvise only when the object is genuinely off-catalog."""
+        i18n = self.services.i18n.with_locale(ctx.locale)
+        try:
+            items = await get_item_catalog(self.services.documents, ctx.chat_key)
+            if not items:
+                return i18n.t("kp_tools.item.catalog_empty")
+            lines: list[str] = []
+            for tpl in items:
+                if not isinstance(tpl, dict):
+                    continue
+                parts = [str(tpl.get("name") or "?")]
+                if tpl.get("kind"):
+                    parts.append(f"kind={tpl.get('kind')}")
+                if tpl.get("slot"):
+                    parts.append(f"slot={tpl.get('slot')}")
+                if tpl.get("plot_role"):
+                    parts.append(f"role={tpl.get('plot_role')}")
+                if tpl.get("effect"):
+                    parts.append(f"effect: {tpl.get('effect')}")
+                bonus = tpl.get("bonus")
+                if isinstance(bonus, dict) and bonus:
+                    parts.append("bonus: " + ", ".join(f"{key} {delta:+d}" for key, delta in bonus.items()))
+                lines.append(" - " + " | ".join(parts))
+            if not lines:
+                return i18n.t("kp_tools.item.catalog_empty")
+            return i18n.t("kp_tools.item.catalog_header", count=len(lines)) + "\n" + "\n".join(lines)
+        except Exception as exc:
+            return i18n.t("kp_tools.item.catalog_failed", error=str(exc))
+
     @tool
     async def grant_item(self, ctx: AgentCtx, character: str, item_id: str, qty: int = 1) -> str:
         """Grant a real item to a character once the party has ACTUALLY obtained it in play (picked up, looted, bought, rewarded).
@@ -593,6 +631,7 @@ Rules:
             if existing is not None and not template_is_consumable(template):
                 held = int(existing.data.get("quantity", 1))
                 return i18n.t("kp_tools.item.already_held", character=character, item=item_id, held=held)
+            template = template_with_source(template, active)
             await grant_instance(self.services.documents, ctx.chat_key, character, template, int(qty))
             await reveal_linked_clues(self.services, ctx, template)
             await _refresh_character_bonuses(self.services, ctx, character, owner)
@@ -601,8 +640,6 @@ Rules:
         except CharacterDataError:
             return i18n.t("kp_tools.character.data_error")
         except Exception as exc:
-            return i18n.t("kp_tools.item.failed", error=str(exc))
-
             return i18n.t("kp_tools.item.failed", error=str(exc))
 
     @tool  # off-catalog improv lane must be live during play: evidence trinkets and
@@ -615,13 +652,14 @@ Args:
     character: target character name (any member of the party)
     name: the item's name
     description: short description of what it is (optional)
-    bonus: optional small mechanical edge, format "stat=value,stat=value" (e.g. "spot_hidden=1"); each stat capped at +/-2, total at 4 points; leave empty for narrative-only items
+    bonus: optional small mechanical edge, format "stat=value,stat=value" (e.g. "spot_hidden=1" or "侦查=1"); each stat capped at +/-2, total at 4 points; names resolve to the character's real skills/attributes (any spelling or alias works); leave empty for narrative-only items
     qty: how many to grant (default 1; same-owner same-name instances merge)
 
 Rules:
 - Improvised items are a LIGHT channel: narrative trinkets, small rewards, consumables. NEVER use it for strong gear or scenario-critical artifacts - those must exist in the room's catalog (use grant_item).
 - If `name` already exists in the room's catalog, the real catalog template is granted instead (its kind/effect/bonus win over this call's bonus) - improvising a designed item's name must never degrade it.
-- The bonus cap is enforced; oversized bonuses are refused.
+- Give a bonus whenever the improvised object grants a real edge (a lucky charm, a sharpened tool, a warm cloak); a bonus-bearing item is EQUIPPED automatically, so its edge applies immediately. The player can unequip it later.
+- The bonus cap is enforced; oversized bonuses are refused. A bonus key the character's sheet cannot resolve is reported as a warning and kept as-is (it will not apply).
 - A character who already holds the item cannot be granted it again (the tool refuses duplicates; a second dose of a consumable is granted via qty, not by calling twice). Handovers use transfer_item, losses use remove_item - never re-grant an item that is simply moving around.
 - Narrate that the character now holds it after granting."""
         i18n = self.services.i18n.with_locale(ctx.locale)
@@ -638,6 +676,8 @@ Rules:
             owner = await self.services.characters.get_character_owner(ctx.chat_key, character)
             if not owner:
                 return i18n.t("kp_tools.item.character_not_found", name=character)
+            sheet = await self.services.characters.get_character(owner, ctx.chat_key, character)
+            pack = await _sheet_pack(self.services, ctx, sheet) if has_character(sheet) else None
             template = await catalog_template(self.services.documents, ctx.chat_key, name)
             if template is not None:
                 # The catalog already designs this item — grant the real template
@@ -651,6 +691,7 @@ Rules:
                 if existing is not None and not template_is_consumable(template):
                     held = int(existing.data.get("quantity", 1))
                     return i18n.t("kp_tools.item.already_held", character=character, item=canonical_name, held=held)
+                template = template_with_source(template, active)
                 await grant_instance(self.services.documents, ctx.chat_key, character, template, int(qty))
                 await reveal_linked_clues(self.services, ctx, template)
                 await _refresh_character_bonuses(self.services, ctx, character, owner)
@@ -667,15 +708,25 @@ Rules:
             error = validate_improvised_bonus(bonus_map)
             if error:
                 return i18n.t(f"kp_tools.item.improv_{error}")
-            template = improvised_template(name, description=description or "", bonus=bonus_map)
+            bonus_map, unresolved = canonicalize_bonus_keys(bonus_map, pack)
+            active = await active_module(self.services, ctx.chat_key)
+            template = improvised_template(
+                name,
+                description=description or "",
+                bonus=bonus_map,
+                source_module_id=module_source_id(active),
+            )
             existing = await find_instance(self.services.documents, ctx.chat_key, character, name)
             if existing is not None:
                 held = int(existing.data.get("quantity", 1))
                 return i18n.t("kp_tools.item.already_held", character=character, item=name, held=held)
-            await grant_instance(self.services.documents, ctx.chat_key, character, template, int(qty))
+            await grant_improvised_instance(self.services.documents, ctx.chat_key, character, template, int(qty))
             await _refresh_character_bonuses(self.services, ctx, character, owner)
             ctx.emit_item_grant(character, name, i18n.t("kp_tools.item.improvised_granted", character=character, item=name))
-            return i18n.t("kp_tools.item.improvised_granted", character=character, item=name)
+            result = i18n.t("kp_tools.item.improvised_granted", character=character, item=name)
+            if unresolved:
+                result += "\n" + i18n.t("kp_tools.item.improv_unresolved_bonus", keys=", ".join(unresolved))
+            return result
         except CharacterDataError:
             return i18n.t("kp_tools.character.data_error")
         except Exception as exc:
@@ -839,6 +890,7 @@ Args:
 
 Rules:
 - Call ONLY when the party has GENUINELY obtained this clue in play — read the letter, found the tape, examined the scene. Never pre-reveal.
+- Check list_discovered_clues first so you never re-grant a clue that is already in the log.
 - The entry is snapshotted now; players' clue list shows it from here on.
 - Secret clues (the hidden truth) stay out of the log until you reveal them — this is the moment the party earns the knowledge."""
         i18n = self.services.i18n.with_locale(ctx.locale)
@@ -1294,10 +1346,125 @@ def roll_initiative(services: Services, character: CharacterSheet) -> DiceResult
 
 
 class InitiativeTools:
-    """AI-KP tool for tracking combat initiative order."""
+    """AI-KP tool for tracking combat initiative order and casting spells."""
 
-    def __init__(self, services: Services) -> None:
+    def __init__(self, services: Services, *, command_router: Any | None = None) -> None:
         self.services = services
+        self._command_router = command_router
+
+    @tool(read_only=False, needs="spells")
+    async def cast_spell(
+        self, ctx: AgentCtx, *, spell: str, target: str = "", slot_level: int = 0
+    ) -> str:
+        """Cast `spell` for the CURRENT combat actor through the real cast lane.
+
+        The engine resolves the spell catalog, enforces known-spells and slot
+        availability, rolls the save/attack and damage, spends the slot pool and
+        records the action in the combat log — the AI only picks the spell and
+        narrates the outcome. `slot_level` casts at a higher level (scaling
+        damage, consuming that slot pool); omit it to cast at the spell's own
+        level. `target` names one combatant; omit it only when the spell needs
+        no target (a buff or a no-target effect). Requires an active combat and
+        the caster's turn, exactly like `.cast`."""
+        i18n = self.services.i18n.with_locale(ctx.locale)
+        if self._command_router is None:
+            return i18n.t("kp_tools.cast.unavailable")
+        parts = [str(spell)]
+        if slot_level and int(slot_level) > 0:
+            parts.append(f"@{int(slot_level)}")
+        if target:
+            parts.append(str(target))
+        result = await self._command_router.dispatch(ctx, ".cast " + " ".join(parts))
+        return result if result is not None else i18n.t("kp_tools.cast.empty")
+
+    @tool(read_only=False, needs="runtime")
+    async def rest_manager(self, ctx: AgentCtx, *, kind: str = "long", recovery_dice: str = "") -> str:
+        """Complete a short or long rest through the real rest lane.
+
+        A long rest restores HP and recovers spell slots to the level-table
+        maximums and advances the game clock; a short rest spends hit dice to
+        heal (and, for a pact caster like a warlock, recovers pact slots).
+        `kind` is "short" or "long"; `recovery_dice` optionally names hit-dice
+        pools to spend on a short rest. Call this when the story calls for the
+        party to rest — never narrate "you rested" without settling the real
+        resources."""
+        i18n = self.services.i18n.with_locale(ctx.locale)
+        if self._command_router is None:
+            return i18n.t("kp_tools.rest.unavailable")
+        kind = str(kind).strip().casefold()
+        if kind not in {"short", "long"}:
+            return i18n.t("kp_tools.rest.usage")
+        parts = [kind]
+        if recovery_dice:
+            parts.extend(str(recovery_dice).split())
+        result = await self._command_router.dispatch(ctx, ".rest " + " ".join(parts))
+        return result if result is not None else i18n.t("kp_tools.rest.empty")
+
+    async def _dispatch_command(self, ctx: AgentCtx, command: str, fallback_key: str) -> str:
+        """Run a gateway command through the real lane (keeper context assumed)."""
+        i18n = self.services.i18n.with_locale(ctx.locale)
+        if self._command_router is None:
+            return i18n.t(fallback_key)
+        result = await self._command_router.dispatch(ctx, command)
+        return result if result is not None else i18n.t("kp_tools.cast.empty")
+
+    @tool(read_only=False, needs="runtime")
+    async def attack_target(self, ctx: AgentCtx, *, action: str = "attack", target: str = "") -> str:
+        """Resolve a real attack action in the active combat through the engine.
+
+        `action` is the runtime combat action id (attack, dash, dodge, spell...);
+        `target` names one combatant. The engine rolls the attack vs AC, applies
+        damage, spends the action budget and records the combat event — never
+        narrate a hit or miss without resolving it here (mirror of `.attack`)."""
+        return await self._dispatch_command(
+            ctx, f".attack {action} {target}".rstrip(), "kp_tools.cast.unavailable"
+        )
+
+    @tool(read_only=False, needs="runtime")
+    async def advance_level(self, ctx: AgentCtx, *, mode: str = "", choice: str = "") -> str:
+        """Drive character advancement (leveling up) through the engine.
+
+        `mode` is "status" to inspect, "grant" (with `choice` naming milestone or
+        xp) to open an advancement, or "apply" to commit a pending one. The engine
+        raises the level, grows HP and unlocks spell slots per the level table —
+        never narrate "you leveled up" without settling the real sheet."""
+        command = ".advance"
+        if mode:
+            command += f" {mode}"
+            if choice:
+                command += f" {choice}"
+        return await self._dispatch_command(ctx, command, "kp_tools.cast.unavailable")
+
+    @tool(read_only=False, needs="runtime")
+    async def manage_resource(self, ctx: AgentCtx, *, pool: str = "", action: str = "show", amount: int = 0) -> str:
+        """Inspect or mutate the active character's resource pools through the
+        engine — HP, spell slots, hit dice, and any pack-declared pool.
+
+        `action` is show (default), spend, set or recover; `pool` names the pool
+        (spell_slot_1..9, hp, temp_hp, hit_die_d10, ...); `amount` is the spend/set
+        value. Setting spell slots is how a keeper tops a caster up when the
+        story grants it (`.resource` mirror)."""
+        command = ".resource"
+        if action != "show" and pool:
+            command += f" {action} {pool}"
+            if action != "recover" and amount:
+                command += f" {amount}"
+        elif pool:
+            command += f" show {pool}"
+        return await self._dispatch_command(ctx, command, "kp_tools.cast.unavailable")
+
+    @tool(read_only=False, needs="spells")
+    async def manage_spells(self, ctx: AgentCtx, *, spell: str = "", action: str = "list") -> str:
+        """Manage the active character's known spells through the engine.
+
+        `action` is list (default), learn or forget; `spell` names the spell (id or
+        localized display name). Learning records real sheet data enforced at cast
+        time — use this when the story grants a new spell, never just narrate it
+        (`.spells` mirror)."""
+        command = ".spells"
+        if action != "list" and spell:
+            command += f" {action} {spell}"
+        return await self._dispatch_command(ctx, command, "kp_tools.cast.unavailable")
 
     async def _runtime_tracker(
         self,

@@ -33,6 +33,7 @@ from gateway.commands.rooms import RoomsCommands, _is_keeper, _privilege_level
 from gateway.commands.rules import RulesCommands
 from gateway.commands.runtime import RuntimeCommands
 from gateway.commands.sheet import SheetCommands
+from gateway.commands.trace import TraceCommands
 from gateway.commands.types import CommandCtx, CommandReply, CommandSpec
 from gateway.commands.world import WorldCommands
 from gateway.ops import (
@@ -71,6 +72,7 @@ class CommandRouter(
     RulesCommands,
     RuntimeCommands,
     RoomsCommands,
+    TraceCommands,
     CastCommands,
     WorldCommands,
     PanelsCommands,
@@ -477,6 +479,14 @@ class CommandRouter(
                 "commands.help.cast",
             ),
             CommandSpec(
+                "spells",
+                self.cmd_spells,
+                ["spells"],
+                ["spells", "法术", "法術"],
+                {"name": "spells"},
+                "commands.help.spells",
+            ),
+            CommandSpec(
                 "statblock",
                 self.cmd_statblock,
                 ["statblock", "statblocks"],
@@ -508,6 +518,7 @@ class CommandRouter(
             CommandSpec("ai", self.cmd_ai_length, ["ai"], ["ai"], None, "commands.help.ai", keeper_help=True),
             CommandSpec("skill", self.cmd_skill, ["skill"], ["skill"], None, "commands.help.skill"),
             CommandSpec("phase", self.cmd_phase, ["phase"], ["phase", "阶段", "階段"], None, "commands.help.phase"),
+            CommandSpec("trace", self.cmd_trace, ["trace"], ["trace", "追踪", "調試"], None, "commands.help.trace", keeper_help=True),
             CommandSpec("dev", self.cmd_dev, ["dev"], ["dev"], None, "commands.help.dev", keeper_help=True),
             CommandSpec(
                 "poke",

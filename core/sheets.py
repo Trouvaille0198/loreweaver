@@ -418,8 +418,40 @@ def refresh_sheet(sheet: Any, pack: Any, *, initialize_vitals: bool = False, pre
                     maximum,
                 )
             sheet.attributes[vital.key] = max(0, min(maximum, start_value))
-        else:
-            sheet.attributes[vital.key] = max(0, min(maximum, _int_or(sheet.attributes[vital.key], maximum)))
+def projected_skills(sheet: Any, pack: Any) -> dict[str, Any]:
+    """The FULL skill surface for display: stored (trained) values plus the
+    recomputed derived skills.
+
+    Derived skills are deliberately never persisted — `refresh_sheet` drops the
+    untrained slots so reads recompute through the DAG — so a display projection
+    must fold the recomputed values back in, or a fully-derived skill system
+    (D&D 5e's 18 skills are ability modifiers) shows an empty skills panel.
+    Stored values win over the derivation (a trained skill differs from its base).
+
+    Accepts a CharacterSheet OR a plain dict (party-roster / pregen rows carry
+    the sheet's `to_dict` shape) and a RulePack; falls back to the stored skills
+    when the pack has no derived-skills declaration or the recompute fails.
+    """
+    if isinstance(sheet, Mapping):
+        from core.character_manager import CharacterSheet
+
+        try:
+            sheet = CharacterSheet.from_dict(dict(sheet))
+        except Exception:
+            stored = sheet.get("skills") or {}
+            return {str(key): value for key, value in stored.items() if value is not None}
+    skills = {str(key): value for key, value in (getattr(sheet, "skills", None) or {}).items() if value is not None}
+    spec = getattr(pack, "sheet_spec", None)
+    if spec is not None and spec.derived_skills:
+        try:
+            values = canonical_values(sheet, pack)
+            derived = pack.compute_derived(values)
+        except Exception:
+            derived = {}
+        for skill_key, canonical in spec.derived_skills.items():
+            if canonical in derived and skill_key not in skills:
+                skills[skill_key] = derived[canonical]
+    return skills
 
 
 def wire_resources(sheet: Any, pack: Any, locale: str | None = None) -> list[dict[str, Any]]:

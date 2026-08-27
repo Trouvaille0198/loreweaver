@@ -27,26 +27,32 @@ import re
 
 from agent.items import (
     aggregate_equipped_bonuses,
+    canonicalize_bonus_keys,
     catalog_template,
     consume_instance,
     find_instance,
+    grant_improvised_instance,
     grant_instance,
     improvised_template,
     instances_for_owner,
     item_active,
+    module_source_id,
     parse_bonus_spec,
     render_held_items,
     render_item_views,
     reveal_linked_clues,
     set_archived,
     set_equipped,
+    template_with_source,
     validate_improvised_bonus,
 )
 from agent.module_lifecycle import active_module
 from core.character_manager import CharacterDataError, has_character
+from core.rulepacks import load_rulepack
 from gateway.commands.rooms import _is_keeper
 from gateway.commands.types import CommandCtx
 from gateway.hub import Event
+from gateway.turn import publish_state
 from gateway.turn import publish_state
 
 
@@ -242,6 +248,7 @@ class ItemCommands:
             active = await active_module(ctx.services, ctx.chat_key)
             if not item_active(active, template):
                 return ctx.fail(ctx.i18n.t("commands.item.module_mismatch", item=item))
+            template = template_with_source(template, active)
             await grant_instance(ctx.services.documents, ctx.chat_key, name, template, qty)
             await reveal_linked_clues(ctx.services, ctx.raw_ctx, template)
             await _refresh_bonuses(ctx, name, ctx.user_id)
@@ -296,6 +303,7 @@ class ItemCommands:
                 active = await active_module(ctx.services, ctx.chat_key)
                 if not item_active(active, template):
                     return ctx.fail(ctx.i18n.t("commands.item.module_mismatch", item=item))
+                template = template_with_source(template, active)
                 await grant_instance(ctx.services.documents, ctx.chat_key, target, template, qty)
                 await reveal_linked_clues(ctx.services, ctx.raw_ctx, template)
                 await _refresh_bonuses(ctx, target, owner)
@@ -306,13 +314,31 @@ class ItemCommands:
             error = validate_improvised_bonus(bonus)
             if error:
                 return ctx.fail(ctx.i18n.t(f"commands.item.improv_{error}"))
-            template = improvised_template(item, description=desc, bonus=bonus, secret=secret)
-            await grant_instance(ctx.services.documents, ctx.chat_key, target, template, qty)
+            sheet = await ctx.services.characters.get_character(owner, ctx.chat_key, target)
+            pack = None
+            if has_character(sheet):
+                try:
+                    pack = load_rulepack(sheet.system)
+                except Exception:
+                    pack = None
+            bonus, unresolved = canonicalize_bonus_keys(bonus, pack)
+            active = await active_module(ctx.services, ctx.chat_key)
+            template = improvised_template(
+                item,
+                description=desc,
+                bonus=bonus,
+                secret=secret,
+                source_module_id=module_source_id(active),
+            )
+            await grant_improvised_instance(ctx.services.documents, ctx.chat_key, target, template, qty)
             await _refresh_bonuses(ctx, target, owner)
             await _publish(ctx)
             if not secret:
                 await _broadcast(ctx, ctx.i18n.t("commands.item.improvised_given", item=item, name=target))
-            return ctx.i18n.t("commands.item.improvised_given", item=item, name=target)
+            result = ctx.i18n.t("commands.item.improvised_given", item=item, name=target)
+            if unresolved:
+                result += "\n" + ctx.i18n.t("commands.item.improv_unresolved_bonus", keys=", ".join(unresolved))
+            return result
         except CharacterDataError:
             return ctx.fail(ctx.i18n.t("kp_tools.character.data_error"))
 

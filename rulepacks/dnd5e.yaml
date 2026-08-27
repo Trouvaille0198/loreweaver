@@ -65,7 +65,8 @@ alias:
   威吓: [intimidation, intimidate, 恐吓, 威嚇, 恐嚇]
   表演: [performance, perform]
 st_show:
-  top: [力量, 敏捷, 体质, 体型, 魅力, 智力, 感知, hp, ac, 熟练, pp]
+  top: [等级, 力量, 敏捷, 体质, 体型, 魅力, 智力, 感知, hp, ac, 熟练, pp, 运动, 体操, 巧手, 隐匿, 调查, 奥秘, 历史, 自然, 宗教, 察觉, 洞悉, 驯兽, 医药, 求生, 游说, 欺瞒, 威吓, 表演]
+  itemsPerLine: 8
   sortBy: Name
   ignores: [DSS, DSF, hpmax]
 set_keys: [dnd, dnd5e]
@@ -183,6 +184,7 @@ initiative:
 # Presentation-only localized names for canonical keys (see coc7.yaml display note).
 runtime:
   version: 1
+  spells_file: dnd5e-spells.yaml
   resources:
     pools:
       hp:
@@ -206,11 +208,67 @@ runtime:
         display: {label: {en: Hit Dice, zh: 生命骰}}
       spell_slot_1:
         role: spell_slot
-        initial: 2
-        max: 2
+        initial: 0
+        max: 0
         reset: long
         group: spell_slots
         display: {label: {en: Level 1 Spell Slots, zh: 一环法术位}}
+      spell_slot_2:
+        role: spell_slot
+        initial: 0
+        max: 0
+        reset: long
+        group: spell_slots
+        display: {label: {en: Level 2 Spell Slots, zh: 二环法术位}}
+      spell_slot_3:
+        role: spell_slot
+        initial: 0
+        max: 0
+        reset: long
+        group: spell_slots
+        display: {label: {en: Level 3 Spell Slots, zh: 三环法术位}}
+      spell_slot_4:
+        role: spell_slot
+        initial: 0
+        max: 0
+        reset: long
+        group: spell_slots
+        display: {label: {en: Level 4 Spell Slots, zh: 四环法术位}}
+      spell_slot_5:
+        role: spell_slot
+        initial: 0
+        max: 0
+        reset: long
+        group: spell_slots
+        display: {label: {en: Level 5 Spell Slots, zh: 五环法术位}}
+      spell_slot_6:
+        role: spell_slot
+        initial: 0
+        max: 0
+        reset: long
+        group: spell_slots
+        display: {label: {en: Level 6 Spell Slots, zh: 六环法术位}}
+      spell_slot_7:
+        role: spell_slot
+        initial: 0
+        max: 0
+        reset: long
+        group: spell_slots
+        display: {label: {en: Level 7 Spell Slots, zh: 七环法术位}}
+      spell_slot_8:
+        role: spell_slot
+        initial: 0
+        max: 0
+        reset: long
+        group: spell_slots
+        display: {label: {en: Level 8 Spell Slots, zh: 八环法术位}}
+      spell_slot_9:
+        role: spell_slot
+        initial: 0
+        max: 0
+        reset: long
+        group: spell_slots
+        display: {label: {en: Level 9 Spell Slots, zh: 九环法术位}}
   combat:
     initiative: "1d20 + {先攻修正}"
     budgets: {action: 1, bonus: 1, movement: {ref: 速度}, reaction: 1}
@@ -282,6 +340,95 @@ runtime:
       advance_time: 28800
       reset: [short, long]
       recover: {health: full, hit_dice: half}
+  spell_slots_by_level:
+    - [2, 0, 0, 0, 0, 0, 0, 0, 0]  # level 1
+    - [3, 0, 0, 0, 0, 0, 0, 0, 0]  # level 2
+    - [4, 2, 0, 0, 0, 0, 0, 0, 0]  # level 3
+    - [4, 3, 0, 0, 0, 0, 0, 0, 0]  # level 4
+    - [4, 3, 2, 0, 0, 0, 0, 0, 0]  # level 5
+    - [4, 3, 3, 0, 0, 0, 0, 0, 0]  # level 6
+    - [4, 3, 3, 1, 0, 0, 0, 0, 0]  # level 7
+    - [4, 3, 3, 2, 0, 0, 0, 0, 0]  # level 8
+    - [4, 3, 3, 3, 1, 0, 0, 0, 0]  # level 9
+    - [4, 3, 3, 3, 2, 0, 0, 0, 0]  # level 10
+    - [4, 3, 3, 3, 2, 1, 0, 0, 0]  # level 11
+    - [4, 3, 3, 3, 2, 1, 0, 0, 0]  # level 12
+    - [4, 3, 3, 3, 2, 1, 1, 0, 0]  # level 13
+    - [4, 3, 3, 3, 2, 1, 1, 0, 0]  # level 14
+    - [4, 3, 3, 3, 2, 1, 1, 1, 0]  # level 15
+    - [4, 3, 3, 3, 2, 1, 1, 1, 0]  # level 16
+    - [4, 3, 3, 3, 2, 1, 1, 1, 1]  # level 17
+    - [4, 3, 3, 3, 3, 1, 1, 1, 1]  # level 18
+    - [4, 3, 3, 3, 3, 2, 1, 1, 1]  # level 19
+    - [4, 3, 3, 3, 3, 2, 2, 1, 1]  # level 20
+  spell_slots_half:
+    - [0, 0, 0, 0, 0, 0, 0, 0, 0]  # level 1
+    - [0, 0, 0, 0, 0, 0, 0, 0, 0]  # level 2
+    - [2, 0, 0, 0, 0, 0, 0, 0, 0]  # level 3
+    - [3, 0, 0, 0, 0, 0, 0, 0, 0]  # level 4
+    - [3, 2, 0, 0, 0, 0, 0, 0, 0]  # level 5
+    - [4, 2, 0, 0, 0, 0, 0, 0, 0]  # level 6
+    - [4, 3, 0, 0, 0, 0, 0, 0, 0]  # level 7
+    - [4, 3, 0, 0, 0, 0, 0, 0, 0]  # level 8
+    - [4, 3, 2, 0, 0, 0, 0, 0, 0]  # level 9
+    - [4, 3, 2, 0, 0, 0, 0, 0, 0]  # level 10
+    - [4, 3, 3, 0, 0, 0, 0, 0, 0]  # level 11
+    - [4, 3, 3, 0, 0, 0, 0, 0, 0]  # level 12
+    - [4, 3, 3, 1, 0, 0, 0, 0, 0]  # level 13
+    - [4, 3, 3, 1, 0, 0, 0, 0, 0]  # level 14
+    - [4, 3, 3, 2, 0, 0, 0, 0, 0]  # level 15
+    - [4, 3, 3, 2, 0, 0, 0, 0, 0]  # level 16
+    - [4, 3, 3, 3, 0, 0, 0, 0, 0]  # level 17
+    - [4, 3, 3, 3, 1, 0, 0, 0, 0]  # level 18
+    - [4, 3, 3, 3, 1, 0, 0, 0, 0]  # level 19
+    - [4, 3, 3, 3, 2, 0, 0, 0, 0]  # level 20
+  spell_slots_pact:
+    - [1, 0, 0, 0, 0, 0, 0, 0, 0]  # level 1
+    - [2, 0, 0, 0, 0, 0, 0, 0, 0]  # level 2
+    - [0, 2, 0, 0, 0, 0, 0, 0, 0]  # level 3
+    - [0, 2, 0, 0, 0, 0, 0, 0, 0]  # level 4
+    - [0, 0, 2, 0, 0, 0, 0, 0, 0]  # level 5
+    - [0, 0, 2, 0, 0, 0, 0, 0, 0]  # level 6
+    - [0, 0, 0, 2, 0, 0, 0, 0, 0]  # level 7
+    - [0, 0, 0, 2, 0, 0, 0, 0, 0]  # level 8
+    - [0, 0, 0, 0, 2, 0, 0, 0, 0]  # level 9
+    - [0, 0, 0, 0, 2, 0, 0, 0, 0]  # level 10
+    - [0, 0, 0, 0, 3, 0, 0, 0, 0]  # level 11
+    - [0, 0, 0, 0, 3, 0, 0, 0, 0]  # level 12
+    - [0, 0, 0, 0, 3, 0, 0, 0, 0]  # level 13
+    - [0, 0, 0, 0, 3, 0, 0, 0, 0]  # level 14
+    - [0, 0, 0, 0, 3, 0, 0, 0, 0]  # level 15
+    - [0, 0, 0, 0, 3, 0, 0, 0, 0]  # level 16
+    - [0, 0, 0, 0, 4, 0, 0, 0, 0]  # level 17
+    - [0, 0, 0, 0, 4, 0, 0, 0, 0]  # level 18
+    - [0, 0, 0, 0, 4, 0, 0, 0, 0]  # level 19
+    - [0, 0, 0, 0, 4, 0, 0, 0, 0]  # level 20
+  class_aliases:
+    wizard: [法师, 魔法师, Wizard, wiz]
+    bard: [吟游诗人, 诗人, 吟遊詩人, Bard]
+    cleric: [牧师, 祭司, 牧師, Cleric]
+    druid: [德鲁伊, 德魯伊, Druid]
+    fighter: [战士, 戰士, Fighter]
+    monk: [武僧, 僧侣, 僧侶, Monk]
+    paladin: [圣武士, 圣骑士, 聖武士, 聖騎士, Paladin]
+    ranger: [游侠, 遊俠, 猎人, 獵人, 巡林客, Ranger]
+    rogue: [游荡者, 遊蕩者, 盗贼, 盜賊, 潜行者, Rogue]
+    sorcerer: [术士, 術士, Sorcerer]
+    warlock: [邪术师, 邪術師, 契术师, 契術師, Warlock]
+    barbarian: [野蛮人, 野蠻人, Barbarian]
+  spell_slot_class:
+    barbarian: none
+    bard: full
+    cleric: full
+    druid: full
+    fighter: none
+    monk: none
+    paladin: half
+    ranger: half
+    rogue: none
+    sorcerer: full
+    warlock: pact
+    wizard: full
   advancement:
     modes: [milestone, xp]
     level_field: level

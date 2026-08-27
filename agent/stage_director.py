@@ -54,7 +54,7 @@ from typing import TYPE_CHECKING, Any
 
 from agent.context import AgentCtx
 from agent.services import Services
-from agent.tool_trace import trace_event
+from agent.tool_trace import active_module_id, trace_event
 from core.documents import PLAYER_VIEWER, SCENE_ID
 from core.hooks import sanitize_ui_emissions
 from core.modvars import MODVARS_DOC_ID, MODVARS_DOC_TYPE, wire_entries
@@ -452,11 +452,14 @@ async def run_director(
 
     from gateway.presentation import load_room_kit
 
+    module = await active_module_id(services, ctx.chat_key)
+
     def _trace(*, blocks: int, cues: int, prepared: int, image: dict[str, Any]) -> None:
         trace_event(
             DIRECTOR_TRACE_KIND,
             {"beat": beat, "blocks": blocks, "cues": cues, "prepared": prepared, "image": image},
             chat_key=ctx.chat_key,
+            module=module,
         )
 
     kit = await load_room_kit(services, ctx.chat_key, ctx.locale)
@@ -565,6 +568,7 @@ def _spawn_pregen(services: Services, ctx: AgentCtx, kit: RoomKit, subject_id: s
                 PREGEN_TRACE_KIND,
                 {"subject": subject_id, "outcome": outcome, **({"hash": digest} if digest else {})},
                 chat_key=ctx.chat_key,
+                module=await active_module_id(services, ctx.chat_key),
             )
 
     task = asyncio.create_task(_warm())

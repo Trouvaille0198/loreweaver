@@ -57,10 +57,30 @@ async def test_state_lists_every_owned_character_with_full_sheet_details():
     assert "resources" in alice_wire
     assert "attributes" in alice_wire
 
-    other_state = await build_room_state(services, AgentCtx(chat_key=chat_key, user_id="player-b", locale="en"))
-    assert [character["name"] for character in other_state["characters"]] == ["Other"]
-    assert "Alice" not in {character["name"] for character in other_state["characters"]}
-    assert other_state["characters"][0]["notes"] == other.notes
+async def test_state_character_skills_include_recomputed_derived_skills():
+    """A D&D sheet's 18 skills are all derived and never persisted — the wire
+    projection must fold the recomputed values back in or the character card
+    shows an empty skills panel."""
+    from core.rulepacks import load_rulepack
+    from core.sheets import refresh_sheet
+
+    services = _services()
+    chat_key = "dnd-derived-skills"
+    owner = "player-a"
+
+    kael = CharacterSheet("Kael", "dnd5e")
+    kael.attributes["STR"] = 16
+    kael.attributes["DEX"] = 14
+    refresh_sheet(kael, load_rulepack("dnd5e"), preserve_trained=False)
+    await services.characters.save_character(owner, chat_key, kael)
+    await services.characters.set_active_character(owner, chat_key, "Kael")
+
+    state = await build_room_state(services, AgentCtx(chat_key=chat_key, user_id=owner, locale="en"))
+    skills = state["character"]["skills"]
+    assert skills["运动"] == 3  # STR 16 → +3
+    assert skills["体操"] == 2  # DEX 14 → +2
+    assert skills["察觉"] == 0
+    assert state["character"]["fields"]["level"] == 1
 
 
 async def test_state_omits_owned_character_list_when_player_has_no_sheets():

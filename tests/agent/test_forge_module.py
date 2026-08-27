@@ -996,6 +996,18 @@ _VALID_PACK_LORECARD = json.dumps(
                 "secret": False,
                 "category": "lore",
             },
+            {
+                "content": "The ferry crossing hides the first clue.",
+                "keys": ["the ferry crossing"],
+                "secret": False,
+                "category": "lore",
+            },
+            {
+                "content": "The drowned chapel is where the pact broke.",
+                "keys": ["the drowned chapel"],
+                "secret": True,
+                "category": "lore",
+            },
         ],
         "variables": [
             {

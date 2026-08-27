@@ -230,14 +230,63 @@ def _stripped_notice(i18n: I18n, world: WorldPayloads) -> str:
 
 
 async def _module_summary(services: Services, chat_key: str) -> str:
-    """A brief, player-safe module summary (from the analyzed player pool) to fit the character to
-    the adventure; best-effort -- returns "" when no module has been initialized."""
+    """A brief, player-safe module summary to fit the character to the adventure;
+    best-effort -- returns "" when no module has been initialized.
+
+    The analyzed player pool (`module_pool`, M21+) is the primary source; older
+    rooms never ran that lane and keep only the module BRIEF (the imported card's
+    own description/scenario) — fall back to it so summary-driven lanes
+    (`.pc gen`, card imports) still see the adventure there."""
     try:
         view = await services.documents.get_view(chat_key, "module_pool", MODULE_POOL_ID, PLAYER_VIEWER)
         summary = view.get("summary") if isinstance(view, dict) else ""
-        return str(summary or "")[:400]
+        if summary:
+            return str(summary)[:400]
     except Exception:
-        return ""
+        pass
+
+
+async def _module_full_context(services: Services, chat_key: str) -> str:
+    """The room's FULL module context for generative lanes — the same generosity
+    forge's own pregen pass gives the model (the module fulltext, secrets
+    included): the brief's prose (unclipped) plus the room's lore documents, so
+    a character concept sees the whole adventure, not a 400-char abstract.
+
+    Authoring-lane input (keeper-authorized generation): secret-flagged lore
+    rides along like forge's module document — the model needs the plot to fit
+    a character to it, and the concept it returns is a player-facing persona,
+    not keeper notes. Cap the total so one generous room cannot blow the
+    context."""
+    parts: list[str] = []
+    try:
+        briefs = await services.documents.list(chat_key, "module_brief")
+        if briefs:
+            data = briefs[0].data
+            for key in ("name", "description", "scenario"):
+                text = str(data.get(key) or "").strip()
+                if text:
+                    parts.append(text)
+    except Exception:
+        pass
+    try:
+        view = await services.documents.get_view(chat_key, "module_pool", MODULE_POOL_ID, PLAYER_VIEWER)
+        summary = view.get("summary") if isinstance(view, dict) else ""
+        if str(summary or "").strip():
+            parts.append(str(summary))
+    except Exception:
+        pass
+    try:
+        lore_docs = await services.documents.list(chat_key, "lore")
+        for doc in lore_docs[:40]:
+            data = doc.data
+            title = str(data.get("title") or "").strip()
+            content = str(data.get("content") or "").strip()
+            if content:
+                parts.append(f"{title}: {content[:500]}" if title else content[:500])
+    except Exception:
+        pass
+    joined = "\n\n".join(part for part in parts if part.strip())
+    return joined[:6000]
 
 
 
@@ -311,25 +360,34 @@ class CharcardTools:
             notices = [render_validation_notice(i18n, violations), _stripped_notice(i18n, world)]
 
             if as_.strip().lower() == "companion":
+                # A companion is a CLAIMED character: the card's character half first
+                # lands on the roster as a claimable pregen (`.pc list` — players may
+                # claim it too), then the AI claims it through the same path `.party
+                # add` and the companion tools use. Record + sheet derive from that
+                # roster entry; nothing is created outside the roster.
+                from agent.kp_tools_companion import claim_pregen_as_companion
+                from core.pregen_roster import pregen_add
+
                 documents = self._services.documents
-                minted = await npc_records.find_npc_by_name(documents, ctx.chat_key, final_name) is None
-                record = await npc_records.create_companion(documents,
+                entry = await pregen_add(
+                    documents,
                     ctx.chat_key,
-                    final_name,
-                    persona=_persona_text(card),
-                    playstyle=", ".join(card.tags),
-                    stat_char=final_name,
-                    pronouns=_card_pronouns(card),
+                    sheet,
+                    source="card",
+                    blurb=_persona_text(card),
                 )
-                try:
-                    await self._services.characters.save_character(_companion_uid(record.id), ctx.chat_key, sheet)
-                except Exception:
-                    # Record + sheet or nothing — for a record THIS call minted (see
-                    # `CompanionTools.add_companion`); a re-import of an existing companion
-                    # must not delete what it did not create.
-                    if minted:
-                        await npc_records.delete_npc(documents, ctx.chat_key, record.id)
-                    raise
+                if entry is None:
+                    return i18n.t("charcard.tools.import.companion_roster_full", name=final_name)
+                status, record = await claim_pregen_as_companion(
+                    self._services,
+                    ctx.chat_key,
+                    entry["id"],
+                    playstyle=", ".join(card.tags),
+                    claimer_name="AI",
+                    persona_extra=_persona_text(card),
+                )
+                if record is None:
+                    return i18n.t(f"charcard.tools.import.companion_{status}", name=final_name)
                 lore = await self._import_card_lore(ctx, card)
                 result = i18n.t(
                     "charcard.tools.import.done_companion",
@@ -680,6 +738,7 @@ class CharcardTools:
                         sheet,
                         source=source_id,
                         blurb=str(spec.get("blurb", "")),
+                        appearance=str(spec.get("appearance", "")),
                         aliases=tuple(spec.get("aliases") or ()),
                     )
                     if entry is not None:

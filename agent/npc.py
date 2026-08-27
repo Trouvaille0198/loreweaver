@@ -26,6 +26,7 @@ import time
 from dataclasses import dataclass, field, fields
 from typing import Any
 
+from agent.char_from_persona import infer_pronoun_note
 from core.pregen_roster import pregen_entries
 from infra.room_facets import STORAGE_DOCUMENTS, RoomStateFacet
 
@@ -129,6 +130,12 @@ class NpcRecord:
     role: str = "keeper_npc"  # "keeper_npc" | "player_companion"
     playstyle: str = ""  # companion tactical/RP leaning (unused for keeper NPCs)
     is_pc: bool = False  # True for player companions (they own a CharacterSheet)
+    # The roster entry this companion came FROM (the AI-claimed pregen's slug, or ""
+    # for legacy companions created before claims existed). A companion is a
+    # claimed CHARACTER — record and sheet both derive from the roster entry, and
+    # this back-reference is what release/reset uses to keep the two halves in
+    # sync (a released claim clears the record; a reset clears the claim marker).
+    pregen_id: str = ""
     # Compact gender/pronoun hint (e.g. "he/him", "she/her"), inferred structurally on import from a
     # card's own description so the KP is handed the character's gender instead of guessing it from a
     # name. Surfaced in the Keeper-facing companion roster; "" when there was no clear signal.
@@ -164,6 +171,7 @@ class NpcRecord:
             "role": self.role,
             "playstyle": self.playstyle,
             "is_pc": self.is_pc,
+            "pregen_id": self.pregen_id,
             "pronouns": self.pronouns,
             "aliases": list(self.aliases),
             "avatar": self.avatar,
@@ -192,6 +200,7 @@ class NpcRecord:
             role=data.get("role", "keeper_npc"),
             playstyle=data.get("playstyle", ""),
             is_pc=bool(data.get("is_pc", False)),
+            pregen_id=data.get("pregen_id", ""),
             pronouns=data.get("pronouns", ""),
             avatar=data.get("avatar", ""),
             public_memory=list(data.get("public_memory") or []),
@@ -310,6 +319,17 @@ async def player_character_names(documents: Any, chat_key: str) -> set[str]:
     return names
 
 
+def _mint_slug_id(ids: set[str], name: str) -> str:
+    """A slugified id for `name`, suffixed past any collision (`-2`, `-3`, …)."""
+    base_slug = _slugify(name)
+    npc_id = base_slug
+    suffix = 2
+    while npc_id in ids:
+        npc_id = f"{base_slug}-{suffix}"
+        suffix += 1
+    return npc_id
+
+
 async def create_npc(
     documents: Any,
     chat_key: str,
@@ -351,12 +371,7 @@ async def create_npc(
     for _npc_id, existing in pairs:
         if existing.name.strip().lower() == wanted:
             return existing
-    base_slug = _slugify(name)
-    npc_id = base_slug
-    suffix = 2
-    while npc_id in ids:
-        npc_id = f"{base_slug}-{suffix}"
-        suffix += 1
+    npc_id = _mint_slug_id(ids, name)
 
     record = NpcRecord(
         id=npc_id,
@@ -425,6 +440,61 @@ async def create_companion(
     record.role = COMPANION_ROLE
     record.is_pc = True
     record.playstyle = playstyle
+    await _save_record(documents, chat_key, record)
+    return record
+
+
+async def companion_from_pregen(
+    documents: Any,
+    chat_key: str,
+    entry: dict[str, Any],
+    *,
+    playstyle: str = "",
+    persona_extra: str = "",
+) -> NpcRecord:
+    """Create (or reuse) the companion record for an AI-claimed roster entry.
+
+    A companion is a CLAIMED CHARACTER: the record derives from the roster
+    entry's own data — `persona` from its blurb, or `persona_extra` when one is
+    given (an imported card's full persona text OVERRIDES the blurb, which
+    would otherwise be that text truncated to the roster's 200-char blurb) —
+    plus the sheet identity from its name, and carries `pregen_id` back to the
+    entry so release/reset can keep the record and the claim marker in sync.
+
+    Re-claiming a name that is ALREADY a companion reuses the record
+    (idempotent, matching `create_npc`'s duplicate policy) and refreshes its
+    `pregen_id`/`playstyle` rather than minting a shadow duplicate. A name held
+    by a KEEPER NPC refuses (the two sides of the table never merge). The
+    player-reservation guard is deliberately NOT re-checked here: the caller
+    resolves the roster entry first, and every roster name is player-reserved
+    by construction — this path only ever claims what already exists as a
+    claimable character."""
+    existing = await find_npc_by_name(documents, chat_key, str(entry.get("name") or ""))
+    if existing is not None:
+        if existing.role != COMPANION_ROLE:
+            raise KeeperNpcNameTakenError(existing.name, existing.role)
+        updates: dict[str, Any] = {"pregen_id": str(entry.get("id") or "")}
+        if playstyle and playstyle != existing.playstyle:
+            updates["playstyle"] = playstyle
+        return await update_npc(documents, chat_key, existing.id, **updates) or existing
+
+    name = str(entry.get("name") or "").strip()
+    ids = {npc_id for npc_id, _record in await _load_all(documents, chat_key)}
+    persona = str(entry.get("blurb") or "").strip()
+    if persona_extra.strip():
+        persona = persona_extra.strip()
+    record = NpcRecord(
+        id=_mint_slug_id(ids, name),
+        name=name,
+        persona=persona,
+        role=COMPANION_ROLE,
+        is_pc=True,
+        playstyle=playstyle,
+        pregen_id=str(entry.get("id") or ""),
+        stat_char=name,
+        mechanics_ref=f"sheet:{name}",
+        pronouns=infer_pronoun_note(persona),
+    )
     await _save_record(documents, chat_key, record)
     return record
 

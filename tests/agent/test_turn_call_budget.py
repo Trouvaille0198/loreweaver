@@ -103,6 +103,11 @@ async def _room(services, hub: RoomHub, chat_key: str, *, companions: int):
     toolset = build_kp_toolset(services, hub=hub, command_router=router)
     names = [f"Ada{index}" for index in range(companions)]
     for name in names:
+        # A companion is a claimed character: roster first, then the AI claim.
+        from core.character_manager import CharacterSheet
+        from core.pregen_roster import pregen_add
+
+        await pregen_add(services.documents, chat_key, CharacterSheet(name, "coc7"))
         await CompanionTools(services).add_companion(_ctx(chat_key, user_id="kp"), name=name)
     if names:
         await services.store.state_set(chat_key, "party_auto", "1")

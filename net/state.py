@@ -40,6 +40,7 @@ from core.documents import (
     SCENE_ID,
 )
 from core.modvars import MODVARS_DOC_ID, MODVARS_DOC_TYPE, wire_entries
+from core.sheets import projected_skills
 from infra.usage_stats import USAGE_STATS_KEY
 
 
@@ -246,6 +247,7 @@ async def _character_payload(
     attrs = _wire_attributes(sheet)
     resources = character_resources(sheet, locale)
     resource_groups: list[dict[str, Any]] = []
+    pack: Any = None
     try:
         from core.resources import resource_projection
         from core.rulepacks import load_rulepack
@@ -271,7 +273,7 @@ async def _character_payload(
         "system": sheet.system,
         "resources": resources,
         "attributes": attrs,
-        "skills": _wire_skills(sheet),
+        "skills": projected_skills(sheet, pack) if pack is not None else _wire_skills(sheet),
         "status_effects": status_effects,
     }
     # Character prose and the pack-declared secondary surfaces are private to
@@ -459,7 +461,6 @@ async def _party(
         for key in (
             "system",
             "attributes",
-            "skills",
             "secondary_attributes",
             "fields",
             "equipment",
@@ -470,12 +471,40 @@ async def _party(
             value = member.get(key)
             if value not in (None, "", [], {}):
                 payload[key] = value
+        # Skills: stored (trained) values plus the recomputed derived skills —
+        # a fully-derived system (D&D 5e) never persists its skills, so a plain
+        # copy would show an empty panel in the party view.
+        try:
+            from core.rulepacks import load_rulepack
+
+            system = str(member.get("system", "") or "")
+            skills = projected_skills(member, load_rulepack(system) if system else None)
+        except Exception:
+            skills = None
+        if skills:
+            payload["skills"] = skills
         system = str(member.get("system", "") or "")
         if system not in label_maps:
             label_maps[system] = resource_label_map(system, locale)
-        resources = _party_member_resources(member, label_maps[system])
-        if resources:
-            payload["resources"] = resources
+        # Grouped pools (spell slots, hit dice) ride the same wire shape the
+        # character card uses, so ANY detail view can show them — rebuilt from
+        # the roster's public sheet fields through the pack projection.
+        try:
+            from core.resources import resource_projection
+            from core.rulepacks import load_rulepack
+
+            member_pack = load_rulepack(system) if system else None
+            if member_pack is not None:
+                member_sheet = CharacterSheet.from_dict(dict(member))
+                groups = [
+                    group
+                    for group in resource_projection(member_sheet, member_pack, locale).get("groups", [])
+                    if group.get("id")
+                ]
+                if groups:
+                    payload["resource_groups"] = groups
+        except Exception:
+            pass
         members.append(payload)
     return members
 
@@ -794,6 +823,12 @@ async def _pregens(
         if not name:
             continue
         entry = {"name": name, "claimed_by": wire_claimer(view)}
+        # Where the character came from — a module import, `.pc gen` (`room`), or a
+        # card import — rides the roster so the client can tell a room-born character
+        # from a module's own cast (the delete gate reads it).
+        source = str(view.get("source", ""))
+        if source:
+            entry["source"] = source
         # Public sheet fields, mirroring the `PartyMember` shape a claimed character
         # already exposes (protocol types.ts): enough to render the detail dialog.
         sheet = (_doc.data or {}).get("sheet") if isinstance(getattr(_doc, "data", None), dict) else None
@@ -802,7 +837,6 @@ async def _pregens(
                 "system",
                 "attributes",
                 "secondary_attributes",
-                "skills",
                 "fields",
                 "background",
                 "avatar",
@@ -810,6 +844,25 @@ async def _pregens(
                 value = sheet.get(key)
                 if value not in (None, "", {}):
                     entry[key] = value
+            # Grouped pools (spell slots) so a pregen's detail dialog shows its
+            # caster resources like any claimed character's.
+            try:
+                from core.resources import resource_projection
+                from core.rulepacks import load_rulepack
+
+                system = str(sheet.get("system", "") or "")
+                pack = load_rulepack(system) if system else None
+                if pack is not None:
+                    pregen_sheet = CharacterSheet.from_dict(dict(sheet))
+                    groups = [
+                        group
+                        for group in resource_projection(pregen_sheet, pack, locale).get("groups", [])
+                        if group.get("id")
+                    ]
+                    if groups:
+                        entry["resource_groups"] = groups
+            except Exception:
+                pass
         entries.append(entry)
     return entries
 
