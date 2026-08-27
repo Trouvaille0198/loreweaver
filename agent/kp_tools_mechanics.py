@@ -832,121 +832,35 @@ Rules:
             return i18n.t("kp_tools.item.failed", error=str(exc))
 
     @tool
-    async def merge_items(self, ctx: AgentCtx, character: str, item: str, into: str = "") -> str:
-        """Merge every instance `character` holds as `item` into a SINGLE instance —
-        quantities stack. `into` (optional) names the canonical entry to keep when the
-        player says two DIFFERENTLY-named entries are the same thing (e.g. "金币" and
-        "50枚金币"): those entries merge into it. Defaults to `item`. Use whenever the
-        player asks to combine duplicate/equivalent entries; narrate the consolidated
-        count afterwards. Common items (coins/rations) always merge; a merged instance
-        keeps the common flag so future grants stack too."""
+    async def update_item(self, ctx: AgentCtx, character: str, item: str, *, description: str = "", effect: str = "", bonus: str = "", common: bool | None = None, merge_into: str = "") -> str:
+        """Update a held item — description, effect, bonus, the common flag, or a merge.
+        Only the fields you pass change; pass ""/omit to leave one untouched.
+        description: new flavor text.
+        effect: new in-play effect line.
+        bonus: new mechanical edge "stat=value,stat=value" (replaces the existing bonus;
+            recomputes the holder's equipped bonuses).
+        common: True marks a COMMON good (coins/rations/arrows — the same thing from any
+            scenario; future same-name grants auto-merge quantity), False unmarks it,
+            omit to leave unchanged.
+        merge_into: name of the entry to MERGE this item INTO — quantities stack into one
+            instance and duplicates collapse (e.g. the player says "金币" and "50枚金币"
+            are the same thing; pass item="50枚金币", merge_into="金币"). Any other
+            fields you pass apply to the merged entry.
+        Use when the player says an item's description/effect/status is wrong or asks to
+        combine duplicate/equivalent entries; narrate the result."""
         i18n = self.services.i18n.with_locale(ctx.locale)
         try:
             character = (character or "").strip()
             item = (item or "").strip()
-            into = (into or "").strip()
+            merge_into = (merge_into or "").strip()
             if not character or not item:
                 return i18n.t("kp_tools.item.bad_args")
             owner = await self.services.characters.get_character_owner(ctx.chat_key, character)
             if not owner:
                 return i18n.t("kp_tools.item.character_not_found", name=character)
-            from agent.items import instances_for_owner
 
-            instances = await instances_for_owner(self.services.documents, ctx.chat_key, character)
-            folded = item.casefold()
-            srcs = [d for d in instances if str(d.data.get("name", "")).casefold() == folded]
-            target_name = into or item
-            target_folded = target_name.casefold()
-            src_ids = {s.id for s in srcs}
-            targets = [
-                d for d in instances
-                if str(d.data.get("name", "")).casefold() == target_folded and d.id not in src_ids
-            ]
-            if targets:
-                target = targets[0]
-                drops = srcs
-            elif srcs:
-                target = srcs[0]
-                drops = [d for d in srcs if d.id != target.id]
-            else:
-                return i18n.t("kp_tools.item.not_found", name=character, item=item)
-            total = int(target.data.get("quantity", 1)) + sum(
-                int(d.data.get("quantity", 1)) for d in drops
-            )
-            merged_data = dict(target.data)
-            merged_data["quantity"] = total
-            if bool(target.data.get("common")) or any(bool(d.data.get("common")) for d in srcs):
-                merged_data["common"] = True
-            if target_name != item:
-                merged_data["name"] = target_name
-            await self.services.documents.put(ctx.chat_key, "item", target.id, merged_data)
-            for d in drops:
-                await self.services.documents.delete(ctx.chat_key, "item", d.id)
-            await _refresh_character_bonuses(self.services, ctx, character, owner)
-            ctx.emit_item_grant(character, target_name, i18n.t("kp_tools.item.merged", character=character, item=target_name, qty=total))
-            return i18n.t("kp_tools.item.merged", character=character, item=target_name, qty=total)
-        except CharacterDataError:
-            return i18n.t("kp_tools.character.data_error")
-        except Exception as exc:
-            return i18n.t("kp_tools.item.failed", error=str(exc))
-
-    @tool
-    async def mark_common(self, ctx: AgentCtx, character: str, item: str, common: bool = True) -> str:
-        """Mark a held item as a COMMON good (or unmark it, common=False): coins,
-        rations, arrows — the same thing no matter which scenario it came from. Once
-        common, every future grant of that name MERGES quantity into the existing
-        instance instead of refusing a duplicate. Use when the player says an item
-        should count as an everyday good (or no longer should); narrate the result."""
-        i18n = self.services.i18n.with_locale(ctx.locale)
-        try:
-            character = (character or "").strip()
-            item = (item or "").strip()
-            if not character or not item:
-                return i18n.t("kp_tools.item.bad_args")
-            owner = await self.services.characters.get_character_owner(ctx.chat_key, character)
-            if not owner:
-                return i18n.t("kp_tools.item.character_not_found", name=character)
-            doc = await find_instance(self.services.documents, ctx.chat_key, character, item)
-            if doc is None:
-                return i18n.t("kp_tools.item.not_found", name=character, item=item)
-            data = {**doc.data, "common": bool(common)}
-            await self.services.documents.put(ctx.chat_key, "item", doc.id, data)
-            if common:
-                return i18n.t("kp_tools.item.common_marked", character=character, item=item)
-            return i18n.t("kp_tools.item.common_unmarked", character=character, item=item)
-        except CharacterDataError:
-            return i18n.t("kp_tools.character.data_error")
-        except Exception as exc:
-            return i18n.t("kp_tools.item.failed", error=str(exc))
-
-    @tool
-    async def update_item(self, ctx: AgentCtx, character: str, item: str, description: str = "", effect: str = "", bonus: str = "") -> str:
-        """Update a held item's DESCRIPTION (flavor text), EFFECT line (what it does in
-        play) and/or BONUS (mechanical edge, format "stat=value,stat=value" — replaces
-        the existing bonus). Only the fields you pass are changed; pass "" to leave one
-        untouched. Use when the player says an item's description or effect is wrong or
-        has changed (e.g. a potion now heals more, a key was mislabeled); narrate the
-        update. Bonus changes recompute the character's equipped bonuses."""
-        i18n = self.services.i18n.with_locale(ctx.locale)
-        try:
-            character = (character or "").strip()
-            item = (item or "").strip()
-            if not character or not item:
-                return i18n.t("kp_tools.item.bad_args")
-            owner = await self.services.characters.get_character_owner(ctx.chat_key, character)
-            if not owner:
-                return i18n.t("kp_tools.item.character_not_found", name=character)
-            doc = await find_instance(self.services.documents, ctx.chat_key, character, item)
-            if doc is None:
-                return i18n.t("kp_tools.item.not_found", name=character, item=item)
-            data = dict(doc.data)
-            changed: list[str] = []
-            if description.strip():
-                data["description"] = description.strip()
-                changed.append(i18n.t("kp_tools.item.field_description"))
-            if effect.strip():
-                data["effect"] = effect.strip()
-                changed.append(i18n.t("kp_tools.item.field_effect"))
+            # Resolve the bonus spec ONCE in async context (the sheet lookup is awaitable).
+            bonus_map: dict | None = None
             bonus_changed = False
             if bonus.strip():
                 try:
@@ -959,16 +873,79 @@ Rules:
                 sheet = await self.services.characters.get_character(owner, ctx.chat_key, character)
                 pack = await _sheet_pack(self.services, ctx, sheet) if has_character(sheet) else None
                 bonus_map, _unresolved = canonicalize_bonus_keys(bonus_map, pack)
-                data["bonus"] = bonus_map
-                data["effect"] = ", ".join(f"{k} {v:+d}" for k, v in bonus_map.items()) or data.get("effect", "")
                 bonus_changed = True
-                changed.append(i18n.t("kp_tools.item.field_bonus"))
+
+            def _apply_updates(data: dict, changed: list[str]) -> None:
+                if description.strip():
+                    data["description"] = description.strip()
+                    changed.append(i18n.t("kp_tools.item.field_description"))
+                if effect.strip():
+                    data["effect"] = effect.strip()
+                    changed.append(i18n.t("kp_tools.item.field_effect"))
+                if bonus_changed and bonus_map is not None:
+                    data["bonus"] = dict(bonus_map)
+                    data["effect"] = ", ".join(f"{k} {v:+d}" for k, v in bonus_map.items()) or data.get("effect", "")
+                    changed.append(i18n.t("kp_tools.item.field_bonus"))
+
+            if merge_into:
+                from agent.items import instances_for_owner
+
+                instances = await instances_for_owner(self.services.documents, ctx.chat_key, character)
+                folded = item.casefold()
+                srcs = [d for d in instances if str(d.data.get("name", "")).casefold() == folded]
+                target_name = merge_into
+                target_folded = target_name.casefold()
+                src_ids = {s.id for s in srcs}
+                targets = [
+                    d for d in instances
+                    if str(d.data.get("name", "")).casefold() == target_folded and d.id not in src_ids
+                ]
+                if targets:
+                    target = targets[0]
+                    drops = srcs
+                elif srcs:
+                    target = srcs[0]
+                    drops = [d for d in srcs if d.id != target.id]
+                else:
+                    return i18n.t("kp_tools.item.not_found", name=character, item=item)
+                total = int(target.data.get("quantity", 1)) + sum(
+                    int(d.data.get("quantity", 1)) for d in drops
+                )
+                merged_data = dict(target.data)
+                merged_data["quantity"] = total
+                if common is not None:
+                    merged_data["common"] = bool(common)
+                elif bool(target.data.get("common")) or any(bool(d.data.get("common")) for d in srcs):
+                    merged_data["common"] = True
+                if target_name != item:
+                    merged_data["name"] = target_name
+                changed: list[str] = []
+                _apply_updates(merged_data, changed)
+                await self.services.documents.put(ctx.chat_key, "item", target.id, merged_data)
+                for d in drops:
+                    await self.services.documents.delete(ctx.chat_key, "item", d.id)
+                if bonus_changed:
+                    await _refresh_character_bonuses(self.services, ctx, character, owner)
+                if changed:
+                    changed_text = "（" + "、".join(changed) + "）" if str(ctx.locale).startswith("zh") else " (" + ", ".join(changed) + ")"
+                    return i18n.t("kp_tools.item.merged_updated", character=character, item=target_name, qty=total, changed=changed_text)
+                return i18n.t("kp_tools.item.merged", character=character, item=target_name, qty=total)
+
+            doc = await find_instance(self.services.documents, ctx.chat_key, character, item)
+            if doc is None:
+                return i18n.t("kp_tools.item.not_found", name=character, item=item)
+            data = dict(doc.data)
+            changed: list[str] = []
+            if common is not None:
+                data["common"] = bool(common)
+                changed.append(i18n.t("kp_tools.item.field_common"))
+            _apply_updates(data, changed)
             if not changed:
                 return i18n.t("kp_tools.item.updated_nothing")
             await self.services.documents.put(ctx.chat_key, "item", doc.id, data)
             if bonus_changed:
                 await _refresh_character_bonuses(self.services, ctx, character, owner)
-            changed_text = "（" + "、".join(changed) + "）" if ctx.locale.startswith("zh") else " (" + ", ".join(changed) + ")"
+            changed_text = "（" + "、".join(changed) + "）" if str(ctx.locale).startswith("zh") else " (" + ", ".join(changed) + ")"
             return i18n.t("kp_tools.item.updated", character=character, item=item, changed=changed_text)
         except CharacterDataError:
             return i18n.t("kp_tools.character.data_error")

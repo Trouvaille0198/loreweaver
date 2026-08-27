@@ -326,5 +326,7 @@
   "kp_tools.item.updated_nothing": "（没有可更新的字段）",
   "kp_tools.item.field_description": "描述",
   "kp_tools.item.field_effect": "效果",
-  "kp_tools.item.field_bonus": "加成"
+  "kp_tools.item.field_bonus": "加成",
+  "kp_tools.item.field_common": "常见物标记",
+  "kp_tools.item.merged_updated": "✅ 已把 {character} 的 {item} 合并为单一条目（共 {qty} 件）{changed}。"
 }
