@@ -321,5 +321,10 @@
   "kp_tools.item.archived_held": "📦 {item} is ARCHIVED by {character} (shelved, not on their person) — do not describe it as carried gear or re-grant it. Restore with .item unarchive.",
   "kp_tools.item.merged": "✅ Merged {character}'s {item} into a single entry ({qty} total) — quantities stacked.",
   "kp_tools.item.common_marked": "✅ Marked {character}'s {item} as a common good — future grants of the same name auto-merge quantity.",
-  "kp_tools.item.common_unmarked": "✅ Removed the common-good mark from {character}'s {item}."
+  "kp_tools.item.common_unmarked": "✅ Removed the common-good mark from {character}'s {item}.",
+  "kp_tools.item.updated": "✅ Updated {character}'s {item}{changed}.",
+  "kp_tools.item.updated_nothing": "（没有可更新的字段）",
+  "kp_tools.item.field_description": "description",
+  "kp_tools.item.field_effect": "effect",
+  "kp_tools.item.field_bonus": "bonus"
 }
