@@ -38,8 +38,16 @@
   `loreweaver-web/src/features/play/commands.ts` 的注册。
 - 协议变更必须同步 Python 会话版本、TypeScript 协议包、包元数据、协议 README
   和 `docs/protocol.md`。
-- 新增房间级状态时，声明 `RoomStateFacet`，并注册到
-  `net/room_lifecycle.FACET_MODULES`。
+- 房间级数据的清理（`.reset` 与换剧本 `purge_active_module`）必须走
+  facet registry 单源：`.reset` 按 facet 声明的 `reset_scope` 收集目标，
+  purge 清"剧本内容类（reset_scope 非 None）里属于当前模组的部分"。
+  现状：`.reset` 已 registry 驱动；`purge_active_module` 仍是手写
+  文档类型/状态键清单（2026-08-28 已补齐全部类别）——把 purge 改为吃
+  registry 是待办重构，做之前先对齐语义（purge 保留玩家自建角色/手动
+  启用的技能，reset all 连设置都清）。教训：双份清理知识必然漂移，
+  两边各漏各的（实测：换剧本漏 item/clue_log/scene/note/配图索引/时钟/
+  roster 条目，reset 漏 pregen_media_jobs）。新增剧本数据类 = 注册
+  facet 声明 reset_scope，两条路都覆盖。
 - 提出非平凡机制前先检查 `docs/notes/rejected/`；涉及生命周期、锁、provider
   或回放时，还要阅读 `docs/defensive-patterns.md`。
 - 新增用户可操作的机制功能（施法、休息、战斗、升级、资源、法术管理等）必须

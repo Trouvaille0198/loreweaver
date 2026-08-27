@@ -1614,7 +1614,12 @@ async def _module_cards_pass(services: Services, ctx: AgentCtx, content: str, mo
     for concept in concepts:
         try:
             sheet = await build_sheet_from_description(
-                services, concept["description"], system, name=concept["name"], creation="pregen"
+                services,
+                concept["description"],
+                system,
+                name=concept["name"],
+                creation="pregen",
+                chat_key=ctx.chat_key,
             )
             sheet, _violations = validate_sheet(sheet, system, initialize_vitals=True)
             entry = await pregen_add(
@@ -1914,6 +1919,7 @@ async def generate_and_install_pack_module(
             levels=levels if _pack_module_system_has_levels(system, extends_base) else "",
             locale=ctx.locale,
             system=system,
+            extends_base=extends_base,
         ),
         chat_key=ctx.chat_key,
     )
@@ -2207,6 +2213,7 @@ def _build_pack_module_messages(
     *,
     locale: str | None = None,
     system: str = "",
+    extends_base: str = "",
     difficulty: str = "",
     levels: str = "",
 ) -> list[dict]:
@@ -2230,9 +2237,10 @@ def _build_pack_module_messages(
     difficulty_note = _difficulty_note(i18n, difficulty, levels)
     if difficulty_note:
         user_content = f"{user_content}\n\n{difficulty_note}"
-    if system:
+    resolved_system = system or extends_base
+    if resolved_system:
         try:
-            pack = rulepacks.load_rulepack(system)
+            pack = rulepacks.load_rulepack(resolved_system)
             guidance = _pack_module_skill_guidance(pack, i18n)
             user_content = f"{user_content}\n\n{guidance}"
             # Level-based systems (D&D): the recommended level range is REQUIRED
@@ -2243,6 +2251,13 @@ def _build_pack_module_messages(
                 level_field = (runtime.advancement or {}).get("level_field")
             if level_field:
                 user_content = f"{user_content}\n\n{i18n.t('agent.forge.pack_module_levels_requirement')}"
+            # Level-based systems (D&D): pregens must carry identity fields —
+            # character_class / race — or the claimed sheets have no class/race.
+            identity_fields = [
+                name for name, default in (pack.sheet_spec.fields or {}).items() if default == ""
+            ]
+            if "character_class" in identity_fields or "race" in identity_fields:
+                user_content = f"{user_content}\n\n{i18n.t('agent.forge.pack_module_pregen_identity')}"
         except Exception:
             pass  # unknown system: fall back to the schema's own generic example
     return [

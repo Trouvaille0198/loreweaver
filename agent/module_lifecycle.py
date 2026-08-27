@@ -215,6 +215,26 @@ class ModuleImportTransaction:
         return False
 
 
+async def _drop_roster_names(store: Any, chat_key: str, names: list[str]) -> None:
+    """Remove `names` from the room's party roster (best-effort)."""
+    try:
+        raw = await store.state_get(chat_key, "party_roster")
+        if not raw:
+            return
+        roster = json.loads(raw)
+        if not isinstance(roster, dict):
+            return
+        changed = False
+        for name in names:
+            if name in roster:
+                roster.pop(name, None)
+                changed = True
+        if changed:
+            await store.state_set(chat_key, "party_roster", json.dumps(roster, ensure_ascii=False))
+    except Exception:
+        pass
+
+
 async def purge_active_module(services: Any, chat_key: str) -> dict[str, Any] | None:
     """Remove the current module and only the switches it admitted to this room."""
     previous = await active_module(services, chat_key)
@@ -227,12 +247,29 @@ async def purge_active_module(services: Any, chat_key: str) -> dict[str, Any] | 
 
     for doc_type in ("module_pool", "module_brief", "modvars", "mvu_tree"):
         await services.documents.delete_type(chat_key, doc_type)
+    # The item catalog/instances, the discovered-clue log, the player-visible scene
+    # singleton and the keeper's scene notes all ship with the module's world and
+    # leave with it: a module swap must not strand the old adventure's loot, clues,
+    # current scene or NPC intentions in the room (the observed bug — old scenario
+    # items/clues kept showing after the switch).
+    await services.documents.delete_type(chat_key, "item_catalog")
+    await services.documents.delete_type(chat_key, "item")
+    await services.documents.delete_type(chat_key, "clue_log")
+    await services.documents.delete_type(chat_key, "scene")
+    await services.documents.delete_type(chat_key, "note")
     # Room-born roster characters (`source="room"`, created by `.pc gen`) are this
     # table's own asset: a module swap must not strand them. Only module-imported
-    # pregens (documents whose source column names the module) leave with it.
+    # pregens (documents whose source column names the module) leave with it —
+    # and their party-roster claims go with them (a stale roster entry without a
+    # backing pregen document strands the old adventure's cast, the observed bug).
+    removed_pregen_names: list[str] = []
     for doc in await services.documents.list(chat_key, "pregen"):
         if str(doc.source or "") != "room":
+            name = str(doc.data.get("name") or doc.id) if isinstance(doc.data, dict) else str(doc.id)
+            removed_pregen_names.append(name)
             await services.documents.delete(chat_key, "pregen", doc.id)
+    if removed_pregen_names:
+        await _drop_roster_names(services.store, chat_key, removed_pregen_names)
     if previous:
         source_id = str(previous.get("source_id") or "")
         for document in await services.documents.list(chat_key, "npc"):
@@ -270,6 +307,12 @@ async def purge_active_module(services: Any, chat_key: str) -> dict[str, Any] | 
         "module_source",
         "module_init_status",
         "module_init_error",
+        # Scenario-bound room state: the module's illustration index, pregen portrait
+        # jobs and the game clock are content of the old adventure — a swap starts a
+        # fresh one.
+        "module_media_index",
+        "pregen_media_jobs",
+        "game_clock",
     ):
         await services.store.state_delete(chat_key, key)
     return previous

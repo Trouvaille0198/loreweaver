@@ -267,6 +267,7 @@ def _project_clue_log(doc: Document, viewer: Viewer) -> dict[str, Any] | None:
                 "content": entry.get("content", ""),
                 "image": entry.get("image", ""),
                 "found_turn": entry.get("found_turn", 0),
+                "module": str(entry.get("module") or ""),
             }
             for entry in clues
             if isinstance(entry, dict) and entry.get("title")

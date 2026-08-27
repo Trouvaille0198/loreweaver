@@ -17,6 +17,7 @@ Every user-facing string routes through `infra.i18n` + `locales/{en,zh}/commands
 from __future__ import annotations
 
 from agent.clue_log import find_worldbook_clue, get_clue_log, remove_clue, reveal_clue
+from agent.tool_trace import active_module_id
 from gateway.commands.rooms import _is_keeper
 from gateway.commands.types import CommandCtx
 
@@ -69,6 +70,7 @@ class ClueCommands:
             content=entry["content"],
             keys=entry["keys"],
             image=entry["image"],
+            module=await active_module_id(ctx.services, ctx.chat_key),
         )
         if not added:
             return ctx.i18n.t("commands.clue.already_added", name=entry["title"] or name)

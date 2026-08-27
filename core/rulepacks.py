@@ -339,6 +339,14 @@ class RulePack:
         if not text:
             return ""
         key = text.casefold()
+        # Strip a parenthetical subclass gloss before matching — "Paladin (Oath
+        # of Vengeance)" / "游荡者（盗贼）" must resolve to the canonical class id,
+        # or the spell-slot table sees an unknown name and grants no slots.
+        for open_c, close_c in (("(", ")"), ("（", "）")):
+            if close_c in key:
+                cut = key.find(open_c)
+                if cut > 0:
+                    key = key[:cut].rstrip()
         runtime = self.runtime_spec
         if runtime is not None:
             if key in runtime.spell_slot_class:
