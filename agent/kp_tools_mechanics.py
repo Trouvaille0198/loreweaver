@@ -859,6 +859,21 @@ Rules:
             if not owner:
                 return i18n.t("kp_tools.item.character_not_found", name=character)
 
+            def _strip_qty(text: str) -> str:
+                """'金币 ×300' / '金币×300' / '金币(300)' -> '金币'. The inventory
+                display renders quantity as a suffix, and the model copies that
+                display name into lookups — tolerate the suffix so '金币×300' finds
+                the instance actually named '金币'."""
+                import re as _re
+
+                cleaned = text.strip()
+                cleaned = _re.sub(r"[（(]?\s*[×xX*]\s*\d+[）)]?$", "", cleaned)
+                cleaned = _re.sub(r"[（(]\d+[）)]$", "", cleaned)
+                return cleaned.strip()
+
+            def _fold(text: str) -> str:
+                return _strip_qty(text).casefold()
+
             # Resolve the bonus spec ONCE in async context (the sheet lookup is awaitable).
             bonus_map: dict | None = None
             bonus_changed = False
@@ -891,14 +906,14 @@ Rules:
                 from agent.items import instances_for_owner
 
                 instances = await instances_for_owner(self.services.documents, ctx.chat_key, character)
-                folded = item.casefold()
-                srcs = [d for d in instances if str(d.data.get("name", "")).casefold() == folded]
+                folded = _fold(item)
+                srcs = [d for d in instances if _fold(str(d.data.get("name", ""))) == folded]
                 target_name = merge_into
-                target_folded = target_name.casefold()
+                target_folded = _fold(target_name)
                 src_ids = {s.id for s in srcs}
                 targets = [
                     d for d in instances
-                    if str(d.data.get("name", "")).casefold() == target_folded and d.id not in src_ids
+                    if _fold(str(d.data.get("name", ""))) == target_folded and d.id not in src_ids
                 ]
                 if targets:
                     target = targets[0]
@@ -932,6 +947,8 @@ Rules:
                 return i18n.t("kp_tools.item.merged", character=character, item=target_name, qty=total)
 
             doc = await find_instance(self.services.documents, ctx.chat_key, character, item)
+            if doc is None and _strip_qty(item) != item:
+                doc = await find_instance(self.services.documents, ctx.chat_key, character, _strip_qty(item))
             if doc is None:
                 return i18n.t("kp_tools.item.not_found", name=character, item=item)
             data = dict(doc.data)
