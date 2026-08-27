@@ -69,7 +69,7 @@ from agent.context import AgentCtx
 from agent.npc import list_npcs
 from agent.services import Services
 from agent.stage_director import BEATS
-from agent.tool_trace import trace_event
+from agent.tool_trace import active_module_id, trace_event
 from core.character_memory import CHARACTER_MEMORY_DOC_TYPE, append_entry, empty_memory
 from core.documents import KEEPER_VIEWER
 from core.modvars import MODVARS_DOC_ID, MODVARS_DOC_TYPE, adjust_modvar, set_modvar, wire_entries
@@ -404,10 +404,10 @@ async def run_scribe(
         # Without this the probe cannot tell "the Scribe never ran" from "the Scribe
         # died" — both used to look like a session with zero whispers, zero habits,
         # zero chronicle lines, and no way to tell why.
-        trace_event(SCRIBE_TRACE_KIND, {"outcome": "disabled"}, chat_key=ctx.chat_key)
+        trace_event(SCRIBE_TRACE_KIND, {"outcome": "disabled"}, chat_key=ctx.chat_key, module=await active_module_id(services, ctx.chat_key))
         return ScribePass()
     if not reply_text.strip():
-        trace_event(SCRIBE_TRACE_KIND, {"outcome": "empty_reply"}, chat_key=ctx.chat_key)
+        trace_event(SCRIBE_TRACE_KIND, {"outcome": "empty_reply"}, chat_key=ctx.chat_key, module=await active_module_id(services, ctx.chat_key))
         return ScribePass()
     try:
         view = await services.documents.get_view(ctx.chat_key, MODVARS_DOC_TYPE, MODVARS_DOC_ID, KEEPER_VIEWER)
@@ -444,11 +444,11 @@ async def run_scribe(
             )
     except Exception as exc:  # noqa: BLE001 — bookkeeping must never break the table
         logger.debug("scribe: llm call failed: %s", exc)
-        trace_event(SCRIBE_TRACE_KIND, {"outcome": "llm_failed"}, chat_key=ctx.chat_key)
+        trace_event(SCRIBE_TRACE_KIND, {"outcome": "llm_failed"}, chat_key=ctx.chat_key, module=await active_module_id(services, ctx.chat_key))
         return ScribePass()
     parsed = _extract_json(result.content or "")
     if parsed is None:
-        trace_event(SCRIBE_TRACE_KIND, {"outcome": "parse_failed"}, chat_key=ctx.chat_key)
+        trace_event(SCRIBE_TRACE_KIND, {"outcome": "parse_failed"}, chat_key=ctx.chat_key, module=await active_module_id(services, ctx.chat_key))
         return ScribePass()
 
     changed = False
@@ -560,6 +560,7 @@ async def run_scribe(
             "memories": wrote_memories,
         },
         chat_key=ctx.chat_key,
+        module=await active_module_id(services, ctx.chat_key),
     )
     return ScribePass(changed=changed, beat=beat)
 

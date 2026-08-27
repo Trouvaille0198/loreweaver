@@ -19,8 +19,9 @@ class CastCommands:
     """`CommandRouter` mixin — see the module docstring."""
 
     async def cmd_party(self, ctx: CommandCtx) -> str:
-        """`.party [add <name> [| persona] | act <name> [hint] | auto on|off | remove <name>]`
-        — manage the AI companion party (M10). Bare `.party` lists the party's AI companions."""
+        """`.party [add <name> [playstyle] | act <name> [hint] | auto on|off | remove <name>]`
+        — manage the AI companion party (M10). `add` CLAIMS a roster character for the AI
+        (companions never precede their character); bare `.party` lists the party's AI companions."""
         from agent.kp_tools_companion import CompanionTools
 
         parts = ctx.args.split(maxsplit=1)
@@ -47,8 +48,8 @@ class CastCommands:
         if sub in _PARTY_ADD_WORDS:
             if not rest:
                 return ctx.i18n.t("companion.commands.party.add_usage")
-            name, persona = (piece.strip() for piece in rest.split("|", 1)) if "|" in rest else (rest, "")
-            return await tools.add_companion(agent_ctx, name=name, persona=persona)
+            name, _, playstyle = rest.partition(" ")
+            return await tools.add_companion(agent_ctx, name=name.strip(), playstyle=playstyle.strip())
         if sub in _PARTY_ACT_WORDS:
             return await self._party_act(ctx, rest)
         if sub in _PARTY_AUTO_WORDS:
@@ -196,6 +197,19 @@ class CastCommands:
                     # The record's `stat_char` points at a sheet it does not own. Nothing
                     # was deleted; name the sheet so the keeper can repoint it first.
                     return ctx.fail(companion_sheet_refusal(ctx.i18n, exc))
+                # A claimed companion's roster marker leaves with it — the character
+                # is claimable again. Legacy companions without a pregen_id have none.
+                if record.pregen_id:
+                    from core.pregen_roster import pregen_release
+
+                    await pregen_release(
+                        ctx.services.documents,
+                        ctx.chat_key,
+                        record.pregen_id,
+                        record.id,
+                        ctx.services.characters,
+                        owner_uid=npc_records.companion_uid(record.id),
+                    )
             else:
                 await npc_records.delete_npc(documents, ctx.chat_key, record.id)
             return ctx.i18n.t("commands.cast.deleted", name=record.name, id=record.id)

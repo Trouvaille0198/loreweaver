@@ -225,8 +225,14 @@ async def purge_active_module(services: Any, chat_key: str) -> dict[str, Any] | 
     for source in lore_sources:
         await services.worldbook.remove_by_source(chat_key, str(source))
 
-    for doc_type in ("module_pool", "module_brief", "modvars", "mvu_tree", "pregen"):
+    for doc_type in ("module_pool", "module_brief", "modvars", "mvu_tree"):
         await services.documents.delete_type(chat_key, doc_type)
+    # Room-born roster characters (`source="room"`, created by `.pc gen`) are this
+    # table's own asset: a module swap must not strand them. Only module-imported
+    # pregens (documents whose source column names the module) leave with it.
+    for doc in await services.documents.list(chat_key, "pregen"):
+        if str(doc.source or "") != "room":
+            await services.documents.delete(chat_key, "pregen", doc.id)
     if previous:
         source_id = str(previous.get("source_id") or "")
         for document in await services.documents.list(chat_key, "npc"):

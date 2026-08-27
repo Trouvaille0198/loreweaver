@@ -1,10 +1,12 @@
 """AI-KP tools for AI *player companions* (`docs/specs/M10-companions.md` §5).
 
-`CompanionTools` is the function-calling surface for creating and steering AI party members. A
-companion is a PLAYER-side character: `add_companion` creates a `player_companion`
-`agent.npc.NpcRecord` AND a real `core.character_manager.CharacterSheet` under the virtual user_key
-`companion:{id}`, so the KP's normal `skill_check`/character tools resolve REAL dice on the
-companion's own sheet when it takes a turn.
+`CompanionTools` is the function-calling surface for steering AI party members. A companion is a
+CLAIMED CHARACTER: the roster already holds the character (module-imported or `.pc gen`-created),
+and `add_companion` claims it FOR the AI — record and real
+`core.character_manager.CharacterSheet` under the virtual user_key `companion:{id}` derive from
+that roster entry, so the KP's normal `skill_check`/character tools resolve REAL dice on the
+companion's own sheet when it takes a turn. A companion never precedes its character: claiming
+creates no new character, it only binds an existing one to the AI.
 
 The heavy lifting -- generating a companion's action under strict information isolation, then running
 it through the normal turn pipeline so the KP resolves real dice -- lives in
@@ -28,11 +30,9 @@ from typing import TYPE_CHECKING
 from agent import npc as npc_records
 from agent.companion_actor import companion_action
 from agent.context import AgentCtx
-from agent.kp_tools_npc import keeper_npc_refusal, player_name_refusal
 from agent.services import Services
 from agent.tools import tool
-from core.character_manager import CharacterSheet
-from core.rulepacks import load_rulepack
+from core.pregen_roster import pregen_claim, pregen_find, pregen_release
 from infra.i18n import I18n
 from infra.room_facets import (
     STORAGE_DOCUMENTS,
@@ -104,6 +104,112 @@ async def retire_companion(services: Services, chat_key: str, companion: npc_rec
     await npc_records.delete_npc(services.documents, chat_key, companion.id)
 
 
+async def claim_pregen_as_companion(
+    services: Services,
+    chat_key: str,
+    ref: str,
+    *,
+    playstyle: str = "",
+    claimer_name: str = "",
+    persona_extra: str = "",
+) -> tuple[str, npc_records.NpcRecord | None]:
+    """Claim a roster character FOR the AI. Returns ``(status, record)``: ``ok`` /
+    ``yours`` with the companion record, or ``unknown`` / ``taken`` / ``corrupt`` /
+    ``name_conflict`` with ``None``.
+
+    A companion is a CLAIMED CHARACTER: this never invents a new character (that is
+    the module-import / `.pc gen` lane) — it only binds an existing roster entry to
+    the AI, deriving the companion record from the entry's own data and materializing
+    the sheet copy under the companion's virtual uid (the same place an AI-created
+    companion's sheet always lived). Re-claiming a name the AI already holds is
+    idempotent and may refresh its playstyle. A failed materialization rolls the
+    freshly-minted record back — whole or nothing."""
+    documents = services.documents
+    entry = await pregen_find(documents, chat_key, ref)
+    if entry is None:
+        return "unknown", None
+    claimer = str(entry.get("claimed_by") or "")
+    if claimer:
+        existing = await npc_records.get_npc(documents, chat_key, claimer)
+        if existing is None or existing.role != npc_records.COMPANION_ROLE:
+            return "taken", None
+        if playstyle and playstyle != existing.playstyle:
+            existing = await npc_records.update_npc(documents, chat_key, existing.id, playstyle=playstyle) or existing
+        # Idempotent re-activation: the claim is already ours — re-point the active
+        # pointer (best-effort) and report "yours", never overwriting the sheet.
+        await pregen_claim(
+            documents,
+            chat_key,
+            entry["id"],
+            existing.id,
+            services.characters,
+            claimer_name=claimer_name,
+            kind="ai",
+            owner_uid=_companion_uid(existing.id),
+        )
+        return "yours", existing
+    try:
+        record = await npc_records.companion_from_pregen(
+            documents, chat_key, entry, playstyle=playstyle, persona_extra=persona_extra
+        )
+    except npc_records.KeeperNpcNameTakenError:
+        return "taken", None
+    try:
+        status, _sheet = await pregen_claim(
+            documents,
+            chat_key,
+            entry["id"],
+            record.id,
+            services.characters,
+            claimer_name=claimer_name,
+            kind="ai",
+            owner_uid=_companion_uid(record.id),
+        )
+    except Exception:
+        # The materialization itself failed (a store error, not a status): the
+        # freshly-minted record must not strand — whole or nothing, then re-raise
+        # so the caller surfaces the real error.
+        await npc_records.delete_npc(documents, chat_key, record.id)
+        raise
+    if status not in {"ok", "yours"}:
+        # The sheet copy never materialized — roll the freshly-minted record back.
+        await npc_records.delete_npc(documents, chat_key, record.id)
+        return status, None
+    return ("ok" if status == "ok" else "yours"), record
+
+
+async def release_pregen_companion(
+    services: Services, chat_key: str, ref: str, *, force: bool = False
+) -> str:
+    """Release an AI claim WHOLE: the companion record, its sheet, and the roster
+    marker. Mirrors `retire_companion`'s whole-or-nothing discipline — the record
+    goes only when its sheet does, and the claim marker clears only after both.
+    ``not_yours`` for a player-held claim (those release through `.pc release`)."""
+    documents = services.documents
+    entry = await pregen_find(documents, chat_key, ref)
+    if entry is None:
+        return "unknown"
+    claimer = str(entry.get("claimed_by") or "")
+    if not claimer:
+        return "free"
+    if entry.get("claimed_by_kind") != "ai":
+        return "not_yours"
+    record = await npc_records.get_npc(documents, chat_key, claimer)
+    if record is None or record.role != npc_records.COMPANION_ROLE:
+        return "unknown"
+    await retire_companion(services, chat_key, record)
+    await pregen_release(
+        documents,
+        chat_key,
+        entry["id"],
+        claimer,
+        services.characters,
+        force=force,
+        owner_uid=_companion_uid(record.id),
+    )
+    return "ok"
+
+
 class CompanionTools:
     """AI-KP tools for adding/steering AI player companions (party members the AI fills seats with)."""
 
@@ -124,62 +230,31 @@ class CompanionTools:
         return self._services.i18n.with_locale(ctx.locale)
 
     @tool(prep_only=True)
-    async def add_companion(
-        self,
-        ctx: AgentCtx,
-        name: str,
-        persona: str = "",
-        system: str = "",
-        playstyle: str = "",
-        generate: bool = True,
-    ) -> str:
-        """Add an AI player companion: a party-side character the AI plays to fill an empty seat.
-        Creates its record AND a real character sheet, so it takes real, KP-resolved dice turns.
+    async def add_companion(self, ctx: AgentCtx, name: str, playstyle: str = "") -> str:
+        """Claim an existing roster character FOR the AI to play. A companion is a CLAIMED
+        character — this never creates a new one: the character must already be on the room's
+        roster (`.pc list`; module imports and `.pc gen` fill it). The claim materializes the
+        character's real sheet under the companion's own identity, so it takes real,
+        KP-resolved dice turns.
 
         Args:
-            name: The companion's name (also its character-sheet name).
-            persona: Who they are -- voice, goals, mannerisms (full roleplay).
-            system: Game system for the sheet; the room's active rule system is used when omitted.
-            playstyle: Tactical/roleplay leaning, e.g. "cautious support" or "aggressive brawler".
-            generate: Whether to auto-roll the sheet's attributes per the system's rules.
+            name: The roster character's name or id to claim.
+            playstyle: The companion's tactical/roleplay leaning, e.g. "cautious support".
 
         Returns:
-            Confirmation naming the created companion and its resolved id.
+            Confirmation naming the claimed character and its resolved id, or a refusal
+            telling you why (no such character, already claimed, unreadable sheet).
         """
         i18n = self._i18n(ctx)
         try:
-            pack = await self._services.room_rulepack(ctx) if not system.strip() else load_rulepack(system)
-
-            # A companion is its record AND its sheet: a record whose sheet never landed is a
-            # phantom `companion_act` would still drive (the 2026-08-18 《安土》 run's `npc-4`).
-            # So the sheet is BUILT before the record exists (a generation failure creates
-            # nothing), and a failed sheet WRITE undoes the record — but only a record this
-            # call minted: re-adding an existing companion is idempotent by design, and its
-            # seeded persona/knowledge is not this call's to delete. `minted` is exact
-            # because the writer now refuses the third case: a same-name record that is NOT
-            # a companion raises instead of being converted, so "already there" can only
-            # mean "already a companion", which this call may reuse but must never undo.
-            if generate:
-                sheet = self._services.characters.generate_character(pack.system, name)
-            else:
-                sheet = CharacterSheet(name=name, system=pack.system)
-            documents = self._services.documents
-            minted = await npc_records.find_npc_by_name(documents, ctx.chat_key, name) is None
-            record = await npc_records.create_companion(
-                documents, ctx.chat_key, name, persona=persona, playstyle=playstyle, stat_char=name
+            status, record = await claim_pregen_as_companion(
+                self._services, ctx.chat_key, name, playstyle=playstyle, claimer_name="AI"
             )
-            try:
-                await self._services.characters.save_character(_companion_uid(record.id), ctx.chat_key, sheet)
-            except Exception:
-                if minted:
-                    await npc_records.delete_npc(documents, ctx.chat_key, record.id)
-                raise
-
-            return i18n.t("companion.tools.add.done", name=record.name, id=record.id, system=pack.system)
-        except npc_records.PlayerNameReservedError as exc:
-            return player_name_refusal(i18n, exc)
-        except npc_records.KeeperNpcNameTakenError as exc:
-            return keeper_npc_refusal(i18n, exc)
+            if record is None:
+                return i18n.t(f"companion.tools.add.{status}", name=name)
+            if status == "yours":
+                return i18n.t("companion.tools.add.reclaimed", name=record.name, id=record.id)
+            return i18n.t("companion.tools.add.done", name=record.name, id=record.id)
         except Exception as exc:
             return i18n.t("companion.tools.add.failed", error=str(exc))
 
@@ -308,7 +383,21 @@ class CompanionTools:
             companion = await npc_records.get_npc(self._services.documents, ctx.chat_key, name)
             if companion is None or companion.role != npc_records.COMPANION_ROLE:
                 return i18n.t("companion.tools.not_found", name=name)
+            # A claimed companion's roster marker leaves with it: retire deletes
+            # record + sheet (whole or nothing), then the claim marker clears —
+            # the character is claimable again. Legacy companions without a
+            # pregen_id have no marker to clear.
+            pregen_id = companion.pregen_id
             await retire_companion(self._services, ctx.chat_key, companion)
+            if pregen_id:
+                await pregen_release(
+                    self._services.documents,
+                    ctx.chat_key,
+                    pregen_id,
+                    companion.id,
+                    self._services.characters,
+                    owner_uid=_companion_uid(companion.id),
+                )
             return i18n.t("companion.tools.remove.done", name=companion.name)
         except CompanionSheetNotRemovedError as exc:
             return companion_sheet_refusal(i18n, exc)
@@ -401,6 +490,19 @@ async def _dispose_companion_sheets(facet_ctx: FacetContext) -> None:
         uid = _companion_uid(companion.id)
         for sheet in await services.characters.list_characters(uid, chat_key):
             await services.characters.delete_character(uid, chat_key, str(sheet.get("name", "")))
+        # The claim marker follows the record+sheet out: `.reset story` clears the
+        # companion records (npc_records, story) one scope earlier than the pregens
+        # facet (all), so without this the roster would keep showing an AI-claimed
+        # character whose companion is gone — a claim nothing can release.
+        if companion.pregen_id:
+            await pregen_release(
+                services.documents,
+                chat_key,
+                companion.pregen_id,
+                companion.id,
+                services.characters,
+                owner_uid=_companion_uid(companion.id),
+            )
 
 
 # --- Room lifecycle (M23 WS1) -----------------------------------------------

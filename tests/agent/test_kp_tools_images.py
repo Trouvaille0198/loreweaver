@@ -119,3 +119,38 @@ async def test_generate_image_shares_rate_limit_with_avatar_command(tmp_path):
         unlocked={"generate_image"},
     )
     assert image_result == t("kp_tools.image.generate.rate_limited", locale="en")
+# ---------------------------------------------------------------------------
+# list_reference_media — the AI KP can see which published illustrations exist
+# ---------------------------------------------------------------------------
+
+
+async def test_list_reference_media_lists_published_subjects(tmp_path):
+    services = _services(tmp_path)
+    toolset = build_kp_toolset(services)
+    await services.store.state_set(
+        "chat-media",
+        "module_media_index",
+        json.dumps(
+            [
+                {"kind": "npc", "subject": "Martha", "hash": "abc", "name": "module-img-npc-0"},
+                {"kind": "scene", "subject": "The Salt & Anchor Inn", "hash": "def", "name": "module-img-scene-0"},
+            ]
+        ),
+    )
+    ctx = AgentCtx(chat_key="chat-media", user_id="kp", locale="en")
+
+    result = await toolset.dispatch("list_reference_media", ctx, {})
+
+    assert "Martha" in result
+    assert "The Salt & Anchor Inn" in result
+    assert "npc" in result
+
+
+async def test_list_reference_media_empty_room(tmp_path):
+    services = _services(tmp_path)
+    toolset = build_kp_toolset(services)
+    ctx = AgentCtx(chat_key="chat-media-empty", user_id="kp", locale="en")
+
+    result = await toolset.dispatch("list_reference_media", ctx, {})
+
+    assert isinstance(result, str) and result

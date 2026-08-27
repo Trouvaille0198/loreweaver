@@ -169,4 +169,4 @@ Check Spot Hidden: target 70 (effective 35), roll 13 -> Extreme Success
 
 ---
 
-*接着看：[模组怎样变成一场游戏](modules.zh.md) · [开服带团](operating.zh.md) · [做一个模组](authoring.zh.md) · [完整指令手册](https://1a7432.site/commands.html)*
+*接着看：[物品机制：给予、使用、移除装备](items.zh.md) · [模组怎样变成一场游戏](modules.zh.md) · [开服带团](operating.zh.md) · [完整指令手册](https://1a7432.site/commands.html)*

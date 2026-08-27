@@ -931,6 +931,30 @@ class ModuleTools(_KnowledgeToolsBase):
             return i18n.t("kp_tools.know.init.status_failed_query", error=str(exc))
 
 
+    @tool(keeper_only=True, read_only=True)
+    async def list_discovered_clues(self, ctx: AgentCtx) -> str:
+        """List the clues the party has ACTUALLY discovered (the room's clue log) — what the table already knows.
+
+        Read this whenever a scene hinges on what the party knows: never re-grant a clue that is already in the log, and never treat an undiscovered clue as discovered in narration. The log is snapshot at discovery time, so it is the players' ground truth, not the module's full clue list."""
+        i18n = self._i18n(ctx)
+        try:
+            from agent.clue_log import get_clue_log
+
+            clues = await get_clue_log(self._services.documents, ctx.chat_key)
+            if not clues:
+                return i18n.t("kp_tools.know.clues_empty")
+            lines = [i18n.t("kp_tools.know.clues_header", count=len(clues))]
+            for entry in clues:
+                title = str(entry.get("title") or "?")
+                content = str(entry.get("content") or "").strip()
+                if len(content) > 140:
+                    content = content[:140] + "…"
+                lines.append(f" - {title}" + (f": {content}" if content else ""))
+            return "\n".join(lines)
+        except Exception as exc:
+            return i18n.t("kp_tools.know.clues_failed", error=str(exc))
+
+
 class DocumentTools(_KnowledgeToolsBase):
     """Document upload/management tools: TXT/PDF/DOCX ingestion into the vector store, backing both
     ad-hoc `search_documents` retrieval and (for module/story uploads) module-analysis initialization.

@@ -68,11 +68,12 @@ async def build_sheet_from_persona(
             # place the pack's standard array with no emphasis rather than ship
             # the raw dice roll.
             _bias_sheet(manager, sheet, pack, {}, creation=creation)
-        _apply_persona_text(sheet, card, {})
+        _apply_persona_text(sheet, card, {}, pack)
         return sheet
 
     _bias_sheet(manager, sheet, pack, concept, creation=creation)
-    _apply_persona_text(sheet, card, concept)
+    _apply_persona_text(sheet, card, concept, pack)
+    _fill_initial_spells(sheet, pack)
     return sheet
 
 
@@ -132,7 +133,52 @@ def _render_prompt(services: Any, card: CharacterCard, pack: RulePack, module_co
         module_context=module_context,
         persona=_persona_summary(card),
         skill_rules=_skill_rules_text(renderer, pack),
+        identity_fields=_identity_fields_text(renderer, pack),
     )
+
+
+# Concept keys the model may use for an identity field the pack declares under a
+# different name (e.g. a pack spells it `occupation`, the sheet stores it as
+# `character_class`). First key wins.
+_IDENTITY_ALIASES: dict[str, tuple[str, ...]] = {
+    "occupation": ("occupation", "character_class", "class"),
+    "character_class": ("character_class", "occupation", "class"),
+    "class": ("class", "occupation", "character_class"),
+    "race": ("race", "ancestry"),
+    "ancestry": ("ancestry", "race"),
+}
+
+
+def _identity_fields_text(renderer: Any, pack: RulePack) -> str:
+    """The identity-fields contract for the concept prompt, generated FROM the pack's
+    own sheet spec — a system that declares `race`/`alignment`/anything else gets it
+    advertised automatically; one that declares none stays unadvertised. Identity
+    fields are the sheet's non-numeric slots (default value is the empty string):
+    occupation/class, race, alignment, … Numeric ones (level, proficiency) are
+    derived or defaulted by the engine, never authored by the model."""
+    spec = pack.sheet_spec
+    if spec is None or not spec.fields:
+        return ""
+    names = [name for name, default in spec.fields.items() if default == ""]
+    if not names:
+        return ""
+    return renderer("charcard.concept_identity_fields", fields=", ".join(names))
+
+
+def _identity_fields_text(renderer: Any, pack: RulePack) -> str:
+    """The identity-fields contract for the concept prompt, generated FROM the pack's
+    own sheet spec — a system that declares `race`/`alignment`/anything else gets it
+    advertised automatically; one that declares none stays unadvertised. Identity
+    fields are the sheet's non-numeric slots (default value is the empty string):
+    occupation/class, race, alignment, … Numeric ones (level, proficiency) are
+    derived or defaulted by the engine, never authored by the model."""
+    spec = pack.sheet_spec
+    if spec is None or not spec.fields:
+        return ""
+    names = [name for name, default in spec.fields.items() if default == ""]
+    if not names:
+        return ""
+    return renderer("charcard.concept_identity_fields", fields=", ".join(names))
 
 
 def _skill_rules_text(renderer: Any, pack: RulePack) -> str:
@@ -162,6 +208,52 @@ def _persona_summary(card: CharacterCard) -> str:
         f"tags: {', '.join(card.tags)}",
     ]
     return "\n".join(part for part in parts if not part.endswith(": "))
+
+
+async def roster_character_concept(
+    services: Any,
+    system: str,
+    module_context: str,
+    *,
+    reference: str = "",
+) -> dict[str, str]:
+    """One authoring-lane call: a claimable roster character's NAME + DESCRIPTION + APPEARANCE, fitted to the module's summary.
+    `reference` is OPTIONAL keeper input (a name, a concept, or both — e.g.
+    `.pc gen 阿岚 | 瘴雾镇的调查员`) that rides the prompt as a hint; the model may
+    keep it verbatim or refine it. With no reference the model writes the whole
+    character from the module context alone. Returns
+    ``{"name": str, "description": str, "appearance": str}`` — ``appearance`` is the
+    concrete look (build, hair, clothes, marks) the portrait lane folds into an
+    image prompt; keys may be empty when the call fails."""
+
+    llm = getattr(services, "llm", None)
+    if llm is None:
+        return {}
+    pack = load_rulepack(system)
+    i18n = getattr(services, "i18n", None)
+    renderer = i18n.t if i18n is not None and hasattr(i18n, "t") else t
+    prompt = renderer(
+        "charcard.roster_concept_prompt",
+        system=pack.system,
+        module_context=module_context,
+        reference=reference,
+    )
+    try:
+        with lane_scope("authoring"):
+            result = await llm.chat(
+                [
+                    {"role": "system", "content": prompt},
+                ],
+                temperature=0.7,
+            )
+    except Exception:
+        return {}
+    concept = _parse_concept(getattr(result, "content", None))
+    return {
+        "name": str(concept.get("name") or "").strip(),
+        "description": str(concept.get("description") or "").strip(),
+        "appearance": str(concept.get("appearance") or "").strip(),
+    }
 
 
 def _parse_concept(content: str | None) -> dict[str, Any]:
@@ -219,11 +311,17 @@ def _bias_sheet(
         _assign_rolled_groups(sheet, emphasis, attribute_rules)
 
     spec = pack.sheet_spec
-    if role_text and spec is not None:
-        for field_name in ("occupation", "character_class"):
-            if field_name in spec.fields:
-                setattr(sheet, field_name, role_text)
-                break
+    if spec is not None and spec.fields:
+        # Identity fields (the sheet's non-numeric slots — occupation/class, race,
+        # alignment, …) are written straight from the concept, matching through the
+        # alias table, so a NEW system's declared fields work with no per-field code.
+        for field_name, default in spec.fields.items():
+            if default != "":
+                continue
+            aliases = _IDENTITY_ALIASES.get(field_name, (field_name,))
+            value = _as_text(next((concept.get(k) for k in aliases if concept.get(k)), ""))
+            if value:
+                setattr(sheet, field_name, value)
 
     for skill in _list_text(concept.get("signature_skills") or concept.get("skills")):
         canonical = manager.find_skill_by_alias(sheet, skill) or skill
@@ -431,7 +529,38 @@ def _list_text(value: Any) -> list[str]:
     return []
 
 
-def _apply_persona_text(sheet: CharacterSheet, card: CharacterCard, concept: dict[str, Any]) -> None:
+def _fill_initial_spells(sheet: CharacterSheet, pack: RulePack) -> None:
+    """Fill a caster's starting known_spells from the pack's class spellbook.
+
+    Deterministic pack data: the AI only wrote the character's class, the
+    engine picks the default spells for it (iron rule: spell lists are sheet
+    data, never model-generated). No spellbook match leaves the list as-is.
+    """
+    catalog = getattr(pack, "spells", None)
+    if catalog is None or not catalog.spellbook:
+        return
+    class_name = str(getattr(sheet, "character_class", "") or "").strip().casefold()
+    defaults = catalog.spellbook.get(class_name)
+    if not defaults:
+        return
+    known = [str(value) for value in (sheet.known_spells or [])]
+    for spell_id in defaults:
+        if spell_id not in known:
+            known.append(spell_id)
+    sheet.known_spells = known
+    # A fresh caster starts with their slot pools topped to the level table's
+    # maximums (like after a long rest); locked rings stay at 0 and hide.
+    from core.resources import resource_values, set_resource
+
+    try:
+        for pool_id, value in resource_values(sheet, pack).items():
+            if pool_id.startswith("spell_slot_") and value.maximum and value.maximum > 0:
+                set_resource(sheet, pack, pool_id, value.maximum)
+    except Exception:
+        pass
+
+
+def _apply_persona_text(sheet: CharacterSheet, card: CharacterCard, concept: dict[str, Any], pack: RulePack) -> None:
     backstory = _as_text(concept.get("backstory"))
     if backstory:
         sheet.background = backstory
@@ -445,6 +574,21 @@ def _apply_persona_text(sheet: CharacterSheet, card: CharacterCard, concept: dic
         _as_text(concept.get("notes")),
     ]
     sheet.notes = "\n".join(part for part in notes if part).strip()
+
+    # Identity fields (class/occupation/race/...): the concept prompt advertises
+    # them and the model returns them under any of the pack's aliases — write the
+    # winning value onto the sheet's declared field. This is what lets a D&D
+    # sheet carry its class, which drives the spell-slot table at creation.
+    spec = pack.sheet_spec
+    if spec is not None and spec.fields:
+        for canonical, aliases in _IDENTITY_ALIASES.items():
+            if canonical not in spec.fields:
+                continue
+            value = next((_as_text(concept.get(key)) for key in aliases if concept.get(key)), "")
+            if value:
+                # Class names normalize to the pack's canonical id ("法师" -> wizard)
+                # so the spell-slot table resolves; other identity fields verbatim.
+                setattr(sheet, canonical, pack.normalize_class(value) if canonical == "character_class" else value)
 
 
 def _as_text(value: Any) -> str:

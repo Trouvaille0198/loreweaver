@@ -414,7 +414,8 @@ class WorldCommands:
 
     async def cmd_forge(self, ctx: CommandCtx) -> str:
         """`.forge <description> [--pack] [--system <id>] [--extends <id>] [--media <ids>]
-        [--companion <ids>]` — author and install a new module from a description.
+        [--companion <ids>] [--difficulty <tier>] [--levels <range>]` — author and install a
+        new module from a description.
 
         By default this authors a flat Markdown scenario (`generate_module`). `--pack`
         authors a COMPLETE module as a native world card wrapped in a `.lwpack` content pack
@@ -423,6 +424,9 @@ class WorldCommands:
         with no rulepack generated; `--extends <id>` instead generates a rulepack that patches
         that base system. `--media`/`--companion` are comma-separated opt-in ids (``cover``,
         ``scenes``, ``npcs``, ``items`` / ``skills``, ``rulepacks``, ``cards``).
+        `--difficulty <tier>` (``easy``/``standard``/``hard``/``deadly``) and `--levels <range>`
+        (e.g. ``1-3``) are the D&D-class design drivers — level-based systems only, ignored
+        elsewhere.
 
         `.forge skill <description>` / `.forge rule <description>` author a brand-new KP skill
         or rule system from a description, installing it globally (visible to every room).
@@ -447,6 +451,8 @@ class WorldCommands:
         pack = False
         system = ""
         extends_base = ""
+        difficulty = ""
+        levels = ""
         media: list[str] = []
         companion: list[str] = []
 
@@ -481,6 +487,17 @@ class WorldCommands:
                     media = ids
                 else:
                     companion = ids
+            elif token in {"--difficulty", "--levels"}:
+                key = token[2:]
+                index += 1
+                if index >= len(tokens):
+                    return ctx.fail(ctx.i18n.t("commands.forge.missing_value", option=token))
+                value = tokens[index].strip()
+                index += 1
+                if key == "difficulty":
+                    difficulty = value
+                else:
+                    levels = value
             else:
                 pieces.append(token)
                 index += 1
@@ -495,6 +512,8 @@ class WorldCommands:
                 description,
                 media=media or None,
                 companion=companion or None,
+                difficulty=difficulty,
+                levels=levels,
                 auto_import=False,
                 extends_base=extends_base,
                 system=system,
@@ -506,6 +525,8 @@ class WorldCommands:
                 description,
                 media=media or None,
                 companion=companion or None,
+                difficulty=difficulty,
+                levels=levels,
                 auto_import=False,
             )
         if result.ok:

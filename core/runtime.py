@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from core.condexpr import CondExprError, compile_expression
@@ -244,6 +245,27 @@ class RuntimeSpec:
     rests: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
     advancement: Mapping[str, Any] = field(default_factory=dict)
     encounters: Mapping[str, Any] = field(default_factory=dict)
+    # A bare filename (sibling of the pack's own YAML) holding the spell
+    # catalog — "the world dictionary" of spells this system knows. Loaded by
+    # the rulepack layer with the same directory-confined loader as resolver
+    # scripts; "" means the pack has no spell catalog.
+    spells_file: str = ""
+    # Full-caster spell slot table: rows indexed by character level (1-based),
+    # each a 1..9 list of that ring's slot maximums (0 = not unlocked yet).
+    # The engine sets each `spell_slot_N` pool's max/current from this at
+    # creation and advancement, so the wire shows current/max (and a locked
+    # ring hides itself — max 0 is filtered by clients).
+    spell_slots_by_level: tuple[tuple[int, ...], ...] = ()
+    # Optional per-caster-type slot tables plus the class → table mapping.
+    # `half` (paladin/ranger) unlocks later and caps lower; `pact` (warlock)
+    # holds few 1..5-ring slots that recover on a SHORT rest. A class without
+    # a mapping uses `spell_slots_by_level` (the full caster).
+    spell_slots_half: tuple[tuple[int, ...], ...] = ()
+    spell_slots_pact: tuple[tuple[int, ...], ...] = ()
+    spell_slot_class: Mapping[str, str] = field(default_factory=dict)
+    # Class name aliases -> canonical class id ("法师"/"Wizard" -> wizard), so
+    # an authored or model-written class name resolves to the right slot table.
+    class_aliases: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
     @property
     def resources(self) -> Mapping[str, ResourcePoolSpec]:
@@ -687,10 +709,56 @@ def parse_runtime_section(pack_id: str, raw: Any) -> RuntimeSpec | None:
     if raw is None:
         return None
     mapping = _mapping(pack_id, "", raw)
-    _known_keys(pack_id, "", mapping, {"version", "resources", "combat", "rests", "advancement", "encounters"})
+    _known_keys(
+        pack_id,
+        "",
+        mapping,
+        {"version", "resources", "combat", "rests", "advancement", "encounters", "spells_file", "spell_slots_by_level", "spell_slots_half", "spell_slots_pact", "spell_slot_class", "class_aliases"},
+    )
     version = mapping.get("version")
     if isinstance(version, bool) or not isinstance(version, int) or version != RUNTIME_SCHEMA_VERSION:
         raise _fail(pack_id, "version", f"must be integer version {RUNTIME_SCHEMA_VERSION}")
+    spells_file = str(mapping.get("spells_file") or "").strip()
+    if spells_file and (spells_file != Path(spells_file).name or "/" in spells_file or "\\" in spells_file):
+        raise _fail(pack_id, "spells_file", "must be a bare filename in the rulepack's own directory")
+    slots_raw = mapping.get("spell_slots_by_level") or ()
+    if not isinstance(slots_raw, Sequence) or isinstance(slots_raw, (str, bytes, bytearray)):
+        raise _fail(pack_id, "spell_slots_by_level", "must be a list of per-level lists")
+    spell_slots_by_level: list[tuple[int, ...]] = []
+    for index, row in enumerate(slots_raw):
+        if not isinstance(row, Sequence) or isinstance(row, (str, bytes, bytearray)):
+            raise _fail(pack_id, f"spell_slots_by_level[{index}]", "must be a list of 9 integers")
+        if len(row) != 9 or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in row):
+            raise _fail(pack_id, f"spell_slots_by_level[{index}]", "must be 9 non-negative integers")
+        spell_slots_by_level.append(tuple(int(value) for value in row))
+    slot_tables: dict[str, tuple[tuple[int, ...], ...]] = {}
+    for table_key in ("spell_slots_half", "spell_slots_pact"):
+        table_raw = mapping.get(table_key) or ()
+        if not isinstance(table_raw, Sequence) or isinstance(table_raw, (str, bytes, bytearray)):
+            raise _fail(pack_id, table_key, "must be a list of per-level lists")
+        rows: list[tuple[int, ...]] = []
+        for index, row in enumerate(table_raw):
+            if not isinstance(row, Sequence) or isinstance(row, (str, bytes, bytearray)):
+                raise _fail(pack_id, f"{table_key}[{index}]", "must be a list of 9 integers")
+            if len(row) != 9 or any(isinstance(value, bool) or not isinstance(value, int) or value < 0 for value in row):
+                raise _fail(pack_id, f"{table_key}[{index}]", "must be 9 non-negative integers")
+            rows.append(tuple(int(value) for value in row))
+        slot_tables[table_key.split("spell_slots_", 1)[1]] = tuple(rows)
+    slot_class_raw = mapping.get("spell_slot_class") or {}
+    slot_class_mapping = _mapping(pack_id, "spell_slot_class", slot_class_raw)
+    spell_slot_class: dict[str, str] = {}
+    for class_name, table_name in slot_class_mapping.items():
+        table_name = str(table_name).strip().casefold()
+        if table_name not in {"full", "half", "pact", "none"}:
+            raise _fail(pack_id, f"spell_slot_class.{class_name}", "must be one of full, half, pact, none")
+        spell_slot_class[str(class_name).strip().casefold()] = table_name
+    class_aliases_raw = mapping.get("class_aliases") or {}
+    class_aliases_mapping = _mapping(pack_id, "class_aliases", class_aliases_raw)
+    class_aliases: dict[str, tuple[str, ...]] = {}
+    for class_name, alias_list in class_aliases_mapping.items():
+        if not isinstance(alias_list, Sequence) or isinstance(alias_list, (str, bytes, bytearray)):
+            raise _fail(pack_id, f"class_aliases.{class_name}", "must be a list of names")
+        class_aliases[str(class_name).strip().casefold()] = tuple(str(alias).strip() for alias in alias_list if str(alias).strip())
 
     resources_raw = mapping.get("resources") or {}
     resources_mapping = _mapping(pack_id, "resources", resources_raw)
@@ -779,4 +847,10 @@ def parse_runtime_section(pack_id: str, raw: Any) -> RuntimeSpec | None:
         rests=rests,
         advancement=advancement,
         encounters=encounters,
+        spells_file=spells_file,
+        spell_slots_by_level=tuple(spell_slots_by_level),
+        spell_slots_half=slot_tables.get("half", ()),
+        spell_slots_pact=slot_tables.get("pact", ()),
+        spell_slot_class=spell_slot_class,
+        class_aliases=class_aliases,
     )

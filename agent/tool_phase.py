@@ -65,16 +65,32 @@ async def room_phase(store: Store, chat_key: str) -> str:
 # Room capabilities (see `needs` on `agent.tools.tool`). One name so far: the module
 # knowledge pool a `--module` TEXT upload builds. A world-card room never has one.
 CAPABILITY_MODULE_POOL = "module_pool"
+CAPABILITY_RUNTIME = "runtime"
+CAPABILITY_SPELLS = "spells"
 
 
-async def room_capabilities(documents: DocumentStore, chat_key: str) -> set[str]:
+async def room_capabilities(
+    documents: DocumentStore, chat_key: str, *, pack: Any | None = None
+) -> set[str]:
     """What backing stores this room actually has, for the schema filter.
 
     Recomputed per turn, so a room that uploads a module mid-session gets the pool
     tools back by itself. Never raises: an unreadable store reports NO capability,
     which only hides tools that would have failed anyway.
+
+    When the room's rulepack is passed in, the deterministic runtime capabilities
+    join the set: `runtime` (the pack declares a runtime contract — rests, combat,
+    advancement) and `spells` (the pack ships a spell catalog). A CoC room therefore
+    never sees D&D's cast/rest/advance tooling, and a D&D room sees all of it —
+    the AI keeper's tools always match the system actually in play.
     """
     capabilities: set[str] = set()
+    if pack is not None:
+        if getattr(pack, "runtime_spec", None) is not None:
+            capabilities.add(CAPABILITY_RUNTIME)
+        spells = getattr(pack, "spells", None)
+        if spells is not None and len(spells) > 0:
+            capabilities.add(CAPABILITY_SPELLS)
     try:
         doc = await documents.get_singleton(chat_key, "module_pool")
     except Exception:  # noqa: BLE001 — see docstring

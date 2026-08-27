@@ -38,3 +38,25 @@ right now.
 
 After `generate_module` responds, tell the keeper plainly what was created (or why it wasn't, if
 it failed) and summarize what the room's module knowledge pool now holds.
+
+## Difficulty and level range
+
+Difficulty and level ranges are D&D-class concepts: they apply ONLY to rule systems with
+character levels (D&D 5e). For CoC/WoD modules, never use `difficulty`/`levels` — those
+systems have no level or challenge-tier model, and the engine ignores the arguments there.
+
+When the keeper names a difficulty or a target level range for a level-based system, pass it
+through `generate_module`'s `difficulty` / `levels` arguments — do not fold it into the
+description as flavor and drop it:
+
+- `difficulty` is one of `easy` / `standard` / `hard` / `deadly`. It is a DESIGN DRIVER:
+  easy modules get mild surroundings, weak and sparse threats, and plentiful resources;
+  hard modules get perilous surroundings, stronger threats, scarce resources and time
+  pressure; deadly modules are near-uninhabitable with overwhelming threats. The authored
+  scenes, threat budgets, trap density and resource distribution must all reflect it.
+- `levels` is the recommended character level range (e.g. `1-3`, `5-10`) the module is
+  tuned for — the engine records it (and `difficulty`, for pack modules) in the module
+  metadata and the module page shows it as the difficulty identifier.
+
+Ask the keeper for a difficulty tier / level range when they have one in mind (a harder
+run of an existing premise is a legitimate request); omit both for a default-standard module.

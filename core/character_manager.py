@@ -264,10 +264,11 @@ class CharacterSheet:
         # their existing field-backed meters unchanged.
         self.resources: dict[str, dict[str, Any]] = {}
         self.rest_state: dict[str, Any] = {}
-        self.xp: int = 0
-        self.features: list[Any] = []
-        self.advancement: dict[str, Any] = {}
-        self.conditions: list[dict[str, Any]] = []
+        # Spells this character knows — spell-catalog ids (the pack's `spells`
+        # dictionary, resolvable by localized display name too). The engine
+        # enforces membership at cast time; this is deterministic sheet data,
+        # never model-generated mid-turn.
+        self.known_spells: list[str] = []
         self.background = ""
         self.notes = ""
         self.avatar: dict[str, Any] | None = None
@@ -312,9 +313,7 @@ class CharacterSheet:
             "resources": {str(key): dict(value) for key, value in getattr(self, "resources", {}).items() if isinstance(value, dict)},
             "rest_state": dict(getattr(self, "rest_state", {})),
             "xp": getattr(self, "xp", 0),
-            "features": list(getattr(self, "features", [])),
-            "advancement": dict(getattr(self, "advancement", {})),
-            "conditions": list(getattr(self, "conditions", [])),
+            "known_spells": list(getattr(self, "known_spells", [])),
             "equipped_bonuses": dict(getattr(self, "equipped_bonuses", {})),
             "background": getattr(self, "background", ""),
             "notes": getattr(self, "notes", ""),
@@ -346,9 +345,9 @@ class CharacterSheet:
         advancement = data.get("advancement", {})
         if isinstance(advancement, dict):
             character.advancement = dict(advancement)
-        conditions = data.get("conditions", [])
-        if isinstance(conditions, list):
-            character.conditions = [dict(value) for value in conditions if isinstance(value, dict)]
+        known_spells = data.get("known_spells", [])
+        if isinstance(known_spells, list):
+            character.known_spells = [str(value) for value in known_spells]
         items = data.get("items", [])
         if isinstance(items, list):
             character.items = [i for i in items if isinstance(i, dict)]

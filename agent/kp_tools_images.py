@@ -36,6 +36,35 @@ class ImageTools:
     def _i18n(self, ctx: AgentCtx) -> I18n:
         return self._services.i18n.with_locale(ctx.locale)
 
+    @tool(read_only=True)
+    async def list_reference_media(self, ctx: AgentCtx) -> str:
+        """List the room's PUBLISHED illustrations (scenes, NPCs, items/clues the players have already seen).
+
+        Every entry is a valid `reference_subject` for generate_image — reuse one to keep new art consistent with what the table knows. Check this before generating an image, and pick a matching subject instead of inventing a name the room has no art for."""
+        i18n = self._i18n(ctx)
+        try:
+            import json
+
+            raw = await self._services.store.state_get(ctx.chat_key, "module_media_index")
+            entries: list[dict] = []
+            if raw:
+                try:
+                    value = json.loads(raw)
+                    if isinstance(value, list):
+                        entries = [e for e in value if isinstance(e, dict)]
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    pass
+            if not entries:
+                return i18n.t("kp_tools.image.media_none")
+            lines = [i18n.t("kp_tools.image.media_header", count=len(entries))]
+            for entry in entries:
+                kind = str(entry.get("kind") or "?")
+                subject = str(entry.get("subject") or entry.get("name") or "?")
+                lines.append(f" - [{kind}] {subject}")
+            return "\n".join(lines)
+        except Exception as exc:
+            return i18n.t("kp_tools.image.media_failed", error=str(exc))
+
     @tool(gated=True)
     async def generate_image(
         self, ctx: AgentCtx, prompt: str, kind: str = "scene", caption: str = "", reference_subject: str = ""
@@ -59,7 +88,9 @@ class ImageTools:
                 illustration of (a module scene, NPC, clue/item, or character name). When
                 given, that published illustration anchors the new image as a style/subject
                 reference, keeping the art consistent with what the table knows. Leave
-                empty when no such image exists or none fits.
+                empty when no such image exists or none fits. Run list_reference_media
+                first to see which subjects the room actually has art for — reuse one of
+                those names instead of inventing a subject with no published image.
 
         Returns:
             A localized confirmation that generation started (the image itself arrives as

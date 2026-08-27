@@ -134,3 +134,106 @@ async def test_tool_round_draft_is_fed_back_to_the_model(tmp_path):
     assert draft in joined
     assert "承接并保留" in joined  # loop.draft_resume (zh) — instructs to preserve the detail
     assert result.reply
+
+
+async def test_final_reply_dropping_tool_round_draft_is_rescued(tmp_path):
+    """The `draft_resume` instruction is a soft constraint: when NO dice-class tool ran
+    this turn, the discarded narration cannot have been overturned, and if the final
+    reply shares no substantive sentence with it, the engine prepends the draft to the
+    published reply — the scene's events can never vanish from the fiction."""
+    draft = (
+        "你们搬开碎石钻进空腔。毯子中央躺着一颗青灰色的蛋，壳上缀着金银丝带，一道裂缝里"
+        "正挣出一只湿漉漉的翅膀尖。夏洛特翻开涂鸦笔记：「蛋里面有一只小翅膀伸出来了，"
+        "我要给它取名闪电。」\n\n"
+        "孩子把蛋偷走，不是要卖钱——他是想养它。"
+    )
+    final = "就在这时，空腔外传来一阵急促的脚步声，由远及近。"
+    llm = FakeLLM(
+        script=[
+            ChatResult(content=draft, tool_calls=[tool_call("kp_note", action="add", category="scenes", content="发现狮鹫蛋，孩子想养它")]),
+            assistant_text(final),  # the model never mentions the scene it narrated
+        ]
+    )
+    services = build_services(Settings(locale="zh"), llm=llm, embeddings=FakeEmbeddings(16))
+    ctx = AgentCtx(chat_key="draft-rescue-room", user_id="p1", locale="zh")
+
+    async def emit(frame: dict) -> None:
+        pass
+
+    result = await run_kp_turn(ctx, services, build_kp_toolset(services), "看看蛋旁边有什么", on_reply_delta=emit)
+
+    assert result.reply == draft.rstrip() + "\n\n" + final
+    # The keeper-side archive still holds the raw pre-merge draft for review.
+    assert result.discarded_draft == draft
+
+
+async def test_final_reply_preserving_draft_is_not_doubled(tmp_path):
+    """When the final reply already carries the draft's scene (rewritten, so exact
+    containment misses), the rescue must not fire — no double-published narration."""
+    draft = "你伸手把铜镜从柜台上拿了起来。镜面上没有你的倒影。"
+    final = "你伸手把铜镜翻了个面，镜面上映出的是你自己的脸。"
+    llm = FakeLLM(
+        script=[
+            ChatResult(content=draft, tool_calls=[tool_call("kp_note", action="add", category="scenes", content="铜镜")]),
+            assistant_text(final),
+        ]
+    )
+    services = build_services(Settings(locale="zh"), llm=llm, embeddings=FakeEmbeddings(16))
+    ctx = AgentCtx(chat_key="draft-no-double-room", user_id="p1", locale="zh")
+
+    async def emit(frame: dict) -> None:
+        pass
+
+    result = await run_kp_turn(ctx, services, build_kp_toolset(services), "把镜子放回去", on_reply_delta=emit)
+
+    assert result.reply == final
+    assert result.discarded_draft == draft
+
+
+async def test_rescued_draft_never_leaks_machinery_blocks(tmp_path):
+    """The discarded archive holds pre-strip text; the rescue merges only the cleaned
+    narration, never a `<use>`-shaped machinery block a model left behind."""
+    draft = "正文剧情：空腔里铺着旧毛毯。\n<use><name>mcp__kp_note</name><args>{\"secret\": \"x\"}</args></use>"
+    final = "脚步声由远及近。"
+    llm = FakeLLM(
+        script=[
+            ChatResult(content=draft, tool_calls=[tool_call("kp_note", action="add", category="scenes", content="空腔")]),
+            assistant_text(final),
+        ]
+    )
+    services = build_services(Settings(locale="zh"), llm=llm, embeddings=FakeEmbeddings(16))
+    ctx = AgentCtx(chat_key="draft-machinery-room", user_id="p1", locale="zh")
+
+    async def emit(frame: dict) -> None:
+        pass
+
+    result = await run_kp_turn(ctx, services, build_kp_toolset(services), "看看里面", on_reply_delta=emit)
+
+    assert "<use>" not in result.reply and "mcp__kp_note" not in result.reply
+    assert "正文剧情：空腔里铺着旧毛毯。" in result.reply
+    assert result.reply.endswith(final)
+
+
+async def test_dice_tool_round_draft_is_never_rescued(tmp_path):
+    """A dice-class tool result is exactly what discards a narration: the model must
+    correct the contradicted parts, and its corrected reply is authoritative. The
+    rescue must NOT fire on a rolled turn even when the reply shares no draft sentence
+    (e.g. a failed ambush flips the scene) — merging would publish a contradiction."""
+    draft = "美咲的刀锋抵上岩本的喉咙，血珠顺着刀刃滑落。「告诉我当年那场火，是谁放的。」"
+    final = "骰子落定：突袭失败。岩本反手扣住美咲的手腕。"
+    llm = FakeLLM(
+        script=[
+            ChatResult(content=draft, tool_calls=[tool_call("roll_dice", expression="1d100")]),
+            assistant_text(final),
+        ]
+    )
+    services = build_services(Settings(locale="zh"), llm=llm, embeddings=FakeEmbeddings(16))
+    ctx = AgentCtx(chat_key="draft-dice-guard-room", user_id="p1", locale="zh")
+
+    async def emit(frame: dict) -> None:
+        pass
+
+    result = await run_kp_turn(ctx, services, build_kp_toolset(services), "突袭他", on_reply_delta=emit)
+
+    assert result.reply == final
+    assert result.discarded_draft == draft

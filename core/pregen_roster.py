@@ -7,16 +7,23 @@ pool of pre-generated, rule-validated sheets that players claim as their own PC
 the classic pre-gen investigator flow.
 
 M17: each pregen is ONE `pregen` document (``data = {name, system, source,
-claimed_by, sheet}``); the roster IS the document list (insertion-ordered by `seq`),
-and the projection withholds the pristine ``sheet`` payload from player-grade viewers
-while the cast list itself stays table talk.
+claimed_by, claimed_by_kind, sheet}``); the roster IS the document list
+(insertion-ordered by `seq`), and the projection withholds the pristine ``sheet``
+payload from player-grade viewers while the cast list itself stays table talk.
 
 Deterministic bookkeeping (iron rule #1): claims are exclusive by construction; the
 document keeps the PRISTINE imported sheet, a claim materializes a COPY under the
-claiming player's own uid (`CharacterManager.save_character` — active + party roster
-included), and a release deletes the player's copy while the pristine original stays
+claiming holder's uid (`CharacterManager.save_character` — active + party roster
+included), and a release deletes the holder's copy while the pristine original stays
 for the next claimant. Unclaimed pregens deliberately never touch the party roster —
 the panel shows who is AT the table, not the whole cast list.
+
+Claims have two holder kinds, stored verbatim in ``claimed_by_kind`` and never
+interpreted here: ``player`` (a member uid in ``claimed_by``) and ``ai`` (an
+agent-side companion record id, whose sheet copy lives under the companion's
+virtual uid — the agent layer passes ``owner_uid`` for both claim and release).
+Core stays free of the agent layer's shapes; the roster is just "a holder id,
+a kind, and an owner uid to materialize into".
 """
 
 from __future__ import annotations
@@ -52,10 +59,17 @@ def _entry(doc_id: str, data: dict[str, Any]) -> dict[str, Any]:
         "aliases": tuple(data.get("aliases") or ()),
         "source": str(data.get("source", "")),
         "blurb": str(data.get("blurb", "")),
+        "appearance": str(data.get("appearance", "")),
+        "avatar": str(data.get("avatar", "")),
         "claimed_by": str(data.get("claimed_by", "")),
         # The claimer's display name, captured at claim time: the wire renders it
         # verbatim, and a member id alone could never resolve once they are offline.
         "claimed_name": str(data.get("claimed_name", "")),
+        # Who holds the claim: "player" (a member uid in `claimed_by`) or "ai" (a
+        # companion record id in `claimed_by`, whose sheet lives under the
+        # companion uid the agent layer resolves). Core stores it verbatim and
+        # never interprets it; the agent layer owns the "ai" shape.
+        "claimed_by_kind": str(data.get("claimed_by_kind", "player")),
     }
 
 
@@ -81,7 +95,8 @@ async def pregen_find(documents: Any, chat_key: str, ref: str) -> dict[str, Any]
 
 
 async def pregen_add(
-    documents: Any, chat_key: str, sheet: CharacterSheet, *, source: str = "", blurb: str = "", aliases: tuple[str, ...] = ()
+    documents: Any, chat_key: str, sheet: CharacterSheet, *, source: str = "", blurb: str = "", appearance: str = "", avatar: str = "", aliases: tuple[str, ...] = ()
+
 ) -> dict[str, Any] | None:
     """Register `sheet` as a claimable pregen (pristine copy stored verbatim).
 
@@ -102,8 +117,11 @@ async def pregen_add(
         "source": str(source)[:200],
         "blurb": str(blurb)[:200],
         "aliases": tuple(a for a in aliases if str(a).strip())[:8],
+        "appearance": str(appearance)[:400],
+        "avatar": str(avatar)[:400],
         "claimed_by": str(existing.data.get("claimed_by", "")) if existing is not None else "",
         "claimed_name": str(existing.data.get("claimed_name", "")) if existing is not None else "",
+        "claimed_by_kind": str(existing.data.get("claimed_by_kind", "player")) if existing is not None else "player",
         "sheet": sheet.to_dict(),
     }
     doc = await documents.put(chat_key, PREGEN_DOC_TYPE, slug, data, source=str(source)[:200] or None)
@@ -120,15 +138,18 @@ async def pregen_pristine_sheet(documents: Any, chat_key: str, slug: str) -> Cha
         return None
 
 
-async def _set_claimed(documents: Any, chat_key: str, slug: str, claimed_by: str, claimed_name: str = "") -> None:
+async def _set_claimed(
+    documents: Any, chat_key: str, slug: str, claimed_by: str, claimed_name: str = "", kind: str = "player"
+) -> None:
     doc = await documents.get(chat_key, PREGEN_DOC_TYPE, slug)
     if doc is None:
         return
     data = dict(doc.data)
     data["claimed_by"] = claimed_by
-    # An empty claim clears the name too; a fresh claim records the claimer's
-    # display name so the wire can show it even after they disconnect.
+    # An empty claim clears the name and kind too; a fresh claim records the
+    # claimer's display name so the wire can show it even after they disconnect.
     data["claimed_name"] = claimed_name if claimed_by else ""
+    data["claimed_by_kind"] = kind if claimed_by else ""
     await documents.put(chat_key, PREGEN_DOC_TYPE, slug, data)
 
 
@@ -140,33 +161,42 @@ async def pregen_claim(
     characters: CharacterManager,
     *,
     claimer_name: str = "",
+    kind: str = "player",
+    owner_uid: str | None = None,
 ) -> tuple[str, CharacterSheet | None]:
     """Claim a pregen for `user_id`. Returns ``(status, sheet)`` with status one of
-    ``ok`` (fresh claim — pristine copy saved under the player's uid, made active),
+    ``ok`` (fresh claim — pristine copy saved under the owner's uid, made active),
     ``yours`` (already theirs — re-activated, progress untouched),
     ``taken`` (someone else's), ``unknown``, ``corrupt`` (pristine sheet unreadable),
-    ``name_conflict`` (the name is already another player's own, non-pregen sheet)."""
+    ``name_conflict`` (the name is already another owner's own, non-pregen sheet).
+
+    `user_id` is the claim HOLDER's id (a member uid for ``kind="player"``; an
+    agent-side companion record id for ``kind="ai"``) — what ``claimed_by``
+    records. `owner_uid` is the uid the sheet copy lands under, defaulting to
+    the holder id; the agent layer passes the companion's virtual uid so an AI
+    claim's sheet lives in the same place an AI-created companion's always has."""
     entry = await pregen_find(documents, chat_key, ref)
     if entry is None:
         return "unknown", None
     claimer = entry["claimed_by"]
     if claimer and claimer != user_id:
         return "taken", None
+    owner = owner_uid or user_id
     if claimer == user_id:
-        await characters.set_active_character(user_id, chat_key, entry["name"])
-        return "yours", await characters.get_character(user_id, chat_key, entry["name"])
+        await characters.set_active_character(owner, chat_key, entry["name"])
+        return "yours", await characters.get_character(owner, chat_key, entry["name"])
     sheet = await pregen_pristine_sheet(documents, chat_key, entry["id"])
     if sheet is None:
         return "corrupt", None
     try:
-        await characters.save_character(user_id, chat_key, sheet)
+        await characters.save_character(owner, chat_key, sheet)
     except CharacterNameTakenError:
         # The pregen's name is already an independently-created sheet owned by another
         # player (the F01 ownership check refusing an overwrite — the safe branch).
         # Force-saving would destroy that player's progress, so the claim reports
         # instead; the status routes to a localized notice like every other outcome.
         return "name_conflict", None
-    await _set_claimed(documents, chat_key, entry["id"], user_id, claimer_name)
+    await _set_claimed(documents, chat_key, entry["id"], user_id, claimer_name, kind)
     return "ok", sheet
 
 
@@ -178,11 +208,15 @@ async def pregen_release(
     characters: CharacterManager,
     *,
     force: bool = False,
+    owner_uid: str | None = None,
 ) -> str:
-    """Release a claim. Players release their own; `force` (the keeper) releases
+    """Release a claim. Holders release their own; `force` (the keeper) releases
     anyone's. Returns ``ok`` / ``unknown`` / ``free`` (nobody holds it) /
-    ``not_yours``. The player's copy is deleted (progress discarded — the next
-    claimant starts from the pristine sheet); the roster entry stays claimable."""
+    ``not_yours``. The holder's copy is deleted (progress discarded — the next
+    claimant starts from the pristine sheet); the roster entry stays claimable.
+
+    `owner_uid` is where the held sheet lives (defaults to the holder id); the
+    agent layer passes the companion's virtual uid to release an AI claim."""
     entry = await pregen_find(documents, chat_key, ref)
     if entry is None:
         return "unknown"
@@ -191,7 +225,8 @@ async def pregen_release(
         return "free"
     if claimer != user_id and not force:
         return "not_yours"
-    await characters.delete_character(claimer, chat_key, entry["name"])
+    owner = owner_uid or claimer
+    await characters.delete_character(owner, chat_key, entry["name"])
     await _set_claimed(documents, chat_key, entry["id"], "")
     return "ok"
 

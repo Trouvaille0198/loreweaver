@@ -81,6 +81,19 @@ def dice_tool_names() -> frozenset[str]:
     return _BASE_DICE_TOOL_NAMES | all_subsystem_tool_names()
 
 
+# High-signal possession phrasing in a MODEL'S reply (收下/带走/捡起/物品栏…).
+# Deliberately NOT a verb dictionary — open verbs ("扯出/抢回/缴获") still escape, and
+# the catalog-name match in `reply_claims_item_action` stays the primary gate. These
+# are only the closed handful whose appearance almost always means "a character now
+# holds this", added so an off-catalog possession claim (a picked-up trinket, a quest
+# prop the module never templated) is re-asked instead of silently passing.
+_ITEM_HOLD_CLAIM_RE = re.compile(
+    r"(?:收下|收起|收好|带走|拿走|捡起|捡到|拾取|拾起|收进|揣进|装进|放进|收入|物品栏|"
+    r"pick(?:ed)?\s+up|put\s+away|pocket(?:ed)?|stash(?:ed)?|grab(?:bed)?|acquire(?:d)?|inventory)",
+    re.IGNORECASE,
+)
+
+
 def dice_rolled(tool_trace: list[dict]) -> bool:
     """True if any real dice-rolling tool fired during this turn."""
     names = dice_tool_names()
@@ -308,9 +321,13 @@ def reply_claims_item_action(reply: str, item_names: frozenset[str] = frozenset(
     ("扯出/抢回/缴获" will always escape an enumeration — 2026-08-27 沈铁's mirror was
     re-granted three times exactly because "一把将铜镜扯了出来" slipped the old list).
     The gate therefore matches only the CLOSED set of names the room actually tracks
-    (catalog templates + live item documents). Whether a mention really claims a change
-    is a semantic question the check round's own LLM answers — the gate's only job is to
-    guarantee the model gets asked whenever a tracked item appears in the reply. NPC
+    (catalog templates + live item documents), plus a handful of HIGH-SIGNAL possession
+    phrases in the model's own writing (收下/带走/捡起/物品栏…): those almost always
+    mean a character now holds something, so an off-catalog or un-catalogued claim
+    (a picked-up trinket, a quest prop the module never templated) is re-asked instead
+    of silently passing. Whether a mention really claims a change is a semantic question
+    the check round's own LLM answers — the gate's only job is to guarantee the model
+    gets asked whenever a tracked item or a possession claim appears in the reply. NPC
     dialogue and scenery mentions trip the gate too, by design; the instruction tells
     the model to confirm "no change" and move on (one bounded check round, no new lane).
     """
@@ -318,7 +335,9 @@ def reply_claims_item_action(reply: str, item_names: frozenset[str] = frozenset(
     if not text:
         return False
     lowered = text.casefold()
-    return any(name.strip().casefold() in lowered for name in item_names if name.strip())
+    if any(name.strip().casefold() in lowered for name in item_names if name.strip()):
+        return True
+    return bool(_ITEM_HOLD_CLAIM_RE.search(lowered))
 
 
 def _item_mutation_done(tool_trace: list[dict]) -> bool:

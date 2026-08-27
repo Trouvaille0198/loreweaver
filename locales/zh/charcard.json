@@ -10,9 +10,15 @@
   "charcard.commands.import.unknown_option": "无法识别的选项“{option}”——这里只能填规则系统（规则包 id 或它的名字）或 pc/companion/world。本次未导入任何内容。",
   "charcard.commands.import.usage": "用法：.import <角色卡文件|包内引用> [coc7|dnd5e] [pc|companion|world]——`.import list` 列出已安装包携带的引用。",
   "charcard.commands.import.world_denied": "只有已认证的守秘人可以导入世界卡（它会安装全房间钩子并注入共享变量）。",
-  "charcard.concept_prompt": "你要把 SillyTavern 人设转换为 {system} 的 TRPG 角色概念。只根据人设和模组上下文提出职业/职业类别、属性倾向、标志技能和 1-2 行背景，不要编造具体数值。只返回 JSON，键包括：occupation/class、attribute_emphasis（按优先级排列的属性代码列表）、signature_skills（简短列表）、backstory，可选 attribute_tweaks（属性代码的零和微调量，如 {{\"STR\": 10, \"APP\": -10}}，仅当人设明显支持时使用；微调由引擎校验，任何非法整组丢弃，因此绝对不要写具体属性数值）。还可选 skill_allocations（技能名到目标值的对象，只写人设明显训练过的技能）。{skill_rules}模组上下文：{module_context}\n人设：\n{persona}",
+  "charcard.concept_prompt": "你要把 SillyTavern 人设转换为 {system} 的 TRPG 角色概念。只根据人设和模组上下文提出职业/职业类别、属性倾向、标志技能和 1-2 行背景，不要编造具体数值。只返回 JSON，键包括：{identity_fields}attribute_emphasis（按优先级排列的属性代码列表）、signature_skills（简短列表）、backstory，可选 attribute_tweaks（属性代码的零和微调量，如 {{\"STR\": 10, \"APP\": -10}}，仅当人设明显支持时使用；微调由引擎校验，任何非法整组丢弃，因此绝对不要写具体属性数值）。还可选 skill_allocations（技能名到目标值的对象，只写人设明显训练过的技能）。{skill_rules}模组上下文：{module_context}\n人设：\n{persona}",
   "charcard.concept_skill_rules": "skill_allocations 硬性规则：目标值 {min}~{max}；所有技能高出基础值的部分总和控制在约 {budget} 点以内——引擎会钳制并把超支按比例压缩，请主动控制在预算内。",
-  "charcard.tools.import.done_companion": "已将「{name}」导入为 AI 同伴（id {id}，{system}）。关键属性：{stats}。导入设定条目：{lore}。",
+  "charcard.roster_concept_prompt": "你是 {system} 的守秘人选角助手。剧本摘要：\n{module_context}\n\n为这个剧本写一名可认领的角色。只返回 JSON，且只有三个键：\"name\"（贴切的名字）、\"description\"（1-2 行人物介绍，与剧本呼应）和\"appearance\"（2-3 句具体外貌——体型、年龄、发色、眼睛、衣着、显著特征——仅凭这段文字画师就能画出这个人）。守秘人的参考（可保留可润色，可为空）：{reference}\n除剧本摘要和参考外，不要虚构其他设定。",
+  "charcard.tools.import.done_companion": "已将「{name}」认领为 AI 同伴（id {id}，{system}）。关键属性：{stats}。导入设定条目：{lore}。",
+  "charcard.tools.import.companion_roster_full": "无法将「{name}」导入为同伴：角色池已满。",
+  "charcard.tools.import.companion_unknown": "无法将「{name}」导入为同伴：角色没有进入角色池。",
+  "charcard.tools.import.companion_taken": "❌ 「{name}」已被认领——重新导入只会刷新角色本身，不会改变认领归属。",
+  "charcard.tools.import.companion_corrupt": "无法将「{name}」导入为同伴：存档卡不可读。",
+  "charcard.tools.import.companion_name_conflict": "无法将「{name}」导入为同伴：该名字属于其他玩家自建的角色。",
   "charcard.tools.import.done_pc": "已将「{name}」导入为你的玩家角色（{system}）。关键属性：{stats}。导入设定条目：{lore}。",
   "charcard.tools.import.failed": "导入角色失败：{error}",
   "charcard.tools.import.no_file": "无法读取角色卡：{path}。",
@@ -47,5 +53,6 @@
   "charcard.tools.brief.label.opening": "原作开场",
   "charcard.tools.brief.label.alt_opening": "替代开场 {index}",
   "charcard.tools.world.specs_line": "类型化变量：已从原生卡包定义 {count} 个追踪器。",
-  "charcard.tools.world.system_pinned": "房间系统已钉为 {system}——模组的扩展包自带该系统，预设角色和新建角色都按它生成（导入时指明系统可覆盖）。"
+  "charcard.tools.world.system_pinned": "房间系统已钉为 {system}——模组的扩展包自带该系统，预设角色和新建角色都按它生成（导入时指明系统可覆盖）。",
+  "charcard.concept_identity_fields": "当人设暗示时填写身份字段（{fields}——请使用这些准确的键名返回），"
 }

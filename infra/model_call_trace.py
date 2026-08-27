@@ -84,12 +84,18 @@ def record_model_call(
     model: str = "",
     error: BaseException | None = None,
     status: int | None = None,
+    prompt: str = "",
+    completion: str = "",
 ) -> None:
     """Hand one finished logical call to the sink. Never raises; free when no sink.
 
-    A failed call records its exception CLASS and the HTTP `status` the caller read off it
-    — never the message text. A provider's 401/403 body routinely quotes the credential
-    it rejected, and the probe file, 0600 or not, is the wrong place for a key to land.
+    `prompt`/`completion` carry the call's INPUT and OUTPUT text (caller-built
+    digests, empty when the operator did not ask for content or the call failed).
+    The sink caps each row's payload, so a multi-thousand-token prompt degrades to
+    a bounded excerpt, never a dropped row. A failed call records its exception
+    CLASS and the HTTP `status` the caller read off it — never the message text.
+    A provider's 401/403 body routinely quotes the credential it rejected, and the
+    probe file, 0600 or not, is the wrong place for a key to land.
     """
     if _SINK is None:
         return
@@ -109,6 +115,10 @@ def record_model_call(
         payload["error"] = type(error).__name__
         if status is not None:
             payload["status"] = int(status)
+    if prompt:
+        payload["prompt"] = str(prompt)
+    if completion:
+        payload["completion"] = str(completion)
     try:
         _SINK(payload)
     except Exception:  # noqa: BLE001 — the probe must never cost the call that fed it

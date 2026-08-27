@@ -148,6 +148,34 @@ async def inject_trpg_system_prompt(ctx: Any, i18n: I18n) -> str:
     ]
     return "\n".join(parts) + "\n" + i18n.t("prompt.item_discipline")
 
+async def inject_item_catalog_prompt(ctx: Any, documents: DocumentStore, i18n: I18n) -> str:
+    """The room's item CATALOG names as a prompt block (empty when no catalog).
+
+    The KP cannot grant what it cannot see: catalog items are the module's
+    designed gear (kind/effect/bonus), and without their names in context the
+    model improvises same-flavored substitutes that carry no mechanics (a
+    designed "蛋壳碎片" becomes an improvised bonus-less trinket). Names only —
+    details live behind the `list_item_catalog` tool so the stable head stays
+    small. Reads the singleton document directly (no agent import), so a room
+    without a catalog renders nothing and never raises."""
+    try:
+        doc = await documents.get_singleton(ctx.chat_key, "item_catalog")
+    except Exception:
+        return ""
+    if doc is None:
+        return ""
+    raw = doc.data.get("items") if isinstance(doc.data, dict) else None
+    if not isinstance(raw, list):
+        return ""
+    names = [
+        str(entry.get("name") or "").strip()
+        for entry in raw
+        if isinstance(entry, dict) and str(entry.get("name") or "").strip()
+    ]
+    if not names:
+        return ""
+    return i18n.t("prompt.item_catalog_header", names=", ".join(names))
+
 
 async def inject_game_state_prompt(ctx: Any, character_manager: Any, store: Store, i18n: I18n) -> str:
     """Minimal "battle status" panel: scene, clock, party roster, NPCs, clues, world changes, initiative.
@@ -236,11 +264,14 @@ async def inject_game_state_prompt(ctx: Any, character_manager: Any, store: Stor
                             effects=eff_str,
                         )
                     )
-                    # The party's held items (non-secret views only): without this the
-                    # keeper cannot see that a character already holds an artifact and
-                    # re-grants it on every plot beat — the duplicate grants that
-                    # stacked 沈铁's single mirror into ×3.
                     held = member.get("items")
+                    if isinstance(held, list):
+                        # The roster's structured `items` views still carry archived
+                        # (shelved) items with their flag so the owner's page can
+                        # restore them — they are out of play, so the keeper must not
+                        # read them as held gear (the sheet's `equipment` list already
+                        # dropped them).
+                        held = [it for it in held if not it.get("archived")]
                     if isinstance(held, list) and held:
                         shown = []
                         for it in held[:4]:

@@ -15,6 +15,7 @@ from core.sheets import (
     check_value,
     has_check_value,
     parse_sheet_section,
+    projected_skills,
     refresh_sheet,
     set_sheet_value,
     sheet_value,
@@ -102,9 +103,33 @@ def test_dnd_sheet_secondary_and_field_bridges():
     refresh_sheet(sheet, pack)
     assert sheet_value(sheet, pack, "熟练加值") == 3
 
-    hp, hp_max = get_hit_points(sheet)
-    assert sheet_value(sheet, pack, "hp") == hp
-    assert sheet_value(sheet, pack, "hpmax") == hp_max
+def test_projected_skills_folds_derived_skills_back_in():
+    pack = load_rulepack("dnd5e")
+    sheet = CharacterSheet("Kael", "DnD5e")
+    sheet.attributes["STR"] = 16
+    sheet.attributes["DEX"] = 14
+    refresh_sheet(sheet, pack, preserve_trained=False)
+
+    # dnd5e's 18 skills are ALL derived (ability modifiers) and deliberately never
+    # persisted: a bare sheet carries no stored skills, but a display projection
+    # must fold the recomputed values back in or the client renders an empty panel.
+    assert sheet.skills == {}
+    projected = projected_skills(sheet, pack)
+    assert len(projected) == 18
+    assert projected["运动"] == 3  # STR 16 → +3
+    assert projected["体操"] == 2  # DEX 14 → +2
+    assert projected["察觉"] == 0
+
+    # A trained skill (stored value differing from its derivation) wins.
+    sheet.skills["运动"] = 5
+    projected = projected_skills(sheet, pack)
+    assert projected["运动"] == 5
+    assert projected["体操"] == 2  # untrained slots still fold in
+
+    # Plain-dict rows (party roster / pregen sheets) project the same way.
+    projected = projected_skills(sheet.to_dict(), pack)
+    assert projected["运动"] == 5
+    assert projected["体操"] == 2
 
 
 def test_check_value_bridges_ability_checks_to_modifiers():

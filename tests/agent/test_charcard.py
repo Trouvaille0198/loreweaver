@@ -136,7 +136,7 @@ async def test_build_sheet_from_description_wraps_text_as_minimal_persona_card()
 
     assert sheet.name == "Mira"
     assert sheet.system == "dnd5e"
-    assert sheet.character_class == "Rogue"
+    assert sheet.character_class == "rogue"  # normalized to the pack's class id
     assert sheet.attributes["DEX"] == 15
     assert sheet.attributes["INT"] == 14
     assert sheet.background == "A streetwise courier with too many secrets."
@@ -383,3 +383,48 @@ async def test_concept_prompt_advertises_the_skill_budget_rules():
     assert "300" in system_prompt  # nominal coc7 budget at default attributes
     assert "{skill_rules}" not in system_prompt
     assert "{system}" not in system_prompt  # the template actually rendered
+
+
+@pytest.mark.asyncio
+async def test_dnd_creation_chain_fills_class_slots_and_known_spells() -> None:
+    """The full D&D creation chain, locked end-to-end: the AI concept's class
+    lands on the sheet, the level table fills spell slots, the class spellbook
+    seeds known spells, and the AI toolset carries every mechanics tool — so a
+    freshly forged D&D character always has a class, slots and spells."""
+    from agent.kp_tools import build_kp_toolset
+    from core.resources import resource_values
+    from core.rulepacks import load_rulepack
+
+    concept = json.dumps(
+        {
+            "class": "wizard",
+            "attribute_emphasis": ["INT", "CON", "DEX"],
+            "signature_skills": ["Arcana"],
+            "backstory": "An academy-trained wizard.",
+        }
+    )
+    manager = CharacterManager(Store(":memory:"))
+    llm = FakeLLM(script=[assistant_text(concept)])
+    services = SimpleNamespace(characters=manager, llm=llm)
+    card = parse_card_bytes(
+        json.dumps({"name": "Mage", "description": "an apprentice wizard"}).encode(),
+        filename="mage.json",
+    )
+
+    sheet = await build_sheet_from_persona(services, card, "dnd5e")
+
+    # 1. The concept's class lands on the sheet's identity field.
+    assert sheet.character_class == "wizard"
+    # 2. Spell slots follow the full-caster level table (level 1 → 2 slots).
+    values = resource_values(sheet, load_rulepack("dnd5e"))
+    assert values["spell_slot_1"].maximum == 2
+    assert values["spell_slot_1"].current == 2  # topped like after a long rest
+    # 3. The class spellbook seeds known spells.
+    assert "magic_missile" in sheet.known_spells
+    assert "fire_bolt" in sheet.known_spells
+    # 4. The AI keeper toolset exposes every mechanics lane (no more narrating
+    #    without resolving: cast/rest/attack/advance/resource/spells).
+    toolset = build_kp_toolset(services)
+    names = set(toolset.names())
+    for tool in ("cast_spell", "rest_manager", "attack_target", "advance_level", "manage_resource", "manage_spells"):
+        assert tool in names, f"AI toolset missing {tool}"

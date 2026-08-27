@@ -115,8 +115,9 @@ async def annotate_mentions(
     staged = _MARK_RE.sub(_mark, text)
 
     # 2) Fallback: names still present verbatim (unmarked mentions). A scan hit
-    # was found under a known key — normalize it to the record's canonical
-    # form; only validated marks keep their wording.
+    # binds to the record but KEEPS the wording the model chose — a narration
+    # that calls the guard "格伦" stays "格伦", never re-expanded to the
+    # canonical full name (the mention card still shows the record's name).
     ordered = sorted((key for key in by_key if len(key) >= _MIN_SCAN_KEY), key=len, reverse=True)
     pattern = re.compile("|".join(re.escape(key) for key in ordered), re.IGNORECASE)
 
@@ -125,7 +126,7 @@ async def annotate_mentions(
         if entry is None:
             return match.group(0)
         kind, record_id, display, card = entry
-        return _bind(kind, record_id, display, display, card)
+        return _bind(kind, record_id, match.group(0), display, card)
 
     staged = pattern.sub(_fallback, staged)
 

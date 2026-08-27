@@ -220,13 +220,15 @@ def parse_lorecard_bytes(data: bytes, filename: str = "") -> Lorecard:
 def _parse_pregens(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
     """Native pregen-cast list → normalized entries the world importer registers.
 
-    Shape: ``[{name, occupation?, background|notes?, aliases?, skills?: {canonical: int}}]``.
+    Shape: ``[{name, occupation?, background|notes?, appearance?, aliases?, skills?: {canonical: int}}]``.
     ``occupation`` (the character's job, e.g. "Detective" / "考古研究员") lands in the
     sheet's occupation field when the system declares one; ``background`` (the persona
-    paragraph, legacy name ``notes``) lands in the sheet's background; ``aliases`` (short
-    forms / translated names / the English gloss of a CJK name) ride the roster entry so
-    players and the AI can refer to the character by any of them. Sheets are built
-    downstream from the target system's DEFAULTS plus these overrides — deterministic,
+    paragraph, legacy name ``notes``) lands in the sheet's background; ``appearance``
+    (the character's concrete look — build, hair, clothes, marks) is the portrait
+    prompt's primary source; ``aliases`` (short forms / translated names / the English
+    gloss of a CJK name) ride the roster entry so players and the AI can refer to the
+    character by any of them. Sheets are built downstream from the target system's
+    DEFAULTS plus these overrides — deterministic,
     no LLM — so a module ships a claimable multi-investigator cast."""
     if raw is None:
         return ()
@@ -284,7 +286,11 @@ def _parse_pregens(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
         elif aliases_raw is not None:
             warnings.append(f"pregens[{index}].aliases: ignored (must be a list of strings)")  # i18n-exempt: author diagnostic, wrapped in a localized import summary
         avatar = str(item.get("avatar") or "").strip()[:200]
-        out.append({"name": name, "blurb": blurb, "occupation": occupation, "notes": notes, "skills": skills, "aliases": tuple(aliases), "avatar": avatar})
+        # `appearance` is the character's concrete look (build, hair, clothes, marks) —
+        # the field the illustration lane folds into a portrait prompt. Optional: a
+        # pregen without one still gets a portrait from its persona text.
+        appearance = _text(item.get("appearance")).strip()[:400]
+        out.append({"name": name, "blurb": blurb, "occupation": occupation, "notes": notes, "skills": skills, "aliases": tuple(aliases), "avatar": avatar, "appearance": appearance})
     return tuple(out)
 
 

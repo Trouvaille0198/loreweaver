@@ -239,6 +239,20 @@ def test_item_claim_detector_keys_off_tracked_item_names_only():
     assert not reply_claims_item_action("", frozenset({"铜镜"}))
 
 
+def test_possession_claim_trips_the_gate_without_any_catalog():
+    """A possession claim in the model's own writing trips the gate even when the room
+    tracks nothing by name (2026-08-27 egg case: the model narrated 收下/落进物品栏 for a
+    quest item and never called a tool). Pure scene narration stays quiet."""
+    assert reply_claims_item_action("你收下了狮鹫蛋。", frozenset())
+    assert reply_claims_item_action("蛋落进你的物品栏。", frozenset())
+    assert reply_claims_item_action("她把信收进怀里，往门外走。", frozenset())
+    assert reply_claims_item_action("She pockets the silver coin.", frozenset())
+    assert reply_claims_item_action("He picked up the key.", frozenset())
+    assert not reply_claims_item_action("雨声很大，街对面站着衙役。", frozenset())
+    assert not reply_claims_item_action("蛋壳轻轻颤了一下，裂缝又开了一寸。", frozenset())
+    assert not reply_claims_item_action("", frozenset())
+
+
 def test_scene_title_detector_hits_and_misses():
     assert scene_title_lines("🌉 東京港·大井埠頭五号泊位 | 晚 10:15")
     assert scene_title_lines("码头仓库区 ｜ 深夜")
@@ -389,6 +403,28 @@ async def test_item_check_none_protocol_keeps_the_original_prose():
     # The confirmation is not lost — it rides the keeper-only draft lane.
     assert "item_forged" in result.discarded_draft
     assert "NONE" in result.discarded_draft
+
+async def test_item_check_none_protocol_tolerates_the_decorated_form():
+    """A model rarely answers the check with a bare NONE — it wraps it ("NONE。",
+    "NONE（仅桌外讨论，未发生物品变动）"). Any reply LEADING with NONE is a
+    confirmation, not a rewrite: the main loop's full narration must stand, or the
+    table loses the scene it watched stream (2026-08-27 table room)."""
+    llm = FakeLLM(
+        script=[
+            assistant_text("Alice keeps the Bronze Key safe."),
+            assistant_text("NONE（仅桌外讨论，未发生物品变动）"),
+        ]
+    )
+    services = _services(llm)
+    await ensure_catalog(services.documents, "checks-room", [{"name": "Bronze Key"}])
+
+    result = await run_kp_turn(_ctx(), services, Toolset(_ItemProvider()), "What about the Bronze Key?")
+
+    assert len(llm.calls) == 2
+    assert result.reply == "Alice keeps the Bronze Key safe."
+    assert not result.reply.casefold().startswith("none")
+    assert "item_forged" in result.discarded_draft
+    assert "NONE（仅桌外讨论，未发生物品变动）" in result.discarded_draft
 
 
 async def test_a_turn_that_rolled_and_kept_numbers_out_of_prose_runs_no_checks():

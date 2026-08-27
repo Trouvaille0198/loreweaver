@@ -593,7 +593,6 @@ def test_get_npc_and_list_npcs_are_keeper_only_in_build_kp_toolset():
     # locked decision (docs/specs/M5-npc.md): no separate options tool
     assert "npc_action_options" not in toolset.names()
 
-
 async def test_a_player_character_can_never_be_created_as_an_npc_or_companion():
     """2026-08-18 《安土》 run 1: the Keeper — unable to see a non-acting player's sheet —
     registered a real player as an AI companion `npc-4` (`add_companion`) and drove them
@@ -605,7 +604,7 @@ async def test_a_player_character_can_never_be_created_as_an_npc_or_companion():
     sheets are not players and stay creatable."""
     from agent.kp_tools_companion import CompanionTools
     from core.character_manager import CharacterSheet
-    from core.pregen_roster import pregen_add
+    from core.pregen_roster import pregen_add, pregen_claim
     from infra.config import ImageGenSettings
 
     services = build_services(Settings(imagegen=ImageGenSettings()), llm=FakeLLM(script=[]), embeddings=FakeEmbeddings(8))
@@ -617,26 +616,30 @@ async def test_a_player_character_can_never_be_created_as_an_npc_or_companion():
     # A real player's characters: the active one and an inactive alt (both are the player's).
     await services.characters.save_character("player-2", chat_key, CharacterSheet("Alt Ego", "coc7"))
     await services.characters.save_character("player-2", chat_key, CharacterSheet("平知章", "coc7"))
-    # An unclaimed pregen from the module's cast.
+    # An unclaimed pregen from the module's cast, and one a player already claimed.
     await pregen_add(services.documents, chat_key, CharacterSheet("秦苁蓉", "coc7"))
+    await pregen_add(services.documents, chat_key, CharacterSheet("白苏", "coc7"))
+    assert (await pregen_claim(services.documents, chat_key, "白苏", "player-2", services.characters))[0] == "ok"
 
     refused = await tools.create_npc(ctx, name="平知章", persona="a surveyor")
     assert refused.startswith("❌") and "平知章" in refused
     assert (await tools.sketch_npc(ctx, name="秦苁蓉", one_line="the physician")).startswith("❌")
-    # THE incident path: the companion tool, the inactive alt, and a case variant.
-    assert (await companions.add_companion(ctx, name="平知章", persona="the surveyor")).startswith("❌")
-    assert (await companions.add_companion(ctx, name="Alt Ego", persona="…")).startswith("❌")
-    assert (await companions.add_companion(ctx, name="alt ego", persona="…")).startswith("❌")
-    # The writer itself refuses, whoever calls it.
+    # THE incident path under the claim model: a player's own name is not on the roster
+    # (unknown), a player-claimed roster character is taken — the AI claims neither.
+    assert (await companions.add_companion(ctx, name="平知章")).startswith("❌")
+    assert (await companions.add_companion(ctx, name="Alt Ego")).startswith("❌")
+    assert (await companions.add_companion(ctx, name="alt ego")).startswith("❌")
+    assert (await companions.add_companion(ctx, name="白苏")).startswith("❌")
+    # The writer itself refuses a player's name, whoever calls it.
     with pytest.raises(npc_records.PlayerNameReservedError):
         await npc_records.create_companion(services.documents, chat_key, "秦苁蓉")
     assert {record.name for record in await npc_records.list_npcs(services.documents, chat_key)} == set()
 
-    # An ordinary NPC and an ordinary companion still create; the companion's own
-    # NPC-backed sheet does not turn its name into a player's (re-adding is idempotent).
+    # An ordinary NPC and an ordinary claim still work; re-claiming is idempotent.
     assert (await tools.sketch_npc(ctx, name="老蒯", one_line="the ring-forest warden")).startswith("✅")
-    assert (await companions.add_companion(ctx, name="Silas", persona="a quiet archer")).startswith("✅")
-    assert (await companions.add_companion(ctx, name="Silas", persona="a quiet archer")).startswith("✅")
+    await pregen_add(services.documents, chat_key, CharacterSheet("Silas", "coc7"))
+    assert (await companions.add_companion(ctx, name="Silas")).startswith("✅")
+    assert (await companions.add_companion(ctx, name="Silas")).startswith("✅")
     assert {record.name for record in await npc_records.list_companions(services.documents, chat_key)} == {"Silas"}
 
 
@@ -645,9 +648,12 @@ async def test_a_keeper_npc_is_never_converted_into_a_companion_in_place():
     fresh surface persona cannot shadow seeded secrets), and `create_companion` then stamped
     `role="player_companion"` / `is_pc=True` onto whatever came back — so `add_companion` on
     a module NPC's name converted the villain, secret agenda and seeded knowledge included,
-    into a party-side actor. The writer refuses instead, so every door refuses; creating a
-    fresh companion and re-adding an existing one both still work."""
+    into a party-side actor. Under the claim model a keeper NPC is simply not a roster
+    character, so the AI claim finds nothing to claim; the writer still refuses a direct
+    conversion outright."""
     from agent.kp_tools_companion import CompanionTools
+    from core.character_manager import CharacterSheet
+    from core.pregen_roster import pregen_add
     from infra.config import ImageGenSettings
 
     services = build_services(
@@ -662,7 +668,8 @@ async def test_a_keeper_npc_is_never_converted_into_a_companion_in_place():
         documents, chat_key, "Villain", secret_agenda="kill everyone", knowledge=[SENTINEL]
     )
 
-    refused = await companions.add_companion(ctx, name="Villain", persona="a loyal friend")
+    # A keeper NPC is not a roster character: the AI claim finds nothing to claim.
+    refused = await companions.add_companion(ctx, name="Villain")
     assert refused.startswith("❌") and "Villain" in refused
 
     kept = await npc_records.get_npc(documents, chat_key, "Villain")
@@ -679,51 +686,49 @@ async def test_a_keeper_npc_is_never_converted_into_a_companion_in_place():
     with pytest.raises(npc_records.KeeperNpcNameTakenError):
         await npc_records.create_companion(documents, chat_key, "Villain")
 
-    # An unused name still creates, and re-adding a name that IS already a companion stays
-    # idempotent (a re-create, not a conversion).
-    assert (await companions.add_companion(ctx, name="Silas", persona="a quiet archer")).startswith("✅")
-    assert (await companions.add_companion(ctx, name="Silas", persona="a quiet archer")).startswith("✅")
+    # A roster character still claims, and re-claiming stays idempotent (a re-create,
+    # never a conversion).
+    await pregen_add(documents, chat_key, CharacterSheet("Silas", "coc7"))
+    assert (await companions.add_companion(ctx, name="Silas")).startswith("✅")
+    assert (await companions.add_companion(ctx, name="Silas")).startswith("✅")
     assert {item.name for item in await npc_records.list_companions(documents, chat_key)} == {"Silas"}
 
 
 async def test_a_companion_whose_sheet_cannot_be_written_leaves_no_record_behind(monkeypatch):
     """`add_companion` is record + sheet or nothing (2026-08-18 《安土》 npc-4 was a record
-    whose sheet never landed): the sheet is built BEFORE the record exists, a failed sheet
-    write undoes a record this call minted — and never one that already existed, since
-    re-adding a companion is idempotent and its seeded knowledge is not this call's to lose."""
+    whose sheet never landed): the claim materializes the roster character's sheet copy
+    and a failed write undoes the freshly-minted record — and never one that already
+    existed, since re-claiming is idempotent and its seeded knowledge is not this call's
+    to lose."""
     from agent.kp_tools_companion import CompanionTools
+    from core.character_manager import CharacterSheet
+    from core.pregen_roster import pregen_add, pregen_entries
     from infra.config import ImageGenSettings
 
     services = build_services(Settings(imagegen=ImageGenSettings()), llm=FakeLLM(script=[]), embeddings=FakeEmbeddings(8))
     chat_key = "antu-orphan"
     ctx = _ctx(chat_key)
     tools = CompanionTools(services)
-
-    def _no_sheet(*_args, **_kwargs):
-        raise RuntimeError("bad roll expression")
+    await pregen_add(services.documents, chat_key, CharacterSheet("Silas", "coc7"))
 
     async def _no_write(*_args, **_kwargs):
         raise RuntimeError("disk full")
 
-    # Generation fails: nothing was written, not even the record.
-    monkeypatch.setattr(services.characters, "generate_character", _no_sheet)
-    reply = await tools.add_companion(ctx, name="Silas", persona="an archer")
-    assert reply.startswith("❌") and "bad roll expression" in reply
-    assert await npc_records.list_companions(services.documents, chat_key) == []
-    monkeypatch.undo()
-
-    # The write fails on a fresh name: the record this call minted is undone.
+    # The materialization write fails: the freshly-minted record is rolled back and the
+    # roster entry stays unclaimed — whole or nothing.
     monkeypatch.setattr(services.characters, "save_character", _no_write)
-    reply = await tools.add_companion(ctx, name="Silas", persona="an archer")
+    reply = await tools.add_companion(ctx, name="Silas")
     assert reply.startswith("❌") and "disk full" in reply
     assert await npc_records.list_companions(services.documents, chat_key) == []
+    assert (await pregen_entries(services.documents, chat_key))[0]["claimed_by"] == ""
     monkeypatch.undo()
 
-    # A real companion with seeded knowledge, then a re-add whose write fails: the
-    # existing record survives untouched.
-    assert (await tools.add_companion(ctx, name="Silas", persona="an archer")).startswith("✅")
+    # A real companion with seeded knowledge, then a re-claim whose write would fail:
+    # re-claiming is "yours" (idempotent — it never rewrites the sheet), so the
+    # existing record and its knowledge survive untouched.
+    assert (await tools.add_companion(ctx, name="Silas")).startswith("✅")
     await npc_records.npc_learns(services.documents, chat_key, "Silas", "the well is poisoned")
     monkeypatch.setattr(services.characters, "save_character", _no_write)
-    assert (await tools.add_companion(ctx, name="Silas", persona="an archer")).startswith("❌")
+    assert (await tools.add_companion(ctx, name="Silas")).startswith("✅")
     (silas,) = await npc_records.list_companions(services.documents, chat_key)
     assert silas.knowledge == ["the well is poisoned"]

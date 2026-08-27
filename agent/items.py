@@ -196,6 +196,46 @@ async def reveal_linked_clues(services: Any, ctx: Any, template: dict) -> None:
 IMPROVISED_MAX_BONUS = 2
 IMPROVISED_MAX_BONUS_TOTAL = 4
 
+def canonicalize_bonus_keys(bonus: dict, pack: Any | None) -> tuple[dict[str, int], list[str]]:
+    """Map improvised-bonus keys onto the pack's canonical skill/attribute keys.
+
+    Checks resolve through ``pack.resolve_skill`` (see ``gateway/commands/checks.py``),
+    so a bonus key must be the pack's canonical key or the edge silently never lands
+    on a roll. This resolves any spelling/alias (``"侦查"``, ``"spot hidden"``,
+    ``"STR"``) to the one key the check lane reads. Keys the pack cannot resolve are
+    kept as-is and returned in the ``unresolved`` list for the caller to warn about —
+    a pack without alias data must never silently drop a Keeper's bonus.
+    Returns ``(canonical_bonus, unresolved_keys)``."""
+    if not bonus or pack is None:
+        return dict(bonus), []
+    out: dict[str, int] = {}
+    unresolved: list[str] = []
+    for key, delta in bonus.items():
+        canonical = pack.resolve_skill(str(key))
+        if canonical:
+            out[canonical] = delta
+        else:
+            out[str(key)] = delta
+            unresolved.append(str(key))
+    return out, unresolved
+
+
+async def grant_improvised_instance(
+    documents: DocumentStore, chat_key: str, owner: str, template: dict, qty: int = 1
+) -> Document:
+    """Grant an improvised one-off, equipping it when it carries a bonus.
+
+    A bonus-bearing improvised item is equipped into the ``"equipped"`` slot the
+    moment it is granted, so the edge applies immediately (the improv lane has no
+    bag-only staging for mechanical edges — the holder can still unequip later).
+    Narrative-only trinkets stay unequipped in the bag. Returns the instance
+    document (post-equip when equipped)."""
+    doc = await grant_instance(documents, chat_key, owner, template, qty)
+    bonus = template.get("bonus")
+    if isinstance(bonus, dict) and bonus:
+        doc = await set_equipped(documents, chat_key, doc.id, "equipped")
+    return doc
+
 
 def parse_bonus_spec(text: str) -> dict[str, int]:
     """Parse a ``stat=value,stat=value`` bonus spec into {canonical: delta}.
@@ -238,19 +278,47 @@ def validate_improvised_bonus(bonus: dict) -> str | None:
 
 
 def improvised_template(
-    name: str, *, description: str = "", bonus: dict | None = None, secret: bool = False
+    name: str, *, description: str = "", bonus: dict | None = None, secret: bool = False,
+    source_module_id: str = "",
 ) -> dict:
     """A one-off template for an off-catalog grant. Improvised items are
     universal-scope (they travel with the holder, never die with a module) and
-    carry at most a small capped bonus."""
+    carry at most a small capped bonus. Granting one with a bonus equips it
+    automatically (see `grant_improvised_instance`). ``source_module_id`` records
+    which scenario the item came from (origin traceability only — it never gates
+    scope or bonuses)."""
+    bonus_map = dict(bonus) if isinstance(bonus, dict) and bonus else {}
     return {
         "name": name,
         "description": description,
-        "bonus": dict(bonus) if isinstance(bonus, dict) and bonus else {},
+        # A player-readable effect line derived from the bonus (the client shows
+        # `effect` and `bonus` as separate rows); "" for narrative-only trinkets.
+        "effect": ", ".join(f"{key} {delta:+d}" for key, delta in bonus_map.items()) if bonus_map else "",
+        "bonus": bonus_map,
         "scope": "universal",
         "secret": bool(secret),
         "improvised": True,
+        "source_module_id": source_module_id,
     }
+
+
+def module_source_id(active_module: dict | None) -> str:
+    """The stable scenario id an item came from (pack_id preferred, source path as
+    fallback; "" when no module is active). Origin traceability only — it never
+    gates scope or bonuses."""
+    if not active_module:
+        return ""
+    return str(active_module.get("pack_id") or active_module.get("source_id") or "")
+
+
+def template_with_source(template: dict, active_module: dict | None) -> dict:
+    """Attach an item template's origin scenario (`source_module_id`) before it is
+    granted. A template already carrying one (module-scoped designs keep their own
+    `module_id`, copied by ``_instance_data``) is returned untouched."""
+    if str(template.get("source_module_id") or "").strip():
+        return template
+    source = str(template.get("module_id") or "") or module_source_id(active_module)
+    return {**template, "source_module_id": source}
 
 
 async def consume_instance(
@@ -283,6 +351,7 @@ def _instance_data(owner: str, template: dict, qty: int) -> dict[str, Any]:
         "slot": str(template.get("slot") or ""),
         "scope": str(template.get("scope") or ""),
         "module_id": str(template.get("module_id") or ""),
+        "source_module_id": str(template.get("source_module_id") or template.get("module_id") or ""),
         "description": str(template.get("description") or ""),
         "lore": str(template.get("lore") or ""),
         "effect": str(template.get("effect") or ""),
@@ -401,6 +470,7 @@ _ITEM_VIEW_FIELDS = (
     "bonus",
     "improvised",
     "archived",
+    "source_module_id",
 )
 
 
