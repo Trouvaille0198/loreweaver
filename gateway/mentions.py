@@ -192,18 +192,44 @@ async def _mention_table(services: Any, chat_key: str) -> dict[str, tuple[str, s
             _put(str(alias), "npc", doc.id, name, card)
 
     # Granted item instances — secret ones project to None, so they never
-    # become a key, a link, or a card.
+    # become a key, a link, or a card. Instances carried over from a PREVIOUS
+    # scenario stay on their holder (player property) but must not highlight in
+    # this one: only items of the current module — or legacy rows with no origin
+    # stamp — are mentionable here.
+    current_module = ""
+    try:
+        from agent.module_lifecycle import active_module
+
+        active = await active_module(services, chat_key)
+        current_module = str(active.get("pack_id") or active.get("source_id") or "") if active else ""
+    except Exception:  # noqa: BLE001 — a broken module lookup must not kill annotation
+        current_module = ""
     for doc, view in await docs.list_views(chat_key, _ITEM_DOC_TYPE, PLAYER_VIEWER):
         name = str(view.get("name") or "").strip()
         if not name:
             continue
+        origin = str(view.get("source_module_id") or doc.data.get("source_module_id") or "")
+        if origin and current_module and origin != current_module:
+            continue
         _put(name, "item", doc.id, name, _entry_card(view, _ITEM_CARD_FIELDS))
 
-    # Catalog presets the table already knows exist (non-secret templates).
+    # Catalog presets the table already knows exist (non-secret templates). A preset
+    # belonging to a PREVIOUS scenario must not highlight here either — same scoping
+    # as instances. The player projection strips provenance, so the origin module is
+    # read from the raw template (`_doc.data`) instead of the view.
     for _doc, view in await docs.list_views(chat_key, _CATALOG_DOC_TYPE, PLAYER_VIEWER):
+        _raw_by_name = {
+            str(e.get("name") or "").casefold(): e
+            for e in (getattr(_doc, "data", {}) or {}).get("items") or []
+            if isinstance(e, dict)
+        }
         for entry in view.get("items") or []:
             name = str(entry.get("name") or "").strip()
             if not name:
+                continue
+            _raw = _raw_by_name.get(name.casefold()) or {}
+            entry_module = str(_raw.get("module_id") or "").strip()
+            if entry_module and current_module and entry_module != current_module:
                 continue
             record_id = f"tpl-{item_name_key(name)}"
             _put(name, "item", record_id, name, _entry_card(entry, _ITEM_CARD_FIELDS))
@@ -232,6 +258,9 @@ async def _mention_table(services: Any, chat_key: str) -> dict[str, tuple[str, s
     for entry in (clue_view or {}).get("clues") or []:
         title = str(entry.get("title") or "").strip()
         if not title:
+            continue
+        entry_module = str(entry.get("module") or "").strip()
+        if entry_module and current_module and entry_module != current_module:
             continue
         _put(title, "clue", title, title, _entry_card(entry, _CLUE_CARD_FIELDS))
 
