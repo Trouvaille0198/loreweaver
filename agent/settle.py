@@ -11,7 +11,9 @@ current sheet — and proposes, per character:
 - **attribute_changes** — small rule-fair deltas the campaign's events justify;
 - **memory_fold** — the raw per-turn memory lines folded into one durable
   life-summary paragraph;
-- **background** — an updated backstory that absorbs the campaign's arc.
+- **background** — the character's PERSONA (origin, family, occupation,
+  personality, ties) kept stable across settlements; campaign events belong in
+  ``memory_fold``, never narrated here.
 
 Deterministic vs generative (iron rule #1): the lane PROPOSES — one declared
 model call (`lane_scope("settle")`) — and the engine DISPOSES. `apply_settlement`
@@ -67,7 +69,7 @@ From the evidence below — the skill checks each character actually attempted (
 1. "growth": the skills this character EARNED an improvement check on — genuinely exercised this campaign: attempted repeatedly, pushed through failure, or landed a critical when it mattered. At most 3 per character. Names must be skills on that character's sheet (or its aliases).
 2. "attribute_changes": a small, rule-fair attribute delta the campaign's events justify (training, injury, revelation, horror) — at most 2 per character, delta typically ±1..±2. Names must be attributes on the sheet. NEVER touch HP/SAN/MP — those are resources, not growth.
 3. "memory_fold": this character's PLAYTHROUGH memory — ONE self-contained paragraph (max 600 chars) that reads as a durable MEMORY, not a story excerpt: it must make sense to someone with no context of this scenario. Open with the character's name and the scenario; then state the main things they went through and did, and how it ended. Written in the language of the scenario. NEVER use context-dependent phrasing ("this time", "no longer", "he became") that only means something inside the scenario; no pronouns for scenario-only people without identifying them; no fragments.
-4. "background": an updated backstory that ABSORBS this campaign's arc — KEEP every original trait from the sheet's `backstory` (origin, family, occupation, personality, ties) and weave this campaign's events into it, so the character's past is extended, never replaced. Null when unchanged, max 800 chars.
+4. "background": the character's PERSONA — origin, family, occupation, personality, ties. KEEP the sheet's existing backstory traits, extending them only with durable identity facts (a lasting scar, a new occupation, a permanent bond). Do NOT narrate the campaign's plot — the story goes into memory_fold, and replaying it here pollutes the persona. At most ONE closing sentence on where the character stands now. Null when unchanged, max 400 chars.
 5. "keeper_note": a keeper-only note about the character's growth (max 400 chars), or "".
 
 Rules:
@@ -547,10 +549,12 @@ ROOM_FACETS = (
     RoomStateFacet(
         name="character_memory",
         owner="agent.settle",
-        reset_scope="chars",
-        # A character's memory is the character's: it survives a story reset (the whole
-        # point of the settlement — the past travels into the next scenario) and is
-        # disposed with the sheets on `.reset chars`/`.reset all`.
+        reset_scope="story",
+        # The memory is the AI keeper's working knowledge (it rides the prompt every
+        # turn), not a character-sheet asset: a story reset must drop it with the
+        # session, or the keeper keeps citing the previous adventure's events —
+        # including items the party archived since (the observed bug). Sheets and
+        # their background prose survive story resets; this memory does not.
         doc_types=frozenset({CHARACTER_MEMORY_DOC_TYPE}),
         storages=frozenset({STORAGE_DOCUMENTS}),
     ),

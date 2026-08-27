@@ -317,5 +317,6 @@
   "kp_tools.know.clues_failed": "❌ 加载线索日志失败：{error}",
   "kp_tools.image.media_header": "🖼 房间已发布插图（{count}）——可作为 reference_subject：",
   "kp_tools.image.media_none": "房间还没有已发布的插图。",
-  "kp_tools.image.media_failed": "❌ 加载媒体索引失败：{error}"
+  "kp_tools.image.media_failed": "❌ 加载媒体索引失败：{error}",
+  "kp_tools.item.archived_held": "📦 {item} 已被 {character} 归档（封存，不在身上）——不要把它当作随身物品描述或补账，也不要再次授予。恢复请用 .item unarchive。"
 }

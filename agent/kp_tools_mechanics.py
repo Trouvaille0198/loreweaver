@@ -690,6 +690,8 @@ Rules:
                 canonical_name = str(template.get("name") or name).strip()
                 existing = await find_instance(self.services.documents, ctx.chat_key, character, canonical_name)
                 if existing is not None and not template_is_consumable(template):
+                    if existing.data.get("archived"):
+                        return i18n.t("kp_tools.item.archived_held", character=character, item=canonical_name)
                     held = int(existing.data.get("quantity", 1))
                     return i18n.t("kp_tools.item.already_held", character=character, item=canonical_name, held=held)
                 template = template_with_source(template, active)
@@ -719,6 +721,8 @@ Rules:
             )
             existing = await find_instance(self.services.documents, ctx.chat_key, character, name)
             if existing is not None:
+                if existing.data.get("archived"):
+                    return i18n.t("kp_tools.item.archived_held", character=character, item=name)
                 held = int(existing.data.get("quantity", 1))
                 return i18n.t("kp_tools.item.already_held", character=character, item=name, held=held)
             await grant_improvised_instance(self.services.documents, ctx.chat_key, character, template, int(qty))

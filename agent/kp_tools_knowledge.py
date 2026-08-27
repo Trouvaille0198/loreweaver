@@ -941,6 +941,16 @@ class ModuleTools(_KnowledgeToolsBase):
             from agent.clue_log import get_clue_log
 
             clues = await get_clue_log(self._services.documents, ctx.chat_key)
+            # Same scenario scoping as the player projection (`net.state._clues`):
+            # a module swap must not leak the previous adventure's discovered clues
+            # into the AI keeper's view — only the current module's clues are the
+            # table's ground truth (sandbox rooms with no module keep everything).
+            from agent.module_lifecycle import active_module
+
+            active = await active_module(self._services, ctx.chat_key)
+            module = str(active.get("pack_id") or active.get("source_id") or "") if active else ""
+            if module:
+                clues = [c for c in clues if str(c.get("module") or "") == module]
             if not clues:
                 return i18n.t("kp_tools.know.clues_empty")
             lines = [i18n.t("kp_tools.know.clues_header", count=len(clues))]
