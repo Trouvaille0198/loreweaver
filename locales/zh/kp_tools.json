@@ -319,5 +319,7 @@
   "kp_tools.image.media_none": "房间还没有已发布的插图。",
   "kp_tools.image.media_failed": "❌ 加载媒体索引失败：{error}",
   "kp_tools.item.archived_held": "📦 {item} 已被 {character} 归档（封存，不在身上）——不要把它当作随身物品描述或补账，也不要再次授予。恢复请用 .item unarchive。",
-  "kp_tools.item.merged": "✅ 已把 {character} 的 {item} 合并为单一条目（共 {qty} 件），数量叠加。"
+  "kp_tools.item.merged": "✅ 已把 {character} 的 {item} 合并为单一条目（共 {qty} 件），数量叠加。",
+  "kp_tools.item.common_marked": "✅ 已把 {character} 的 {item} 标记为常见物——今后同名授予自动合并数量。",
+  "kp_tools.item.common_unmarked": "✅ 已取消 {character} 的 {item} 的常见物标记。"
 }

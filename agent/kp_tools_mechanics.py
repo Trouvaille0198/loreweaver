@@ -891,6 +891,35 @@ Rules:
             return i18n.t("kp_tools.item.failed", error=str(exc))
 
     @tool
+    async def mark_common(self, ctx: AgentCtx, character: str, item: str, common: bool = True) -> str:
+        """Mark a held item as a COMMON good (or unmark it, common=False): coins,
+        rations, arrows — the same thing no matter which scenario it came from. Once
+        common, every future grant of that name MERGES quantity into the existing
+        instance instead of refusing a duplicate. Use when the player says an item
+        should count as an everyday good (or no longer should); narrate the result."""
+        i18n = self.services.i18n.with_locale(ctx.locale)
+        try:
+            character = (character or "").strip()
+            item = (item or "").strip()
+            if not character or not item:
+                return i18n.t("kp_tools.item.bad_args")
+            owner = await self.services.characters.get_character_owner(ctx.chat_key, character)
+            if not owner:
+                return i18n.t("kp_tools.item.character_not_found", name=character)
+            doc = await find_instance(self.services.documents, ctx.chat_key, character, item)
+            if doc is None:
+                return i18n.t("kp_tools.item.not_found", name=character, item=item)
+            data = {**doc.data, "common": bool(common)}
+            await self.services.documents.put(ctx.chat_key, "item", doc.id, data)
+            if common:
+                return i18n.t("kp_tools.item.common_marked", character=character, item=item)
+            return i18n.t("kp_tools.item.common_unmarked", character=character, item=item)
+        except CharacterDataError:
+            return i18n.t("kp_tools.character.data_error")
+        except Exception as exc:
+            return i18n.t("kp_tools.item.failed", error=str(exc))
+
+    @tool
     async def use_item(self, ctx: AgentCtx, character: str, item: str) -> str:
         """Consume one unit of a held item (drinks a potion, spends a token):
         quantity decreases and the item disappears at zero. Args: character,

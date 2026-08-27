@@ -319,5 +319,7 @@
   "kp_tools.image.media_none": "The room has no published illustrations yet.",
   "kp_tools.image.media_failed": "❌ Failed to load the media index: {error}",
   "kp_tools.item.archived_held": "📦 {item} is ARCHIVED by {character} (shelved, not on their person) — do not describe it as carried gear or re-grant it. Restore with .item unarchive.",
-  "kp_tools.item.merged": "✅ Merged {character}'s {item} into a single entry ({qty} total) — quantities stacked."
+  "kp_tools.item.merged": "✅ Merged {character}'s {item} into a single entry ({qty} total) — quantities stacked.",
+  "kp_tools.item.common_marked": "✅ Marked {character}'s {item} as a common good — future grants of the same name auto-merge quantity.",
+  "kp_tools.item.common_unmarked": "✅ Removed the common-good mark from {character}'s {item}."
 }
