@@ -86,8 +86,32 @@ async def test_two_viewers_of_one_room_read_their_own_labels(tmp_path: Path) -> 
         _restore_packs()
 
 
-async def test_resource_label_map_is_empty_for_an_unresolvable_system() -> None:
-    # A roster row whose pack was uninstalled keeps its stored label rather than
-    # losing its meters entirely.
-    assert resource_label_map("no-such-system", "zh") == {}
-    assert resource_label_map("", None) == {}
+def test_runtime_pool_labels_resolve_per_viewer_locale() -> None:
+    # dnd5e's meters are runtime-declared pools; the roster re-label lane reads
+    # them too, grouped or not.
+    zh = resource_label_map("dnd5e", "zh")
+    en = resource_label_map("dnd5e", "en")
+    assert zh["hp"] == "生命值" and zh["temp_hp"] == "临时生命值"
+    assert en["hp"] == "HP" and en["temp_hp"] == "Temporary HP"
+    assert zh["hit_die_d10"] == "生命骰" and en["spell_slot_1"] == "Level 1 Spell Slots"
+
+
+async def test_runtime_pack_state_has_no_duplicate_top_level_meters() -> None:
+    """A runtime pack's own sheet declares NO legacy `sheet.resources` on top of
+    its pools: the state frame carries each top-level meter exactly once, the
+    ungrouped pools ride `resources` (not a blank group), and grouped pools stay
+    in `resource_groups`."""
+    services = _services()
+    ctx = _ctx("dnd-pools", user_id="tui:dnd", locale="zh")
+    sheet = services.characters.generate_character("dnd5e", "Kael Thorn")
+    await services.characters.save_character(ctx.user_id, ctx.chat_key, sheet)
+
+    state = await build_room_state(services, ctx)
+    char = state["character"]
+    ids = [res["id"] for res in char["resources"]]
+    assert ids == ["hp", "temp_hp"]  # each exactly once — no legacy duplicate
+    assert {res["label"] for res in char["resources"]} == {"生命值", "临时生命值"}
+    group_ids = [group["id"] for group in char.get("resource_groups", [])]
+    assert set(group_ids) == {"hit_dice", "spell_slots"}
+    grouped_ids = {item["id"] for group in char.get("resource_groups", []) for item in group["resources"]}
+    assert grouped_ids.isdisjoint(ids)

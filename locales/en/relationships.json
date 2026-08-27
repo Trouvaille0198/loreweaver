@@ -5,6 +5,8 @@
   "relationships.describe.pair": "{label} {value}",
   "relationships.tools.bad_track": "Unknown relationship track. Allowed tracks: {allowed}.",
   "relationships.tools.bad_delta": "That value isn't a usable whole number.",
+  "relationships.tools.unknown_entity": "Unknown entity \"{name}\": no player character or NPC in this room goes by that name.",
+  "relationships.tools.pc_pair": "Relationship tracks only cover character↔NPC and NPC↔NPC pairs — {subject} and {target} are both player characters.",
   "relationships.tools.adjust.done": "{subject} → {target} {track}: {old} → {new} (change: {delta}).",
   "relationships.tools.set.done": "{subject} → {target} {track} set to {value}.",
   "relationships.tools.get.empty": "No relationship tracks recorded yet.",

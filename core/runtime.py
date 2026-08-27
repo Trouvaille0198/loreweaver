@@ -50,6 +50,16 @@ _EXPR_FUNCTIONS = {
 }
 
 
+def resolve_display_label(display: Mapping[str, Any], fallback: str, locale: str | None) -> str:
+    """A pack-owned display map's label for ``locale`` (exact match, then ``en``,
+    then any declared locale), falling back to ``fallback``."""
+    raw = display.get("label", fallback)
+    if isinstance(raw, Mapping):
+        short = (locale or "en").split("-", 1)[0].split("_", 1)[0]
+        return raw.get(short) or raw.get("en") or next(iter(raw.values()), fallback)
+    return str(raw)
+
+
 class RuntimeSpecError(ValueError):
     """A malformed or unsafe ``runtime:`` declaration."""
 
@@ -130,6 +140,10 @@ class ResourcePoolSpec:
         if self.display:
             result["display"] = dict(self.display)
         return result
+    def display_label(self, locale: str | None) -> str:
+        """The pool's display label for ``locale`` (exact match, then ``en``,
+        then any declared locale), falling back to the pool id."""
+        return resolve_display_label(self.display, self.id, locale)
 
 
 @dataclass(frozen=True)

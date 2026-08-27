@@ -358,3 +358,22 @@ async def unlocked_tools_for(store: Any, chat_key: str) -> set[str]:
         if skill is not None:
             unlocked.update(skill.allowed_tools)
     return unlocked
+
+
+def skill_source(skill_id: str) -> str:
+    """Where a discoverable skill comes from: ``"builtin"`` (the engine's own
+    ``skills/`` tree), ``"user"`` (the data dir's user-skill directory — the
+    forge's install home), or ``"pack"`` (shipped inside an installed .lwpack,
+    discovered through `_EXTRA_SKILL_DIRS`). A built-in id always wins discovery
+    precedence, so the first hit in precedence order is the authoritative one."""
+    import os
+
+    builtin = Path(os.environ.get("TRPG_SKILLS_DIR") or Path(__file__).resolve().parent.parent / "skills")
+    if (builtin / skill_id / "SKILL.md").exists():
+        return "builtin"
+    if _USER_SKILL_DIR is not None and (_USER_SKILL_DIR / skill_id / "SKILL.md").exists():
+        return "user"
+    for extra in _EXTRA_SKILL_DIRS:
+        if (extra / skill_id / "SKILL.md").exists():
+            return "pack"
+    return "user"

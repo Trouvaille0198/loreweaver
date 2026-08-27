@@ -3,7 +3,13 @@
 `RelationshipTools` is the function-calling surface over `core.relationships.RelationshipManager`:
 directional numeric tracks (affection/desire) between any two named entities (PCs, NPCs,
 companions) that the KP nudges with `adjust_relationship`/`set_relationship` after a meaningful
-beat, and reads back on demand with `get_relationships`. Per iron rule #1 (deterministic vs
+beat, and reads back on demand with `get_relationships`. Writes are entity-checked: `subject` and
+`target` must each resolve (case-insensitively) to a real room entity -- a player character (room
+sheet or claimable pregen, the same roster `agent.npc.player_character_names` guards) or an NPC
+record (`agent.npc.list_npcs`, the room's live cast, module-seeded and keeper-created alike, aliases
+included) -- and the pair must be character↔NPC or NPC↔NPC: character↔character is refused, and
+resolved names are canonicalized to the entity's official name before anything is stored (so a
+near-miss spelling never drifts into a parallel identity). Per iron rule #1 (deterministic vs
 generative split), the VALUES themselves are real code -- clamped and persisted here -- the model
 only narrates around them; `agent.prompt_builder` separately folds the CURRENT state into the main
 KP prompt every turn (the always-on path), so `get_relationships` is only the read-on-demand path.
@@ -19,11 +25,68 @@ user-visible text is looked up via `services.i18n` under `relationships.tools.*`
 from __future__ import annotations
 
 from agent.context import AgentCtx
+from agent.npc import COMPANION_UID_PREFIX, list_npcs
 from agent.services import Services
 from agent.tools import tool
+from core.pregen_roster import pregen_entries
 from core.relationships import TRACKS, RelationshipManager, coerce_int, describe, known_track
 from infra.i18n import I18n
 
+
+async def _room_entity_names(services: Services, chat_key: str) -> tuple[dict[str, str], dict[str, str]]:
+    """This room's real entity names as two casefold -> canonical-name maps: player characters
+    (every room sheet not owned by an AI companion, plus the module's claimable pregens -- the
+    same sources `agent.npc.player_character_names` reads, but keeping the official casing) and
+    NPCs (every `npc` record, with each alias resolving to its record's canonical name)."""
+    documents = services.documents
+    pcs: dict[str, str] = {}
+    for doc in await documents.list(chat_key, "sheet"):
+        if str(doc.data.get("owner") or "").startswith(COMPANION_UID_PREFIX):
+            continue
+        name = str(doc.data.get("name") or doc.id).strip()
+        if name:
+            pcs.setdefault(name.casefold(), name)
+    for entry in await pregen_entries(documents, chat_key):
+        name = str(entry.get("name") or "").strip()
+        if name:
+            pcs.setdefault(name.casefold(), name)
+    npcs: dict[str, str] = {}
+    for record in await list_npcs(documents, chat_key):
+        canonical = record.name.strip()
+        if not canonical:
+            continue
+        npcs.setdefault(canonical.casefold(), canonical)
+        for alias in record.aliases or []:
+            folded = str(alias).strip().casefold()
+            if folded:
+                npcs.setdefault(folded, canonical)
+    return pcs, npcs
+
+
+async def _resolve_pair(
+    services: Services, ctx: AgentCtx, i18n: I18n, subject: str, target: str
+) -> tuple[str, str] | str:
+    """Validate a relationship pair against the room's real entities. Returns the canonical
+    ``(subject, target)`` names to store, or a localized error string: an unknown name (the
+    message names the offender) or a character↔character pairing (tracks only cover
+    character↔NPC and NPC↔NPC pairs). A player character and an NPC sharing a name resolve as
+    the player character (`agent.npc.create_npc` already refuses to mint such collisions)."""
+    pcs, npcs = await _room_entity_names(services, ctx.chat_key)
+    resolved: list[str] = []
+    is_pc: list[bool] = []
+    for raw in (subject, target):
+        folded = raw.strip().casefold()
+        if folded in pcs:
+            resolved.append(pcs[folded])
+            is_pc.append(True)
+        elif folded in npcs:
+            resolved.append(npcs[folded])
+            is_pc.append(False)
+        else:
+            return i18n.t("relationships.tools.unknown_entity", name=raw.strip())
+    if all(is_pc):
+        return i18n.t("relationships.tools.pc_pair", subject=resolved[0], target=resolved[1])
+    return resolved[0], resolved[1]
 
 class RelationshipTools:
     """AI-KP tools for adjusting/reading deterministic relationship tracks between entities."""
@@ -47,7 +110,10 @@ class RelationshipTools:
 
         Args:
             subject: The entity whose feeling is being adjusted (a PC/NPC/companion's name).
-            target: The entity the feeling is directed toward.
+            target: The entity the feeling is directed toward. Both names must resolve to
+                real room entities (a player character or an NPC record, case-insensitive;
+                aliases count), and the pair must be character↔NPC or NPC↔NPC --
+                character↔character is refused.
             track: Which track to adjust: "affection" or "desire".
             delta: Signed integer change to apply (e.g. 5, -10).
             reason: Optional free-text note on why, for your own bookkeeping; not required.
@@ -62,6 +128,10 @@ class RelationshipTools:
         if parsed_delta is None:
             return i18n.t("relationships.tools.bad_delta")
         try:
+            pair = await _resolve_pair(self._services, ctx, i18n, subject, target)
+            if isinstance(pair, str):
+                return pair
+            subject, target = pair
             manager = RelationshipManager(self._services.store)
             old, new = await manager.adjust(ctx.chat_key, subject, target, track, parsed_delta)
             return i18n.t(
@@ -84,7 +154,10 @@ class RelationshipTools:
 
         Args:
             subject: The entity whose feeling is being set (a PC/NPC/companion's name).
-            target: The entity the feeling is directed toward.
+            target: The entity the feeling is directed toward. Both names must resolve to
+                real room entities (a player character or an NPC record, case-insensitive;
+                aliases count), and the pair must be character↔NPC or NPC↔NPC --
+                character↔character is refused.
             track: Which track to set: "affection" or "desire".
             value: The exact value to store (clamped to the track's valid range).
 
@@ -98,6 +171,10 @@ class RelationshipTools:
         if parsed_value is None:
             return i18n.t("relationships.tools.bad_delta")
         try:
+            pair = await _resolve_pair(self._services, ctx, i18n, subject, target)
+            if isinstance(pair, str):
+                return pair
+            subject, target = pair
             manager = RelationshipManager(self._services.store)
             clamped = await manager.set(ctx.chat_key, subject, target, track, parsed_value)
             return i18n.t(

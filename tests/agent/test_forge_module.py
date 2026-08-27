@@ -20,6 +20,7 @@ leaking a tmp path into another test's module-forge generation.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from pathlib import Path
@@ -31,8 +32,11 @@ from agent.context import AgentCtx, LocalFs
 from agent.forge import generate_and_install_module, generate_and_install_pack_module
 from agent.services import build_services
 from core.dice_engine import seed_dice
+from core.pack import MANIFEST_NAME, parse_manifest_text
 from core.pregen_roster import pregen_entries, pregen_pristine_sheet
+from gateway import module_media
 from gateway.imagegen import reset_imagegen_limiters
+from gateway.panels import installed_pack_homes
 from infra.config import ImageGenSettings, Settings
 from infra.embeddings import FakeEmbeddings
 from infra.imagegen import FakeImageGen, ImageGenError
@@ -41,6 +45,16 @@ from infra.media_store import MediaStore
 
 CHAT_KEY = "module-forge-chat"
 SENTINEL = "THE FERRYMAN IS THE FEY BOUND TO THE OLD PACT"
+
+
+async def _wait_media_worker(pack_id: str) -> None:
+    """The forge schedules the media worker as a background task; wait until it finishes
+    (deterministic under the test loop — the fake generator does no real IO)."""
+    for _ in range(200):
+        if pack_id not in module_media._inflight:
+            return
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"media worker for {pack_id} did not finish")
 
 GENERATED_MODULE_MD = f"""# The Salt Marsh Vanishing
 
@@ -1083,6 +1097,21 @@ async def test_pack_module_media_pass_persists_reference_index(tmp_path: Path) -
         )
 
         assert result.ok, result.error
+        # Module generation does NOT wait for pictures: the shots are queued with their
+        # prompts persisted, nothing rendered yet.
+        assert services.imagegen.calls == []
+        assert "Queued 3 module illustration(s)" in result.detail
+        pack_id = result.skill_id
+        home = installed_pack_homes(Path(tmp_path))[pack_id]
+        assert (home / "media-jobs.json").is_file()
+        jobs = json.loads((home / "media-jobs.json").read_text(encoding="utf-8"))["jobs"]
+        assert {j["status"] for j in jobs} == {"pending"}
+        assert {j["prompt"] for j in jobs} == {s["prompt"] for s in json.loads(shots)}
+        assert all(j["prompt"] for j in jobs)
+
+        # Let the background lane finish (the forge scheduled it on this loop).
+        await _wait_media_worker(pack_id)
+
         assert len(services.imagegen.calls) == 3
         records = await MediaStore(services.store, str(tmp_path)).list_room_records(CHAT_KEY)
         names = {record.name for record in records}
@@ -1091,13 +1120,141 @@ async def test_pack_module_media_pass_persists_reference_index(tmp_path: Path) -
 
         index = json.loads(await services.store.state_get(CHAT_KEY, "module_media_index"))
         by_name = {e["name"]: e for e in index}
-        assert by_name[next(n for n in names if "-scenes-" in n and "-2" in n)]["subject"] == "The ferry crossing"
+        assert by_name[f"module-{pack_id}-scenes-1.png"]["subject"] == "The ferry crossing"
         # Every index entry points at a stored record (hash rides along for `.image`).
         # The room may also hold records the pack-import path registered (pregen avatars), so
         # index hashes are a SUBSET of stored records, not the whole set.
         record_hashes = {record.hash for record in records}
         assert {e["hash"] for e in index} <= record_hashes
         assert all(e["hash"] for e in index)
+
+        # The worker wired the plates into the installed pack: jobs done, manifest assets
+        # appended (the module detail page renders them), card bindings stamped.
+        jobs = json.loads((home / "media-jobs.json").read_text(encoding="utf-8"))["jobs"]
+        assert {j["status"] for j in jobs} == {"done"}
+        manifest = parse_manifest_text((home / MANIFEST_NAME).read_text(encoding="utf-8"), expect_trust=True)
+        assert len(manifest.assets) == 3
+        assert all(asset.sha256 and asset.mime.startswith("image/") for asset in manifest.assets)
+        card = json.loads((home / "cards" / f"{pack_id}.lorecard.json").read_text(encoding="utf-8"))
+        assert any(e.get("image") for e in card.get("worldbook") or [])
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
+async def test_pack_module_media_failed_job_keeps_prompt_and_requeue_retries(tmp_path: Path) -> None:
+    """Point 3 of the async-media contract: a failed illustration keeps its generation prompt
+    verbatim in the sidecar, and a retry re-queues it for the SAME prompt — no re-planning."""
+    reset_imagegen_limiters()
+    shots = json.dumps([_shot("cover", "Greyreed at dusk")])
+    services = _option_services(tmp_path, [_VALID_PACK_LORECARD, shots], imagegen=True)
+    services.imagegen = _FailingImageGen()
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        result = await generate_and_install_pack_module(
+            services, ctx, "a marsh-town disappearance mystery", media=["cover"]
+        )
+        assert result.ok, result.error
+        pack_id = result.skill_id
+        home = installed_pack_homes(Path(tmp_path))[pack_id]
+        await _wait_media_worker(pack_id)
+
+        jobs = json.loads((home / "media-jobs.json").read_text(encoding="utf-8"))["jobs"]
+        assert [j["status"] for j in jobs] == ["failed"]
+        failed_prompt = jobs[0]["prompt"]
+        assert failed_prompt and jobs[0]["error"]
+
+        # Retry with the SAME prompt (no re-plan): swap in a working generator, re-queue.
+        services.imagegen = _UniqueImageGen()
+        assert module_media.requeue_jobs(home, [jobs[0]["id"]]) == 1
+        await module_media.run_pack_media_jobs(services, pack_id)
+
+        jobs = json.loads((home / "media-jobs.json").read_text(encoding="utf-8"))["jobs"]
+        assert jobs[0]["status"] == "done"
+        assert jobs[0]["prompt"] == failed_prompt
+        assert (home / "assets" / jobs[0]["asset"]).is_file()
+        manifest = parse_manifest_text((home / MANIFEST_NAME).read_text(encoding="utf-8"), expect_trust=True)
+        assert any(asset.path == f"assets/{jobs[0]['asset']}" for asset in manifest.assets)
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
+async def test_pack_module_media_replan_dedupes_and_continues_kind_indices(tmp_path: Path) -> None:
+    """Point 4 of the async-media contract: triggering illustrations from the detail page
+    re-plans shots WITHOUT duplicating already-illustrated subjects, and per-kind asset
+    indices continue so a later generation never collides with an earlier plate's filename."""
+    reset_imagegen_limiters()
+    shots_1 = json.dumps([_shot("scenes", "The ferry crossing")])
+    shots_2 = json.dumps(
+        [
+            _shot("scenes", "The ferry crossing"),  # already illustrated -> skipped
+            _shot("scenes", "The drowned chapel"),  # new scenes plate -> scenes-2
+            _shot("npcs", "Ada Marsh"),  # new kind -> npcs-1
+        ]
+    )
+    services = _option_services(tmp_path, [_VALID_PACK_LORECARD, shots_1, shots_2], imagegen=True)
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        result = await generate_and_install_pack_module(
+            services, ctx, "a marsh-town disappearance mystery", media=["scenes"]
+        )
+        assert result.ok, result.error
+        pack_id = result.skill_id
+        home = installed_pack_homes(Path(tmp_path))[pack_id]
+        await _wait_media_worker(pack_id)
+
+        card = json.loads((home / "cards" / f"{pack_id}.lorecard.json").read_text(encoding="utf-8"))
+        new_jobs, note = await module_media.plan_media_jobs(
+            services, pack_id, home, card, ["scenes", "npcs"], CHAT_KEY, services.i18n
+        )
+        assert note == ""
+        assert {j["asset_stem"] for j in new_jobs} == {
+            f"module-{pack_id}-scenes-2",
+            f"module-{pack_id}-npcs-1",
+        }
+        assert module_media.append_jobs(home, new_jobs, room=CHAT_KEY) == 2
+        await module_media.run_pack_media_jobs(services, pack_id)
+
+        jobs = json.loads((home / "media-jobs.json").read_text(encoding="utf-8"))["jobs"]
+        assert {j["status"] for j in jobs} == {"done"}
+        assert len(jobs) == 3
+        for job in jobs:
+            assert (home / "assets" / job["asset"]).is_file()
+        index = json.loads(await services.store.state_get(CHAT_KEY, "module_media_index"))
+        assert {e["subject"] for e in index} == {"The ferry crossing", "The drowned chapel", "Ada Marsh"}
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
+async def test_pack_module_media_without_imagegen_marks_jobs_failed(tmp_path: Path) -> None:
+    """No image provider configured: the forge still plans and queues the shots (the detail
+    page shows them), and the worker fails them with a clear reason — retryable once a
+    provider exists."""
+    reset_imagegen_limiters()
+    shots = json.dumps([_shot("cover", "Greyreed at dusk")])
+    services = _option_services(tmp_path, [_VALID_PACK_LORECARD, shots], imagegen=False)
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        result = await generate_and_install_pack_module(
+            services, ctx, "a marsh-town disappearance mystery", media=["cover"]
+        )
+        assert result.ok, result.error
+        pack_id = result.skill_id
+        home = installed_pack_homes(Path(tmp_path))[pack_id]
+        await _wait_media_worker(pack_id)
+
+        jobs = json.loads((home / "media-jobs.json").read_text(encoding="utf-8"))["jobs"]
+        assert [j["status"] for j in jobs] == ["failed"]
+        assert jobs[0]["error"] == "not_configured"
+        assert jobs[0]["prompt"]  # kept verbatim for the retry button
     finally:
         forge_module._USER_MODULE_DIR = original_user_dir
 
@@ -1203,7 +1360,14 @@ def test_pack_module_schema_and_prompts_advertise_pregen_skills() -> None:
     # `concept` — the roster one-liner is derived from `background`.
     assert '"concept"' not in forge_module._PACK_MODULE_CARD_SCHEMA
     root = Path(__file__).resolve().parents[2]
+    # The budget rule lives in the per-system skill guidance now (percent-scale
+    # systems like CoC), injected with the target system's skill names; the
+    # static system prompt points the model at that appended guidance instead
+    # of hardcoding CoC numbers for every system (the dnd5e percent-skills bug).
     for locale, needle in (("en", "skill-point budget"), ("zh", "技能点预算")):
+        data = json.loads((root / "locales" / locale / "agent.json").read_text(encoding="utf-8"))
+        assert needle in data["agent.forge.pack_module_skill_scale_percent"]
+    for locale, needle in (("en", "skill guidance appended"), ("zh", "追加的系统技能指引")):
         data = json.loads((root / "locales" / locale / "agent.json").read_text(encoding="utf-8"))
         assert needle in data["agent.forge.pack_module_system_prompt"]
 

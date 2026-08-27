@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import shlex
 from pathlib import Path
 from typing import Any
@@ -17,7 +16,7 @@ from gateway.avatar import AvatarError, set_target_avatar, set_user_avatar
 from gateway.commands.rooms import _is_keeper
 from gateway.commands.types import CommandCtx
 from gateway.hub import Event
-from gateway.imagegen import allow_imagegen_request, image_name
+from gateway.imagegen import allow_imagegen_request, gather_image_reference, image_name
 from gateway.media import media_frame, publish_media
 from gateway.ops import (
     is_media_enabled,
@@ -29,7 +28,6 @@ from infra.media_store import (
     ALLOWED_IMAGE_MIMES,
     MediaError,
     MediaStore,
-    is_image_mime,
 )
 from infra.model_call_trace import lane_scope
 
@@ -423,7 +421,7 @@ class MediaCommands:
             # Reuse the module's illustration of this subject as a reference so the new
             # image stays consistent with what the players already saw. Best-effort:
             # a missing reference is a prompt-only generation, never an error.
-            ref_bytes, ref_mime = await self._gather_reference(ctx, kind, imagegen, focus=focus, extra=prompt)
+            ref_bytes, ref_mime = await gather_image_reference(ctx.services, ctx.chat_key, kind, imagegen, focus=focus, extra=prompt)
             # A scene/clue reference must only guide style and atmosphere — the image
             # provider may otherwise extract a person/face present in the reference as
             # the subject. Portrait references WANT that (character consistency), so the
@@ -682,110 +680,6 @@ class MediaCommands:
 
         return "\n".join(lines)
 
-    async def _active_module_pack_id(self, ctx: CommandCtx) -> str:
-        """The calling room's active module pack id ("" when none), so reference images are
-        scoped to the CURRENT module. `module_media_index` is append-only across module
-        switches, so without this filter an old module's art would anchor (and slow down,
-        via I2I) the new story's image requests."""
-        try:
-            raw = await ctx.services.store.state_get(ctx.chat_key, "active_module")
-            if raw:
-                value = json.loads(raw)
-                if isinstance(value, dict):
-                    return str(value.get("pack_id") or "").strip()
-        except Exception:
-            pass
-        return ""
-
-    async def _gather_reference(
-        self, ctx: CommandCtx, kind: str, imagegen: Any, *, focus: str = "", extra: str = ""
-    ) -> tuple[bytes | None, str]:
-        """Find a module illustration of this subject to reuse as the generation reference.
-
-        Only kinds the provider can anchor (``imagegen.reference_kinds``) get a reference:
-        MiniMax supports only `character` (portrait), while image-to-image providers also
-        anchor scene/clue illustrations. A `portrait`/`clue` request matches its subject
-        against the focused name (`.image portrait 老周` / `.image clue 玉蟾`); a `scene`
-        with no focus reuses the most recent scene illustration. `module_media_index`
-        (written by the forge media pass) maps each illustration to the scene/NPC/item it
-        depicts. Without an index entry we fall back to the room's media names by kind
-        prefix. Always best-effort: ``(None, "")`` means prompt-only, never an error."""
-        if kind not in getattr(imagegen, "reference_kinds", frozenset({"portrait"})):
-            return None, ""
-        focus = focus.strip() or extra.strip()
-        pack_id = await self._active_module_pack_id(ctx)
-        try:
-            raw = await ctx.services.store.state_get(ctx.chat_key, "module_media_index")
-            entries: list[dict] = []
-            if raw:
-                value = json.loads(raw)
-                if isinstance(value, list):
-                    entries = [e for e in value if isinstance(e, dict)]
-            pool = []
-            for e in entries:
-                kind_key = {"portrait": "npcs", "scene": "scenes", "clue": "items"}.get(kind)
-                if str(e.get("kind") or "") != kind_key:
-                    continue
-                # The index accumulates every forge module this room ever ran (entries are
-                # append-only, never purged on module switch). Only the CURRENT module's
-                # illustrations may anchor a reference — an old module's scene art would
-                # otherwise leak into the new story (and drag an I2I pass along).
-                if pack_id and not str(e.get("name") or "").startswith(f"module-{pack_id}-"):
-                    continue
-                name = str(e.get("subject") or "").strip()
-                if focus:
-                    if focus in name or name in focus:
-                        pool.append(e)
-                elif kind == "scene":
-                    pool.append(e)
-            if pool:
-                return await self._read_reference_bytes(ctx, pool[-1])
-        except Exception:
-            pass
-        # Fallback: match room media names by kind prefix (old forge illustrations that
-        # predate the index). Scene reuses the latest matching image; portrait/clue need
-        # a focused name to avoid guessing the wrong subject.
-        if not focus and kind != "scene":
-            return None, ""
-        kind_key = {"portrait": "npcs", "scene": "scenes", "clue": "items"}.get(kind)
-        try:
-            settings = ctx.services.settings.tui
-            store = MediaStore(
-                ctx.services.store,
-                ctx.services.settings.data_dir,
-                max_file_bytes=settings.media_max_file_bytes,
-                room_quota_bytes=settings.media_room_quota_bytes,
-                allowed_mimes=ALLOWED_IMAGE_MIMES,
-            )
-            records = await store.list_room_records(ctx.chat_key)
-            matches = [
-                r for r in records
-                if r.name.startswith("module-") and f"-{kind_key}-" in r.name and is_image_mime(r.mime)
-                and (not pack_id or r.name.startswith(f"module-{pack_id}-"))
-            ]
-            if not matches:
-                return None, ""
-            target = matches[-1]
-            rec, data = await store.read_bytes(ctx.chat_key, target.hash)
-            return data, rec.mime
-        except Exception:
-            return None, ""
-
-    async def _read_reference_bytes(self, ctx: CommandCtx, entry: dict) -> tuple[bytes | None, str]:
-        """Read a stored module illustration's bytes from the media store."""
-        try:
-            settings = ctx.services.settings.tui
-            store = MediaStore(
-                ctx.services.store,
-                ctx.services.settings.data_dir,
-                max_file_bytes=settings.media_max_file_bytes,
-                room_quota_bytes=settings.media_room_quota_bytes,
-                allowed_mimes=ALLOWED_IMAGE_MIMES,
-            )
-            rec, data = await store.read_bytes(ctx.chat_key, str(entry.get("hash") or ""))
-            return data, rec.mime
-        except Exception:
-            return None, ""
 
     async def _store_image_blob(
         self, ctx: CommandCtx, data: bytes, mime: str, name: str

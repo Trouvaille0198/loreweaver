@@ -69,7 +69,6 @@ def test_npc_record_to_dict_from_dict_round_trip():
         secret_agenda="She suspects the keeper but is too afraid to say so.",
         knowledge=["Sailors have been vanishing.", "The light changed color."],
         disposition="wary",
-        relationships={"Elias Crane": "distrusts"},
         location="The Salt & Anchor Inn",
         status="on edge",
         stat_char="Martha Higgins (NPC)",

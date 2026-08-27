@@ -64,12 +64,19 @@ async def test_generate_image_fake_end_to_end_records_media_history_and_event(tm
         unlocked={"generate_image"},
     )
 
-    assert "scene-misty-chapel.png" in result
+    # Async lane: the tool returns immediately with a "started" confirmation and the
+    # generation settles as a background task; the media frame + history land after.
+    assert result == t("kp_tools.image.generate.started", locale="en")
+    tools = toolset._entries["generate_image"].bound.__self__
+    tasks = list(tools._background_tasks)
+    assert tasks, "background generation task was not scheduled"
+    for task in tasks:
+        await task
     raw = await services.store.state_get("chat-image", "media_history")
     history = json.loads(raw or "[]")
     assert history[-1]["mime"] == "image/png"
     assert history[-1]["name"] == "scene-misty-chapel.png"
-    assert hub.events[-1][1].kind == "media"
+    assert any(event[1].kind == "media" for event in hub.events), "no media frame published"
 
 
 async def test_generate_image_unconfigured_returns_i18n_text(tmp_path):

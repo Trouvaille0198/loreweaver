@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from core.condexpr import CondExprError, compile_expression
-from core.runtime import ResourcePoolSpec
+from core.runtime import ResourcePoolSpec, resolve_display_label
 
 
 class ResourceError(ValueError):
@@ -321,10 +321,7 @@ def resource_projection(sheet: Any, pack: Any, locale: str | None = None) -> dic
     values = resource_values(sheet, pack)
     groups: dict[str, list[dict[str, Any]]] = {}
     for pool_id, value in values.items():
-        label: Any = value.display.get("label", pool_id)
-        if isinstance(label, Mapping):
-            short = (locale or "en").split("-", 1)[0].split("_", 1)[0]
-            label = label.get(short) or label.get("en") or next(iter(label.values()), pool_id)
+        label = resolve_display_label(value.display, pool_id, locale)
         item: dict[str, Any] = {
             "id": pool_id,
             "role": value.role,
