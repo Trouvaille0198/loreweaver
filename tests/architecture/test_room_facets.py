@@ -85,7 +85,13 @@ WRITE_SURFACE_EXEMPTIONS: dict[tuple[str, str], str] = {
 }
 
 # Registered document types no facet claims, with the reason. Keep this empty if you can.
-DOC_TYPE_EXEMPTIONS: dict[str, str] = {}
+DOC_TYPE_EXEMPTIONS: dict[str, str] = {
+    "character_memory": (
+        "managed by agent.settle's on_reset hook, which drops only the per-turn "
+        "journal (kind 'turn') on a story reset — the players' playthrough "
+        "memories survive, and a wholesale doc-type delete would erase them"
+    ),
+}
 
 
 # ---------------------------------------------------------------------------

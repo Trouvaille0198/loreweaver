@@ -532,6 +532,29 @@ def render_result(result: SettlementResult, i18n: I18n) -> str:
     return "\n".join(lines)
 
 
+async def _reset_memory_journal(facet_ctx: Any) -> None:
+    """A story reset clears the AI keeper's per-turn journal (kind "turn" — the raw
+    Scribe lines that ride the prompt) but KEEPS the players' scenario memories
+    (kind "playthrough"): those are the players' assets across scenarios, and a
+    reset must never erase them (the observed data loss)."""
+    services = facet_ctx.services
+    chat_key = facet_ctx.chat_key
+    try:
+        for doc in await services.documents.list(chat_key, CHARACTER_MEMORY_DOC_TYPE):
+            entries = doc.data.get("entries") or []
+            kept = [
+                e for e in entries
+                if not (isinstance(e, dict) and e.get("kind") == "turn")
+            ]
+            if len(kept) != len(entries):
+                await services.documents.put(
+                    chat_key, CHARACTER_MEMORY_DOC_TYPE, doc.id, {**doc.data, "entries": kept}
+                )
+    except Exception:
+        # A reset must never fail because a memory document is unreadable.
+        return
+
+
 # --- Room lifecycle (M23 WS1) -----------------------------------------------
 ROOM_FACETS = (
     RoomStateFacet(
@@ -550,12 +573,13 @@ ROOM_FACETS = (
         name="character_memory",
         owner="agent.settle",
         reset_scope="story",
-        # The memory is the AI keeper's working knowledge (it rides the prompt every
-        # turn), not a character-sheet asset: a story reset must drop it with the
-        # session, or the keeper keeps citing the previous adventure's events —
-        # including items the party archived since (the observed bug). Sheets and
-        # their background prose survive story resets; this memory does not.
-        doc_types=frozenset({CHARACTER_MEMORY_DOC_TYPE}),
+        # Two kinds live in one document: the AI keeper's per-turn journal (kind
+        # "turn") rides the prompt and must leave with a story reset; the players'
+        # scenario memories (kind "playthrough") are the players' assets and must
+        # survive every reset (the observed loss). Deliberately NO doc_types here —
+        # a wholesale delete would take the playthrough memories too; the on_reset
+        # hook drops only the journal lines.
+        on_reset=_reset_memory_journal,
         storages=frozenset({STORAGE_DOCUMENTS}),
     ),
 )
