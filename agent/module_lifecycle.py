@@ -247,16 +247,26 @@ async def purge_active_module(services: Any, chat_key: str) -> dict[str, Any] | 
 
     for doc_type in ("module_pool", "module_brief", "modvars", "mvu_tree"):
         await services.documents.delete_type(chat_key, doc_type)
-    # The item catalog/instances, the discovered-clue log, the player-visible scene
-    # singleton and the keeper's scene notes all ship with the module's world and
-    # leave with it: a module swap must not strand the old adventure's loot, clues,
-    # current scene or NPC intentions in the room (the observed bug — old scenario
-    # items/clues kept showing after the switch).
+    # The item CATALOG, the discovered-clue log, the player-visible scene singleton
+    # and the keeper's scene notes ship with the module's world and leave with it: a
+    # module swap must not strand the old adventure's templates, clues, current
+    # scene or NPC intentions (the observed bug). Item INSTANCES are the holders'
+    # property — they travel across scenarios and are never deleted on a swap;
+    # legacy instances without an origin stamp are tagged with the outgoing module
+    # so the next scenario's mention highlights do not treat them as its own.
     await services.documents.delete_type(chat_key, "item_catalog")
-    await services.documents.delete_type(chat_key, "item")
     await services.documents.delete_type(chat_key, "clue_log")
     await services.documents.delete_type(chat_key, "scene")
     await services.documents.delete_type(chat_key, "note")
+    if previous:
+        _outgoing_source = str(previous.get("source_id") or "")
+        if _outgoing_source:
+            for _doc in await services.documents.list(chat_key, "item"):
+                _data = dict(_doc.data)
+                if not str(_data.get("source_module_id") or "").strip():
+                    await services.documents.put(
+                        chat_key, "item", _doc.id, {**_data, "source_module_id": _outgoing_source}
+                    )
     # Room-born roster characters (`source="room"`, created by `.pc gen`) are this
     # table's own asset: a module swap must not strand them. Only module-imported
     # pregens (documents whose source column names the module) leave with it —
