@@ -285,7 +285,7 @@ def validate_improvised_bonus(bonus: dict) -> str | None:
 
 def improvised_template(
     name: str, *, description: str = "", bonus: dict | None = None, secret: bool = False,
-    source_module_id: str = "",
+    source_module_id: str = "", common: bool = False,
 ) -> dict:
     """A one-off template for an off-catalog grant. Improvised items are
     universal-scope (they travel with the holder, never die with a module) and
@@ -304,6 +304,7 @@ def improvised_template(
         "scope": "universal",
         "secret": bool(secret),
         "improvised": True,
+        "common": bool(common),
         "source_module_id": source_module_id,
     }
 
@@ -366,6 +367,7 @@ def _instance_data(owner: str, template: dict, qty: int) -> dict[str, Any]:
         "original_holder": str(template.get("original_holder") or ""),
         "secret": bool(template.get("secret", False)),
         "improvised": bool(template.get("improvised", False)),
+        "common": bool(template.get("common", False)),
         "archived": bool(template.get("archived", False)),
         "plot_role": str(template.get("plot_role") or ""),
         "reveals": list(template.get("reveals") or []) if isinstance(template.get("reveals"), list) else [],
@@ -400,9 +402,13 @@ async def grant_instance(
     existing = await find_instance(documents, chat_key, owner, name)
     if existing is not None:
         new_qty = int(existing.data.get("quantity", 1)) + int(qty)
-        return await documents.put(
-            chat_key, "item", existing.id, {**existing.data, "quantity": new_qty}
-        )
+        # A common item (coins, rations — the same thing from any scenario) merges
+        # into one instance: quantity stacks and the common stamp carries over so
+        # later grants from other scenarios keep merging instead of duplicating.
+        merged = {**existing.data, "quantity": new_qty}
+        if bool(template.get("common", False)):
+            merged["common"] = True
+        return await documents.put(chat_key, "item", existing.id, merged)
     return await documents.put(
         chat_key, "item", uuid4().hex, _instance_data(owner, template, qty)
     )
