@@ -90,9 +90,13 @@ def empty_memory() -> dict[str, Any]:
 
 def append_entry(data: dict[str, Any], text: str, turn: int) -> dict[str, Any]:
     """Append one per-turn line (oldest first), truncating the oldest when the
-    cap is hit. Pure: returns the new payload, never mutates ``data``."""
+    cap is hit. Pure: returns the new payload, never mutates ``data``.
+    Tagged ``kind: "turn"`` so player-facing surfaces can show the scenario-level
+    playthrough memories WITHOUT the raw per-turn journal."""
     entries = list(data.get("entries", []))
-    entries.append({"text": str(text).strip()[:_MAX_ENTRY_CHARS], "turn": int(turn)})
+    entries.append(
+        {"text": str(text).strip()[:_MAX_ENTRY_CHARS], "turn": int(turn), "kind": "turn"}
+    )
     if len(entries) > MAX_ENTRIES:
         entries = entries[-MAX_ENTRIES:]
     return {**data, "entries": entries}

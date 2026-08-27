@@ -331,11 +331,12 @@ async def _character_payload(
             raw_entries = [
                 str(entry.get("text") or "").strip()
                 for entry in (memory.get("entries") or [])
-                # kind=="playthrough" is the current settle format; entries
-                # written by OLDER settlements carry no kind at all — both are
-                # scenario-level memories the player should see.
+                # ONLY the tagged scenario memories ride the player wire. The raw
+                # per-turn journal (kind "turn") is Scribe material — it feeds the
+                # settlement lane and the AI's context, never the player's memory
+                # list (the observed bug: per-turn fragments showed up there).
                 if isinstance(entry, dict)
-                and entry.get("kind") in (None, "playthrough")
+                and entry.get("kind") == "playthrough"
             ]
             entries = [text for text in raw_entries if text][-10:]
             entries.reverse()  # newest first, like a journal
