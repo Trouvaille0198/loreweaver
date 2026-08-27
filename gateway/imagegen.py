@@ -34,6 +34,19 @@ def allow_imagegen_request(services: Services, chat_key: str) -> bool:
     return limiter.allow(f"imagegen:{chat_key}")
 
 
+def refund_imagegen_request(services: Services, chat_key: str) -> None:
+    """Return the room's last granted image slot after a FAILED render — a
+    provider timeout or transient error is not a quota consumption, and without
+    the refund a burst of failures silently burns the hourly budget."""
+    capacity = int(services.settings.imagegen.per_room_per_hour)
+    if capacity <= 0:
+        return
+    key = (id(services.store), capacity)
+    limiter = _LIMITERS.get(key)
+    if limiter is not None:
+        limiter.refund(f"imagegen:{chat_key}")
+
+
 def image_name(kind: str, prompt: str, *, ext: str = ".png") -> str:
     safe_kind = _slug(kind) or "image"
     safe_prompt = _slug(prompt)[:40] or "generated"

@@ -40,6 +40,7 @@ _CUSTOM_KINDS = frozenset(
         "module_upload",
         "module_update",
         "module_bundle_upload",
+        "module_import",
         "module_media_generate",
         "pregen_avatar",
         "worldbook_list",

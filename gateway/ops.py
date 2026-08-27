@@ -69,6 +69,15 @@ class RateLimiter:
         self._buckets[key] = (tokens - 1.0, now)
         return True
 
+    def refund(self, key: str) -> None:
+        """Return the last granted token to the bucket. Used when a request the
+        limiter admitted FAILED upstream (a provider timeout is not a quota
+        consumption) — without it, a burst of failures drains the bucket and the
+        room's budget is gone for the hour."""
+        now = self._now()
+        tokens, last_seen = self._buckets.get(key, (self.capacity, now))
+        self._buckets[key] = (min(self.capacity, tokens + 1.0), now)
+
 
 class UnlimitedRateLimiter(RateLimiter):
     """A `RateLimiter` that always allows.
