@@ -126,6 +126,8 @@ const serverFrameValidators: Record<string, (f: Record<string, unknown>) => bool
   [FrameType.Narrative]: (f) => isStr(f.id) && isStr(f.speaker) && isStr(f.text),
   [FrameType.NarrativeDelta]: (f) => isStr(f.id) && isStr(f.speaker) && isStr(f.text),
   [FrameType.PackCards]: (f) => isArr(f.cards),
+  [FrameType.ChronicleRecords]: (f) =>
+    isArr(f.records) && (f.summary === null || (isObject(f.summary) && isStr(f.summary.text) && isNum(f.summary.through_turn))),
   [FrameType.Dice]: (f) => isStr(f.actor) && isStr(f.expr) && isNum(f.total),
   [FrameType.Ui]: (f) => isArr(f.blocks) && isStr(f.panel),
   // v1.8 module panels: a manifest is a full-replace panel list; a panel event names

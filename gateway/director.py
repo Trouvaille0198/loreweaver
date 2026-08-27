@@ -35,6 +35,7 @@ from agent.context import AgentCtx
 from agent.kp_tools import build_kp_toolset
 from agent.npc import NpcRecord
 from core.character_manager import CharacterDataError
+from core.combat import CombatManager, StaleCombatError, TurnOwnershipError, claim_turn, end_turn, release_claim
 from gateway.turn import run_turn
 
 if TYPE_CHECKING:
@@ -198,6 +199,74 @@ async def run_combat_round(
     return results
 
 
+async def _run_current_companion_turn(
+    hub: RoomHub,
+    services: Services,
+    *,
+    chat_key: str,
+    command_router: CommandRouter,
+    censor: Censor | None,
+    situation: str,
+    locale: str,
+) -> tuple[str, KPTurnResult | None] | None:
+    """Run exactly the claimed current companion turn, if the state selects one."""
+    manager = CombatManager(services.store, chat_key)
+    state = await manager.get()
+    if state is None or state.phase != "active" or state.current is None:
+        return None
+    companions = await npc_records.list_companions(services.documents, chat_key)
+    current = state.combatants.get(state.current) or {}
+    candidates = {
+        str(current.get("id") or ""),
+        str(current.get("name") or ""),
+        str(current.get("mechanics_ref") or "").removeprefix("sheet:"),
+    }
+    companion = next(
+        (
+            item
+            for item in companions
+            if item.id in candidates
+            or item.name in candidates
+            or str(getattr(item, "stat_char", "") or "") in candidates
+        ),
+        None,
+    )
+    if companion is None:
+        return None
+    raw = state.json()
+    controller = f"companion:{companion.id}"
+    try:
+        claimed = claim_turn(state, state.current, controller)
+    except (StaleCombatError, TurnOwnershipError):
+        return None
+    if not await manager.save(claimed, expected_raw=raw):
+        return None
+    token = str(claimed.claim["token"])
+    try:
+        result = await run_companion_turn(
+            hub,
+            services,
+            companion,
+            chat_key=chat_key,
+            command_router=command_router,
+            toolset=companion_turn_toolset(services),
+            censor=censor,
+            situation=situation,
+            locale=locale,
+        )
+        finished = end_turn(claimed, state.current, claim_token=token)
+        if not await manager.save(finished, expected_raw=claimed.json()):
+            return None
+        return companion.id, result
+    except BaseException:
+        try:
+            released = release_claim(claimed, token)
+            await manager.save(released, expected_raw=claimed.json())
+        except Exception:
+            pass
+        raise
+
+
 async def run_director(
     hub: RoomHub,
     services: Services,
@@ -234,7 +303,33 @@ async def run_director(
         return []
     if not await _party_auto_enabled(services, ctx.chat_key):
         return []
-    if not await _initiative_order(services, ctx.chat_key):  # no active order == not in combat
+    manager = CombatManager(services.store, ctx.chat_key)
+    try:
+        combat = await manager.get()
+    except Exception:
+        combat = None
+    if combat is not None:
+        if combat.phase != "active" or combat.current is None:
+            return []
+        results: list[tuple[str, KPTurnResult | None]] = []
+        for _ in range(MAX_COMPANION_TURNS):
+            result = await _run_current_companion_turn(
+                hub,
+                services,
+                chat_key=ctx.chat_key,
+                command_router=command_router,
+                censor=censor,
+                situation=situation,
+                locale=ctx.locale,
+            )
+            if result is None:
+                break
+            results.append(result)
+            combat = await manager.get()
+            if combat is None or combat.phase != "active" or combat.current is None:
+                break
+        return results
+    if not await _initiative_order(services, ctx.chat_key):  # transitional rooms without combat_state
         return []
     return await run_combat_round(
         hub,
@@ -279,14 +374,20 @@ async def _order_by_initiative(
     rank = {name: index for index, name in enumerate(order)}
 
     def sort_key(companion: NpcRecord) -> tuple[int, int]:
-        name = companion.stat_char or companion.name
+        name = npc_records.sheet_reference(companion) or companion.name
         return (rank.get(name, len(rank)), 0)
 
     return sorted(companions, key=sort_key)
 
 
 async def _initiative_order(services: Services, chat_key: str) -> list[str]:
-    """The initiative-tracker names for ``chat_key``, in turn order (highest initiative first)."""
+    """Return the authoritative combat order, with a legacy-room fallback."""
+    try:
+        combat = await CombatManager(services.store, chat_key).get()
+    except Exception:
+        combat = None
+    if combat is not None:
+        return list(combat.order) if combat.phase in {"pending", "active"} else []
     try:
         raw = await services.store.state_get(chat_key, "initiative")
         entries = json.loads(raw) if raw else []

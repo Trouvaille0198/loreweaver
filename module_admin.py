@@ -318,6 +318,7 @@ class ModuleAdminService:
                         p.get("background") or p.get("notes") or p.get("concept") or p.get("blurb") or ""
                     ),
                     "avatar": str(p.get("avatar") or ""),
+                    "aliases": [str(a) for a in (p.get("aliases") or []) if str(a).strip()],
                 }
                 for p in (card.get("pregens") or [])
                 if isinstance(p, dict) and p.get("name")

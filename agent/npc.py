@@ -115,8 +115,12 @@ class NpcRecord:
     relationships: dict[str, str] = field(default_factory=dict)  # name -> relation
     location: str = ""
     status: str = ""
-    stat_char: str | None = None  # optional CharacterSheet name for combat stats
+    stat_char: str | None = None  # sheet-name input for imported records
+    mechanics_ref: str | None = None  # authoritative sheet:<id> or statblock:<id> reference
     major: bool = True  # major NPCs use the actor; trivial ones the KP voices inline
+    # Short forms / translated names / English glosses this character answers to — mention
+    # highlighting and name resolution accept them alongside the canonical `name`.
+    aliases: list[str] = field(default_factory=list)
     # M10 generalization: the SAME record shape now also backs AI *player companions*.
     # `role` splits the two kinds -- "keeper_npc" (the M5 default: a KP-side NPC voiced by
     # `agent.npc_actor`) vs. "player_companion" (a party-side PC voiced by
@@ -130,6 +134,16 @@ class NpcRecord:
     # card's own description so the KP is handed the character's gender instead of guessing it from a
     # name. Surfaced in the Keeper-facing companion roster; "" when there was no clear signal.
     pronouns: str = ""
+    # Player-visible portrait: a media reference (pack-relative asset path like
+    # `assets/module-…-npcs-4.png`, or a media-store blob name) the front end renders in the
+    # NPC's public card. "" when the NPC has no portrait. Filled from the module's worldbook
+    # `image` on import; never part of the NPC's internal knowledge.
+    avatar: str = ""
+    # Facts this NPC has told the party / the party has observed — the PLAYER-visible memory
+    # shown in the public card. Structurally distinct from `knowledge` (the NPC's internal
+    # epistemic state, keeper-side): `public_memory` is written by the AI/keeper when the
+    # table actually learns something, and it alone is projected to players.
+    public_memory: list[str] = field(default_factory=list)
     created_time: float = field(default_factory=time.time)
     updated_time: float = field(default_factory=time.time)
 
@@ -147,11 +161,15 @@ class NpcRecord:
             "location": self.location,
             "status": self.status,
             "stat_char": self.stat_char,
+            "mechanics_ref": self.mechanics_ref,
             "major": self.major,
             "role": self.role,
             "playstyle": self.playstyle,
             "is_pc": self.is_pc,
             "pronouns": self.pronouns,
+            "aliases": list(self.aliases),
+            "avatar": self.avatar,
+            "public_memory": list(self.public_memory),
             "created_time": self.created_time,
             "updated_time": self.updated_time,
         }
@@ -171,14 +189,33 @@ class NpcRecord:
             location=data.get("location", ""),
             status=data.get("status", ""),
             stat_char=data.get("stat_char"),
+            mechanics_ref=data.get("mechanics_ref"),
             major=data.get("major", True),
+            aliases=list(data.get("aliases") or []),
             role=data.get("role", "keeper_npc"),
             playstyle=data.get("playstyle", ""),
             is_pc=bool(data.get("is_pc", False)),
             pronouns=data.get("pronouns", ""),
+            avatar=data.get("avatar", ""),
+            public_memory=list(data.get("public_memory") or []),
             created_time=data.get("created_time") or time.time(),
             updated_time=data.get("updated_time") or time.time(),
         )
+
+
+def mechanics_reference(record: NpcRecord) -> str:
+    """Return one normalized mechanics reference for an NPC record."""
+    reference = str(record.mechanics_ref or "").strip()
+    if reference:
+        return reference
+    sheet_name = str(record.stat_char or "").strip()
+    return f"sheet:{sheet_name}" if sheet_name else ""
+
+
+def sheet_reference(record: NpcRecord) -> str:
+    """Return the referenced sheet id, or an empty string for non-sheet mechanics."""
+    reference = mechanics_reference(record)
+    return reference.removeprefix("sheet:") if reference.startswith("sheet:") else ""
 
 
 # Fields `update_npc` is allowed to blind-`setattr` from caller-supplied kwargs -- excludes `id`
@@ -222,6 +259,11 @@ async def _resolve_id(documents: Any, chat_key: str, name_or_id: str) -> str | N
     lowered = name_or_id.strip().lower()
     for npc_id, record in pairs:
         if record.name.strip().lower() == lowered:
+            return npc_id
+
+    # Explicit aliases (short forms, titles, other-language spellings) resolve like names.
+    for npc_id, record in pairs:
+        if any(alias.strip().lower() == lowered for alias in record.aliases or []):
             return npc_id
 
     slug = _slugify(name_or_id)
@@ -285,6 +327,10 @@ async def create_npc(
     role: str = "",
     major: bool = True,
     stat_char: str | None = None,
+    mechanics_ref: str | None = None,
+    avatar: str = "",
+    aliases: list[str] | None = None,
+    public_memory: list[str] | None = None,
     source: str | None = None,
 ) -> NpcRecord:
     """Create and persist a new NPC for `chat_key`, id = `slugify(name)` (collision-suffixed).
@@ -326,6 +372,10 @@ async def create_npc(
         location=location,
         major=major,
         stat_char=stat_char,
+        mechanics_ref=mechanics_ref or (f"sheet:{stat_char}" if stat_char else None),
+        avatar=avatar,
+        aliases=list(aliases or []),
+        public_memory=list(public_memory or []),
     )
     await _save_record(documents, chat_key, record, source=source)
     return record
@@ -340,14 +390,21 @@ async def create_companion(
     playstyle: str = "",
     knowledge: list[str] | None = None,
     stat_char: str | None = None,
-    pronouns: str = "",
+    mechanics_ref: str | None = None,
+    # spellings (e.g. "银爪珠宝店", "Nalar"). Explicitly authored (worldbook `aliases`, a tool),
+    # NEVER derived from worldbook `keys`: matching happens against this list verbatim, so a
+    # common word like "猫" can never accidentally highlight. Used by the mention annotator and
+    # by name resolution (`find_npc_by_name`), so a player saying an alias still lands on the
+    # same record and the same highlight link.
+    aliases: list[str] = field(default_factory=list),
+    avatar: str = "",
 ) -> NpcRecord:
     """Create a `player_companion` record (M10): a party-side PC voiced by
     `agent.companion_actor`, linked to a CharacterSheet via `stat_char`.
 
     Thin wrapper over `create_npc` (so id-collision suffixing is reused unchanged)
     that then stamps the companion-only fields `role="player_companion"`,
-    `is_pc=True`, `playstyle`, `pronouns` and `stat_char`.
+    `is_pc=True`, `playstyle`, `aliases` and `stat_char`.
 
     A name that already belongs to a KEEPER NPC raises `KeeperNpcNameTakenError` and
     writes nothing: `create_npc` returns that existing record, and stamping the companion
@@ -357,12 +414,20 @@ async def create_companion(
     if existing is not None and existing.role != COMPANION_ROLE:
         raise KeeperNpcNameTakenError(name.strip(), existing.role)
     record = await create_npc(
-        documents, chat_key, name, persona=persona, knowledge=knowledge, stat_char=stat_char, major=True
+        documents,
+        chat_key,
+        name,
+        persona=persona,
+        knowledge=knowledge,
+        stat_char=stat_char,
+        mechanics_ref=mechanics_ref,
+        major=True,
+        avatar=avatar,
+        aliases=aliases if isinstance(aliases, list) else None,
     )
     record.role = COMPANION_ROLE
     record.is_pc = True
     record.playstyle = playstyle
-    record.pronouns = pronouns
     await _save_record(documents, chat_key, record)
     return record
 
@@ -397,7 +462,8 @@ async def update_npc(documents: Any, chat_key: str, name_or_id: str, **updates: 
     for key, value in updates.items():
         if key in _MUTABLE_FIELDS:
             setattr(record, key, value)
-
+            if key == "stat_char" and "mechanics_ref" not in updates:
+                record.mechanics_ref = f"sheet:{value}" if value else None
     await _save_record(documents, chat_key, record)
     return record
 
@@ -430,6 +496,27 @@ async def add_knowledge(
 
     cleaned = [fact.strip() for fact in facts if fact and fact.strip()]
     record.knowledge = cleaned if mode == "replace" else [*record.knowledge, *cleaned]
+
+    await _save_record(documents, chat_key, record)
+    return record
+
+
+async def add_public_memory(
+    documents: Any, chat_key: str, name_or_id: str, facts: list[str], mode: str = "add"
+) -> NpcRecord | None:
+    """Add (append) or replace (overwrite) `name_or_id`'s PLAYER-visible `public_memory`.
+
+    `public_memory` is what the table has actually learned about/from this NPC — shown in the
+    public card, projected to every viewer. Structurally distinct from `knowledge` (the NPC's
+    internal epistemic state, keeper-side): only facts the party heard or observed belong here,
+    never the NPC's private agenda or secrets.
+    """
+    record = await get_npc(documents, chat_key, name_or_id)
+    if record is None:
+        return None
+
+    cleaned = [fact.strip() for fact in facts if fact and fact.strip()]
+    record.public_memory = cleaned if mode == "replace" else [*record.public_memory, *cleaned]
 
     await _save_record(documents, chat_key, record)
     return record

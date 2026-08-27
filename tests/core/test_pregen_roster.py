@@ -111,3 +111,20 @@ async def test_name_matching_is_case_insensitive_and_roster_is_capped():
     for index in range(MAX_ROSTER_ENTRIES + 3):
         await pregen_add(docs, chat, _sheet(f"extra-{index}"))
     assert len(await pregen_entries(docs, chat)) == MAX_ROSTER_ENTRIES
+
+
+async def test_aliases_are_stored_and_resolve_in_pregen_find():
+    """`aliases` ride the roster entry verbatim and `.pc claim`-style references match them —
+    a CJK name's short form or English gloss resolves to the same character."""
+    store = Store()
+    docs = DocumentStore(store)
+    chat = "room-alias"
+    await pregen_add(docs, chat, _sheet("薇拉·月影"), aliases=("薇拉", "Vera Moonshadow"))
+
+    entries = await pregen_entries(docs, chat)
+    assert entries[0]["aliases"] == ("薇拉", "Vera Moonshadow")
+
+    assert (await pregen_find(docs, chat, "薇拉"))["name"] == "薇拉·月影"
+    assert (await pregen_find(docs, chat, "Vera Moonshadow"))["name"] == "薇拉·月影"
+    assert (await pregen_find(docs, chat, "薇拉·月影"))["name"] == "薇拉·月影"
+    assert await pregen_find(docs, chat, "奥尔加") is None

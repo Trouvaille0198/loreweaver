@@ -81,9 +81,8 @@ def companion_sheet_refusal(i18n: I18n, exc: CompanionSheetNotRemovedError) -> s
 
 
 def companion_sheet_name(companion: npc_records.NpcRecord) -> str:
-    """The CharacterSheet name a companion's record points at — ONE definition, because
-    the sheet's name is also its roster row's key and its identity in the documents table."""
-    return companion.stat_char or companion.name
+    """The CharacterSheet name a companion's sheet mechanics reference addresses."""
+    return npc_records.sheet_reference(companion) or companion.name
 
 
 async def retire_companion(services: Services, chat_key: str, companion: npc_records.NpcRecord) -> None:

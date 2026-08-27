@@ -181,6 +181,119 @@ creation_constraints:
 initiative:
   roll: "1d20 + {先攻修正}"
 # Presentation-only localized names for canonical keys (see coc7.yaml display note).
+runtime:
+  version: 1
+  resources:
+    pools:
+      hp:
+        role: health
+        initial: {ref: hpmax}
+        max: {ref: hpmax}
+        prominent: true
+        display: {label: {en: HP, zh: 生命值}}
+      temp_hp:
+        role: temporary_health
+        initial: 0
+        max: null
+        display: {label: {en: Temporary HP, zh: 临时生命值}}
+      hit_die_d10:
+        role: recovery_die
+        initial: 1
+        max: {ref: 等级}
+        die: 1d10
+        reset: long
+        group: hit_dice
+        display: {label: {en: Hit Dice, zh: 生命骰}}
+      spell_slot_1:
+        role: spell_slot
+        initial: 2
+        max: 2
+        reset: long
+        group: spell_slots
+        display: {label: {en: Level 1 Spell Slots, zh: 一环法术位}}
+  combat:
+    initiative: "1d20 + {先攻修正}"
+    budgets: {action: 1, bonus: 1, movement: {ref: 速度}, reaction: 1}
+    actions:
+      attack:
+        cost: {action: 1}
+        targeting: {count: 1, relationship: enemy}
+        resolution: {kind: attack, defense: armor_class}
+        damage: [{roll: "1d6", type: slashing}]
+        label: {en: Attack, zh: 攻击}
+      dash:
+        cost: {action: 1}
+        targeting: {count: 0}
+        label: {en: Dash, zh: 疾走}
+      spell:
+        cost: {action: 1}
+        targeting: {count: 1, relationship: enemy}
+        resolution: {kind: spell, defense: armor_class}
+        damage: [{roll: "1d10", type: fire}]
+        resource_costs: [{pool: spell_slot_1, amount: 1}]
+        label: {en: Spell, zh: 法术}
+      dodge:
+        cost: {action: 1}
+        targeting: {count: 0}
+        label: {en: Dodge, zh: 闪避}
+      death_save:
+        targeting: {count: 0}
+        resolution: {kind: death_save}
+        label: {en: Death Save, zh: 死亡豁免}
+    conditions:
+      concentration:
+        duration: {ref: source_duration}
+        visibility: public
+        stacking: replace
+      unconscious:
+        visibility: public
+        stacking: replace
+      dying:
+        visibility: public
+        stacking: replace
+      stabilized:
+        visibility: public
+        stacking: replace
+      dead:
+        visibility: public
+        stacking: ignore
+    damage_types: [bludgeoning, piercing, slashing, fire, cold, lightning, acid, poison, psychic, radiant, necrotic, thunder, force]
+    cover:
+      half: {roll_modifier: -2, defense_factor: 0.5}
+      three_quarters: {roll_modifier: -5, defense_factor: 0.5}
+      total: {action_block: true}
+    dying:
+      health_role: health
+      zero_hp: unconscious
+      death_status: dead
+      stable_status: stabilized
+      massive_damage: maximum_health
+      death_save: {roll: "1d20", target: 10, successes_to_stabilize: 3, failures_to_die: 3, natural_success: 20, natural_failure: 1, natural_success_double: true, natural_failure_double: true}
+      damage_while_dying: {critical_failure_increment: 2, failure_increment: 1}
+      healing: wake
+  rests:
+    short:
+      duration: 3600
+      recovery_dice: hit_die_d10
+      reset: [short]
+    long:
+      duration: 28800
+      cooldown: 86400
+      advance_time: 28800
+      reset: [short, long]
+      recover: {health: full, hit_dice: half}
+  advancement:
+    modes: [milestone, xp]
+    level_field: level
+    xp_thresholds: [0, 300, 900, 2700, 6500, 14000, 23000, 34000, 48000, 64000, 85000]
+    tracks: {}
+  encounters:
+    budget:
+      count_multipliers: {}
+      party_thresholds: {}
+    visibility:
+      health: banded
+      mechanics: keeper
 display:
   zh:
     advantage: 优势

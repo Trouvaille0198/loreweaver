@@ -1,6 +1,7 @@
 """Pure helpers for game clock time advancement."""
 
 import re
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 
 from infra.room_facets import STORAGE_ROOM_STATE, RoomStateFacet
@@ -127,6 +128,37 @@ def advance_game_time(current_time: str, delta_text: str) -> tuple[str, bool]:
         advanced = current_dt + delta
         return advanced.strftime(_TIME_FORMATS[fmt]), True
     return current_time, False
+
+
+def advance_clock_state(state: Mapping[str, object], delta_text: str) -> tuple[dict[str, object], bool]:
+    """Advance a stored clock while preserving a monotonic elapsed counter.
+
+    The formatted face is optional presentation.  Any valid non-negative delta
+    advances ``elapsed_seconds`` even when the module uses an opaque calendar
+    face that this engine cannot rewrite.
+    """
+    delta = parse_time_delta(delta_text)
+    if delta is None:
+        return dict(state), False
+    current_time = str(state.get("current_time") or "")
+    new_time, face_advanced = advance_game_time(current_time, delta_text)
+    try:
+        previous_elapsed = int(state.get("elapsed_seconds", 0) or 0)
+    except (TypeError, ValueError):
+        previous_elapsed = 0
+    elapsed_delta = max(0, int(delta.total_seconds()))
+    updated = dict(state)
+    updated["current_time"] = new_time if face_advanced else current_time
+    updated["elapsed_seconds"] = max(0, previous_elapsed) + elapsed_delta
+    return updated, True
+
+
+def elapsed_seconds(state: Mapping[str, object]) -> int:
+    """Read a malformed-tolerant, never-negative elapsed clock value."""
+    try:
+        return max(0, int(state.get("elapsed_seconds", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 # --- Room lifecycle (M23 WS1) -----------------------------------------------

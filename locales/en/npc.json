@@ -49,5 +49,7 @@
   "npc.tools.speak.mood_unset": "neutral",
   "npc.tools.update.bad_field": "❌ Unsupported field \"{field}\"; allowed: {allowed}",
   "npc.tools.update.done": "✅ Updated {name}'s {field} to: {value}",
-  "npc.tools.update.failed": "❌ Failed to update NPC: {error}"
+  "npc.tools.update.failed": "❌ Failed to update NPC: {error}",
+  "npc.tools.public_memory.done": "📌 {name} told the party (public memory: {count})",
+  "npc.tools.public_memory.failed": "❌ Failed to record public memory: {error}"
 }

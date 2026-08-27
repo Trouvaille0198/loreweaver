@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { FrameType, type ModuleVariable, type NarrativeFrame, type StateFrame, type UiBlock, type UiFrame } from "./types"
+import { FrameType, type ChronicleRecordsFrame, type ModuleVariable, type NarrativeFrame, type StateFrame, type UiBlock, type UiFrame } from "./types"
 import { packMediaMessage, unpackMediaMessage, WsClient, type WebSocketLike } from "./client"
 
 type Listener = (event: any) => void
@@ -522,6 +522,28 @@ describe("WsClient", () => {
     })
 
     expect(seen).toEqual([FrameType.AdminRoomConfig])
+  })
+
+  test("incoming chronicle_records frames are dispatched (validator regression)", async () => {
+    const { client, sockets } = createClient()
+    const seen: ChronicleRecordsFrame[] = []
+    client.on(FrameType.ChronicleRecords, (frame) => seen.push(frame as ChronicleRecordsFrame))
+
+    await client.connect("ws://example.test")
+    sockets[0].serverSend({
+      type: FrameType.ChronicleRecords,
+      summary: { text: "The party reached the harbour.", through_turn: 6 },
+      records: [
+        { id: "c00001", turn: 1, text: "They lit the lantern.", pcs: ["Vera"], scene: "cellar" },
+        { id: "c00002", turn: 2, text: "The bell tolled once.", pcs: [], scene: "" },
+      ],
+    })
+    // A fresh campaign: no summary yet (null, not absent), no records.
+    sockets[0].serverSend({ type: FrameType.ChronicleRecords, summary: null, records: [] })
+
+    expect(seen).toHaveLength(2)
+    expect(seen[0].records).toHaveLength(2)
+    expect(seen[1].summary).toBeNull()
   })
 
   test("incoming admin_skills / admin_rules / admin_generated frames (B.4a) are dispatched", async () => {

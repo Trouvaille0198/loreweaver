@@ -33,6 +33,7 @@ from typing import Any
 
 from core.condexpr import CondExprError, compile_expression
 from core.resolution import CheckResolver, compile_resolution
+from core.runtime import RuntimeSpec, parse_runtime_section
 from core.sheets import SheetSpec, parse_sheet_section
 from core.subsystems import SubsystemSpec, parse_subsystems
 from core.yaml_safety import safe_load_no_aliases
@@ -323,6 +324,9 @@ class RulePack:
     # code, so `agent.turn_checks` is what resolves it, drops an unknown one, and clamps
     # the round caps against the per-turn model-call budget.
     turn_checks: tuple[dict[str, Any], ...] = ()
+    # Optional deterministic runtime contract. Packs without it retain their
+    # check/sheet behavior and receive an explicit unsupported-runtime result.
+    runtime_spec: RuntimeSpec | None = None
 
     def resolve_skill(self, name: str) -> str | None:
         """Resolve a player-entered skill/attribute name to this pack's canonical key."""
@@ -485,11 +489,12 @@ def _build_rulepack(
             else None
         ),
         subsystems=parse_subsystems(pack_id, data.get("subsystems"), script_loader=script_loader),
-        expertise=_parse_expertise_section(pack_id, data.get("expertise")),
         commands=_parse_commands_section(pack_id, data.get("commands"), data.get("subsystems") or {}),
+        expertise=_parse_expertise_section(pack_id, data.get("expertise")),
         sheet_spec=parse_sheet_section(pack_id, data.get("sheet")),
         initiative_roll=_parse_initiative_section(pack_id, data.get("initiative")),
         turn_checks=_parse_turn_checks_section(pack_id, data.get("turn_checks")),
+        runtime_spec=parse_runtime_section(pack_id, data.get("runtime")),
     )
 
 

@@ -75,6 +75,9 @@ MAX_LORECARD_PREGENS = 8
 MAX_LORECARD_ITEMS = 32
 MAX_ITEM_REVEALS = 16
 MAX_ITEM_REVEAL_REF_CHARS = 160
+MAX_PREGEN_ALIASES = 8
+MAX_PREGEN_ALIAS_CHARS = 40
+MAX_PREGEN_ALIAS_CHARS = 40
 # Starter-gear detection. The module item pool holds things the party must FIND in the
 # world (a place, an NPC's hands) — never the investigators' personal starting gear.
 # When `origin`/`original_holder` reads like initial equipment (investigators carry
@@ -217,10 +220,12 @@ def parse_lorecard_bytes(data: bytes, filename: str = "") -> Lorecard:
 def _parse_pregens(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
     """Native pregen-cast list → normalized entries the world importer registers.
 
-    Shape: ``[{name, occupation?, background|notes?, skills?: {canonical: int}}]``.
+    Shape: ``[{name, occupation?, background|notes?, aliases?, skills?: {canonical: int}}]``.
     ``occupation`` (the character's job, e.g. "Detective" / "考古研究员") lands in the
     sheet's occupation field when the system declares one; ``background`` (the persona
-    paragraph, legacy name ``notes``) lands in the sheet's background. Sheets are built
+    paragraph, legacy name ``notes``) lands in the sheet's background; ``aliases`` (short
+    forms / translated names / the English gloss of a CJK name) ride the roster entry so
+    players and the AI can refer to the character by any of them. Sheets are built
     downstream from the target system's DEFAULTS plus these overrides — deterministic,
     no LLM — so a module ships a claimable multi-investigator cast."""
     if raw is None:
@@ -265,10 +270,21 @@ def _parse_pregens(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
                     skills[str(key).strip()[:60]] = int(value)
                 except (TypeError, ValueError):
                     warnings.append(f"pregens[{index}].skills.{key}: ignored (not an integer)")  # i18n-exempt: author diagnostic, wrapped in a localized import summary
-        elif skills_raw is not None:
-            warnings.append(f"pregens[{index}].skills: ignored (must be a mapping)")  # i18n-exempt: author diagnostic, wrapped in a localized import summary
+        aliases: list[str] = []
+        aliases_raw = item.get("aliases")
+        if isinstance(aliases_raw, str):
+            aliases_raw = [aliases_raw]
+        if isinstance(aliases_raw, list):
+            for alias in aliases_raw:
+                clean = _text(alias).strip()[:MAX_PREGEN_ALIAS_CHARS]
+                if clean and clean != name and clean not in aliases:
+                    aliases.append(clean)
+                if len(aliases) >= MAX_PREGEN_ALIASES:
+                    break
+        elif aliases_raw is not None:
+            warnings.append(f"pregens[{index}].aliases: ignored (must be a list of strings)")  # i18n-exempt: author diagnostic, wrapped in a localized import summary
         avatar = str(item.get("avatar") or "").strip()[:200]
-        out.append({"name": name, "blurb": blurb, "occupation": occupation, "notes": notes, "skills": skills, "avatar": avatar})
+        out.append({"name": name, "blurb": blurb, "occupation": occupation, "notes": notes, "skills": skills, "aliases": tuple(aliases), "avatar": avatar})
     return tuple(out)
 
 
@@ -446,6 +462,19 @@ def _parse_entry(raw: Any, index: int, label: str, warnings: list[str]) -> dict[
     if condition:
         content = f"@@if {condition}\n{content}"
 
+    aliases_raw = raw.get("aliases")
+    if isinstance(aliases_raw, str):
+        aliases_raw = [aliases_raw]
+    aliases: list[str] = []
+    if isinstance(aliases_raw, list):
+        for alias in aliases_raw:
+            clean = _text(alias).strip()[:MAX_PREGEN_ALIAS_CHARS]
+            if clean and clean not in aliases:
+                aliases.append(clean)
+            if len(aliases) >= MAX_PREGEN_ALIASES:
+                break
+    elif aliases_raw is not None:
+        warnings.append(f"{where}.aliases: ignored (must be a list of strings)")  # i18n-exempt: author diagnostic, wrapped in a localized import summary
     secondary_keys = _text_list(raw.get("secondary_keys"))
     logic = _text(raw.get("selective_logic")).strip()
     # The optional stable entry id — the cross-pack reference handle
@@ -462,6 +491,7 @@ def _parse_entry(raw: Any, index: int, label: str, warnings: list[str]) -> dict[
         # portraits onto the worldbook entry they depict). Carried verbatim into the
         # room's lore document via `core.worldbook.LoreEntry.image`.
         "image": _text(raw.get("image")).strip(),
+        "aliases": tuple(aliases),
         # V2's gate flag, stated explicitly rather than left to the importer's default —
         # the same thing the studio's SillyTavern export writes.
         "selective": bool(secondary_keys),

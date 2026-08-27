@@ -166,8 +166,10 @@ class CastCommands:
                     location=record.location or "-",
                 ),
             ]
-            if record.stat_char:
-                lines.append(ctx.i18n.t("commands.cast.show.sheet", name=record.stat_char))
+            mechanics_ref = npc_records.mechanics_reference(record)
+            sheet_name = npc_records.sheet_reference(record)
+            if mechanics_ref:
+                lines.append(ctx.i18n.t("commands.cast.show.sheet", name=sheet_name or mechanics_ref))
             if record.persona:
                 lines.append(ctx.i18n.t("commands.cast.show.persona", persona=record.persona))
             if record.secret_agenda:

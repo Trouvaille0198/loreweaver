@@ -46,6 +46,10 @@ def _entry(doc_id: str, data: dict[str, Any]) -> dict[str, Any]:
         "id": doc_id,
         "name": str(data.get("name", "")),
         "system": str(data.get("system", "")),
+        # Short forms / translated names / English glosses the character answers to —
+        # `.pc claim` accepts them, and the AI can cite them. Defaults to () for
+        # entries written before aliases existed.
+        "aliases": tuple(data.get("aliases") or ()),
         "source": str(data.get("source", "")),
         "blurb": str(data.get("blurb", "")),
         "claimed_by": str(data.get("claimed_by", "")),
@@ -63,18 +67,21 @@ async def pregen_entries(documents: Any, chat_key: str) -> list[dict[str, Any]]:
 
 
 async def pregen_find(documents: Any, chat_key: str, ref: str) -> dict[str, Any] | None:
-    """Resolve a player-supplied reference (name or id, case-insensitive) to an entry."""
+    """Resolve a player-supplied reference (name, alias, or id, case-insensitive) to an entry."""
     wanted = slug_for(ref)
     if not wanted:
         return None
     for entry in await pregen_entries(documents, chat_key):
         if entry["id"] == wanted or slug_for(entry["name"]) == wanted:
             return entry
+        for alias in entry.get("aliases") or ():
+            if slug_for(alias) == wanted:
+                return entry
     return None
 
 
 async def pregen_add(
-    documents: Any, chat_key: str, sheet: CharacterSheet, *, source: str = "", blurb: str = ""
+    documents: Any, chat_key: str, sheet: CharacterSheet, *, source: str = "", blurb: str = "", aliases: tuple[str, ...] = ()
 ) -> dict[str, Any] | None:
     """Register `sheet` as a claimable pregen (pristine copy stored verbatim).
 
@@ -94,6 +101,7 @@ async def pregen_add(
         "system": sheet.system,
         "source": str(source)[:200],
         "blurb": str(blurb)[:200],
+        "aliases": tuple(a for a in aliases if str(a).strip())[:8],
         "claimed_by": str(existing.data.get("claimed_by", "")) if existing is not None else "",
         "claimed_name": str(existing.data.get("claimed_name", "")) if existing is not None else "",
         "sheet": sheet.to_dict(),

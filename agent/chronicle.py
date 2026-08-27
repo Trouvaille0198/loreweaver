@@ -101,6 +101,7 @@ __all__ = [
     "advance_chronicle_turn",
     "build_chronicle_sections",
     "chronicle_turn",
+    "chronicle_records_payload",
     "maybe_fold_chronicle",
     "recall_folded_entries",
     "record_entry",
@@ -1009,6 +1010,37 @@ async def render_recap(services: Services, chat_key: str, i18n: I18n) -> str | N
     except Exception:  # noqa: BLE001
         logger.debug("chronicle recap render failed", exc_info=True)
         return None
+
+
+async def chronicle_records_payload(services: Services, chat_key: str) -> dict[str, Any]:
+    """The structured catch-up feed behind the `list_chronicle` wire frame: the
+    campaign summary + EVERY chronicle record, all through PLAYER projections,
+    so keeper annotations and fold bookkeeping structurally cannot appear (the
+    same contract `render_recap` keeps — `.recap` renders a trimmed TEXT view
+    of the same documents; this payload feeds client catch-up browsers)."""
+    summary_view = await services.documents.get_view(
+        chat_key, CAMPAIGN_SUMMARY_DOC_TYPE, CAMPAIGN_SUMMARY_ID, PLAYER_VIEWER
+    )
+    summary: dict[str, Any] | None = None
+    if summary_view and str(summary_view.get("text", "")).strip():
+        summary = {
+            "text": str(summary_view["text"]).strip(),
+            "through_turn": int(summary_view.get("through_turn") or 0),
+        }
+
+    pairs = await services.documents.list_views(chat_key, CHRONICLE_DOC_TYPE, PLAYER_VIEWER)
+    records = [
+        {
+            "id": doc.id,
+            "turn": int(view.get("turn") or 0),
+            "text": str(view.get("text", "")).strip(),
+            "pcs": [str(pc) for pc in view.get("pcs") or []],
+            "scene": str(view.get("scene") or ""),
+        }
+        for doc, view in pairs
+    ]
+    records.sort(key=lambda record: (record["turn"], record["id"]))
+    return {"type": "chronicle_records", "summary": summary, "records": records}
 
 
 # --- Room lifecycle (M23 WS1) -----------------------------------------------

@@ -679,6 +679,7 @@ class CharcardTools:
                         sheet,
                         source=source_id,
                         blurb=str(spec.get("blurb", "")),
+                        aliases=tuple(spec.get("aliases") or ()),
                     )
                     if entry is not None:
                         desired_pregen_ids.add(str(entry["id"]))
