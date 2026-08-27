@@ -601,7 +601,11 @@ class CharacterTools:
 Args:
     character: target character name (any member of the party)
     item_id: the item's catalog template name (must exist in the room's item catalog)
-    qty: how many to grant (default 1; same-owner same-name instances merge)
+    qty: how many to grant (default 1; same-owner same-name instances merge). ALWAYS
+        write the quantity HERE — never embed the count in the item name. The name is
+        the plain template name (e.g. "金币"), never a display string like "金币×300"
+        or "金币 ×300" (the inventory display renders the count as a suffix; the stored
+        name never contains it).
     common: set True for a GENERIC everyday good (coins, rations, arrows — the same
         thing no matter which scenario it came from). A common item merges into the
         holder's existing same-name instance (quantity stacks) instead of refusing
@@ -657,7 +661,10 @@ Args:
     name: the item's name
     description: short description of what it is (optional)
     bonus: optional small mechanical edge, format "stat=value,stat=value" (e.g. "spot_hidden=1" or "侦查=1"); each stat capped at +/-2, total at 4 points; names resolve to the character's real skills/attributes (any spelling or alias works); leave empty for narrative-only items
-    qty: how many to grant (default 1; same-owner same-name instances merge)
+    qty: how many to grant (default 1; same-owner same-name instances merge). ALWAYS
+        write the quantity HERE — never embed the count in the item name. The name is
+        the plain item name (e.g. "金币"), never a display string like "金币×300" or
+        "金币 ×300".
 
 Rules:
 - Improvised items are a LIGHT channel: narrative trinkets, small rewards, consumables. NEVER use it for strong gear or scenario-critical artifacts - those must exist in the room's catalog (use grant_item).
@@ -846,6 +853,9 @@ Rules:
             instance and duplicates collapse (e.g. the player says "金币" and "50枚金币"
             are the same thing; pass item="50枚金币", merge_into="金币"). Any other
             fields you pass apply to the merged entry.
+        item/merge_into take PLAIN stored names only (e.g. "金币") — never display
+            strings that carry the count ("金币 ×300", "金币×300"); the quantity lives
+            in the instance's quantity field, never in the name.
         Use when the player says an item's description/effect/status is wrong or asks to
         combine duplicate/equivalent entries; narrate the result."""
         i18n = self.services.i18n.with_locale(ctx.locale)
@@ -858,21 +868,6 @@ Rules:
             owner = await self.services.characters.get_character_owner(ctx.chat_key, character)
             if not owner:
                 return i18n.t("kp_tools.item.character_not_found", name=character)
-
-            def _strip_qty(text: str) -> str:
-                """'金币 ×300' / '金币×300' / '金币(300)' -> '金币'. The inventory
-                display renders quantity as a suffix, and the model copies that
-                display name into lookups — tolerate the suffix so '金币×300' finds
-                the instance actually named '金币'."""
-                import re as _re
-
-                cleaned = text.strip()
-                cleaned = _re.sub(r"[（(]?\s*[×xX*]\s*\d+[）)]?$", "", cleaned)
-                cleaned = _re.sub(r"[（(]\d+[）)]$", "", cleaned)
-                return cleaned.strip()
-
-            def _fold(text: str) -> str:
-                return _strip_qty(text).casefold()
 
             # Resolve the bonus spec ONCE in async context (the sheet lookup is awaitable).
             bonus_map: dict | None = None
@@ -906,14 +901,14 @@ Rules:
                 from agent.items import instances_for_owner
 
                 instances = await instances_for_owner(self.services.documents, ctx.chat_key, character)
-                folded = _fold(item)
-                srcs = [d for d in instances if _fold(str(d.data.get("name", ""))) == folded]
+                folded = item.casefold()
+                srcs = [d for d in instances if str(d.data.get("name", "")).casefold() == folded]
                 target_name = merge_into
-                target_folded = _fold(target_name)
+                target_folded = target_name.casefold()
                 src_ids = {s.id for s in srcs}
                 targets = [
                     d for d in instances
-                    if _fold(str(d.data.get("name", ""))) == target_folded and d.id not in src_ids
+                    if str(d.data.get("name", "")).casefold() == target_folded and d.id not in src_ids
                 ]
                 if targets:
                     target = targets[0]
@@ -947,8 +942,6 @@ Rules:
                 return i18n.t("kp_tools.item.merged", character=character, item=target_name, qty=total)
 
             doc = await find_instance(self.services.documents, ctx.chat_key, character, item)
-            if doc is None and _strip_qty(item) != item:
-                doc = await find_instance(self.services.documents, ctx.chat_key, character, _strip_qty(item))
             if doc is None:
                 return i18n.t("kp_tools.item.not_found", name=character, item=item)
             data = dict(doc.data)
