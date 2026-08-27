@@ -48,6 +48,7 @@ from agent.services import Services
 from core.pack import DEV_PACK_HOMES, MANIFEST_NAME, parse_manifest_text
 from core.yaml_safety import safe_load_no_aliases
 from gateway.imagegen import allow_imagegen_request, refund_imagegen_request
+from infra.room_facets import STORAGE_ROOM_STATE, RoomStateFacet
 from gateway.panels import installed_pack_homes
 from infra.file_permissions import atomic_write_private
 from infra.media_store import ALLOWED_IMAGE_MIMES, MediaStore
@@ -856,3 +857,19 @@ async def drop_pregen_job(services: Any, room: str, name: str) -> None:
     kept = [j for j in jobs if j.get("subject") != name]
     if len(kept) != len(jobs):
         await _save_room_pregen_jobs(services, room, kept)
+
+
+
+# --- Room lifecycle (M23 WS1) -----------------------------------------------
+# The pregen portrait-job queue is scenario-bound module media (the same family as
+# `module_media_index`): it must leave with `reset all` — without a facet claim it
+# survives every reset, stranding the old adventure's portrait jobs.
+ROOM_FACETS = (
+    RoomStateFacet(
+        name="pregen_media_jobs",
+        owner="gateway.module_media",
+        reset_scope="all",
+        state_keys=frozenset({_PREGEN_JOBS_KEY}),
+        storages=frozenset({STORAGE_ROOM_STATE}),
+    ),
+)

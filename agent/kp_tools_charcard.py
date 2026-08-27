@@ -352,7 +352,9 @@ class CharcardTools:
             full_card, _lorecard = _parse_any_card_file(host_path)
             card, world = split_card(full_card)
             module_context = await _module_summary(self._services, ctx.chat_key)
-            sheet = await build_sheet_from_persona(self._services, card, system, module_context=module_context)
+            sheet = await build_sheet_from_persona(
+                self._services, card, system, module_context=module_context, chat_key=ctx.chat_key
+            )
             final_name = name.strip() or card.name or sheet.name
             sheet.name = final_name
             sheet, violations = validate_sheet(sheet, system)
@@ -763,12 +765,12 @@ class CharcardTools:
             # the box — its pacing/rules skill enabled — not require the keeper to remember
             # `.skill enable <id>`. Only when the card comes from an installed pack.
             skill_line = ""
-            prior_owned_skills = (
-                set(previous.get("enabled_skills") or []) if same_source and previous else set()
-            )
-            prior_owned_panels = (
-                set(previous.get("enabled_panel_packs") or []) if same_source and previous else set()
-            )
+            # The skills/panels the PREVIOUS module auto-enabled leave with it: read them
+            # from the module being replaced (whether or not it is the same source — a
+            # module SWAP must also turn the old adventure's auto-enabled skills/panels
+            # off; the `same_source`-only guard stranded them, the observed bug).
+            prior_owned_skills = set(previous.get("enabled_skills") or []) if previous else set()
+            prior_owned_panels = set(previous.get("enabled_panel_packs") or []) if previous else set()
             desired_skills: list[str] = []
             desired_panels: list[str] = []
             from core.pack import pack_home_of
@@ -996,7 +998,9 @@ class CharcardTools:
         """A rule-legal, validated sheet from the split CHARACTER half (same pipeline as a
         player import: persona-biased build + rulepack validation + PNG avatar)."""
         module_context = await _module_summary(self._services, ctx.chat_key)
-        sheet = await build_sheet_from_persona(self._services, character, system, module_context=module_context)
+        sheet = await build_sheet_from_persona(
+            self._services, character, system, module_context=module_context, chat_key=ctx.chat_key
+        )
         sheet.name = character.name or sheet.name
         sheet, _violations = validate_sheet(sheet, system)
         await _register_png_avatar(self._services, ctx, host_path, sheet)

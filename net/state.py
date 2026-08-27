@@ -597,7 +597,23 @@ async def _clues(services: Services, chat_key: str) -> list[dict[str, Any]] | No
     except Exception:
         view = None
     clues = (view or {}).get("clues")
-    return clues if isinstance(clues, list) and clues else None
+    if not (isinstance(clues, list) and clues):
+        return None
+    # Clue log is shared across the room's scenario switches; each entry carries the
+    # module it was discovered in, and the projection shows only the CURRENT module's
+    # clues (sandbox rooms with no module keep every entry).
+    try:
+        from agent.module_lifecycle import active_module
+
+        active = await active_module(services, chat_key)
+        module = str(active.get("pack_id") or active.get("source_id") or "") if active else ""
+    except Exception:
+        module = ""
+    if module:
+        clues = [c for c in clues if str(c.get("module") or "") == module]
+        if not clues:
+            return None
+    return clues
 
 
 async def _scene_image(services: Services, chat_key: str, name: str) -> dict[str, Any] | None:

@@ -51,6 +51,7 @@ async def reveal_clue(
     keys: list[str] | None = None,
     image: str = "",
     found_turn: int = 0,
+    module: str = "",
 ) -> bool:
     """Register one discovered clue (idempotent by title). Snapshots the worldbook
     entry at discovery time — a later module re-import cannot rewrite what the
@@ -67,6 +68,7 @@ async def reveal_clue(
         "content": (content or "").strip()[:4000],
         "image": (image or "").strip()[:200],
         "found_turn": int(found_turn or 0),
+        "module": str(module or "").strip()[:120],
     }
     await documents.put_singleton(chat_key, CLUE_LOG_ID, {"clues": [*existing, entry]})
     return True

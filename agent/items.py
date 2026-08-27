@@ -161,12 +161,18 @@ async def reveal_linked_clues(services: Any, ctx: Any, template: dict) -> None:
     if not refs:
         return
     from agent.clue_log import find_worldbook_clue, reveal_clue
+    from agent.tool_trace import active_module_id
 
     for ref in refs:
         try:
             entry = await find_worldbook_clue(services.worldbook, ctx.chat_key, ref)
             if entry is not None:
-                await reveal_clue(services.documents, ctx.chat_key, **entry)
+                await reveal_clue(
+                    services.documents,
+                    ctx.chat_key,
+                    module=await active_module_id(services, ctx.chat_key),
+                    **entry,
+                )
                 continue
             # ModuleInitializer stores text modules in a separate keeper/player pool.
             # Import lazily to keep the item helper independent from the KP tool graph.
@@ -432,12 +438,21 @@ async def set_archived(
     return await documents.put(chat_key, "item", instance_id, data)
 
 
+def _acquired_at(doc: Document) -> float:
+    """An item instance's acquisition time — the document's creation stamp
+    (``meta.created``, epoch seconds). Holdings order newest-first; an instance
+    with no stamp (legacy row) sorts last."""
+    created = doc.meta.get("created")
+    return float(created) if isinstance(created, (int, float)) else 0.0
+
+
 def render_held_items(items: list[Document]) -> list[str]:
     """Render a character's held items as display strings (for the sheet's
     `equipment` field, which the wire/roster surfaces to clients). `secret` items
-    are omitted — they are keeper-side only and never appear in player-facing lists."""
+    are omitted — they are keeper-side only and never appear in player-facing lists.
+    Holdings are ordered by acquisition time, newest first."""
     out: list[str] = []
-    for doc in items:
+    for doc in sorted(items, key=_acquired_at, reverse=True):
         data = doc.data
         if data.get("secret"):
             continue
@@ -476,9 +491,10 @@ _ITEM_VIEW_FIELDS = (
 
 def render_item_views(items: list[Document]) -> list[dict[str, Any]]:
     """Structured, player-safe item views for a sheet's `items` field (which the wire/
-    roster surfaces to clients for an item-detail section). `secret` items are omitted."""
+    roster surfaces to clients for an item-detail section). `secret` items are omitted.
+    Holdings are ordered by acquisition time, newest first."""
     out: list[dict[str, Any]] = []
-    for doc in items:
+    for doc in sorted(items, key=_acquired_at, reverse=True):
         data = doc.data
         if data.get("secret"):
             continue

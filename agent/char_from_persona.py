@@ -55,10 +55,11 @@ async def build_sheet_from_persona(
     *,
     module_context: str = "",
     creation: str = "",
+    chat_key: str = "",
 ) -> CharacterSheet:
     manager = _character_manager_from_services(services)
     pack = load_rulepack(system)  # unknown systems raise ValueError with a clear message
-    concept = await _ask_concept(services, card, pack, module_context)
+    concept = await _ask_concept(services, card, pack, module_context, chat_key=chat_key)
     sheet = manager.generate_character(pack.system, card.name or None)
     sheet.name = card.name or sheet.name
 
@@ -85,10 +86,13 @@ async def build_sheet_from_description(
     name: str = "",
     module_context: str = "",
     creation: str = "",
+    chat_key: str = "",
 ) -> CharacterSheet:
     text = description.strip()
     card = CharacterCard(name=name.strip(), description=text, personality=text)
-    return await build_sheet_from_persona(services, card, system, module_context=module_context, creation=creation)
+    return await build_sheet_from_persona(
+        services, card, system, module_context=module_context, creation=creation, chat_key=chat_key
+    )
 
 
 def _character_manager_from_services(services: Any) -> CharacterManager:
@@ -104,8 +108,20 @@ async def _ask_concept(
     card: CharacterCard,
     pack: RulePack,
     module_context: str,
+    *,
+    chat_key: str = "",
 ) -> dict[str, Any]:
-    llm = getattr(services, "llm", None)
+    # The ROOM's own LLM lane, not the global `services.llm`: the per-room
+    # provider (`.model`/runtime_config) is what actually carries credentials —
+    # the global default can be an unconfigured stub, and a silently failing
+    # concept call used to ship sheets with no class/race/backstory at all.
+    if chat_key:
+        try:
+            llm = await services.main_llm(chat_key)
+        except Exception:
+            llm = getattr(services, "llm", None)
+    else:
+        llm = getattr(services, "llm", None)
     if llm is None:
         return {}
 

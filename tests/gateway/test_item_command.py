@@ -281,6 +281,38 @@ async def test_item_archive_shelves_item_out_of_play():
     assert "Bronze Mirror" in archived_inv
 
 
+async def test_item_views_order_newest_first():
+    """Item views order holdings by acquisition time (document creation stamp),
+    newest first, so the equipment-details section reads latest first; a row with
+    no stamp sorts last."""
+    from agent.items import render_held_items, render_item_views
+    from core.documents import Document
+
+    def instance(name: str, created: float) -> Document:
+        return Document(
+            id=name,
+            type="item",
+            schema_version=1,
+            data={"name": name, "kind": "misc", "slot": "", "quantity": 1},
+            meta={"created": created},
+        )
+
+    older = instance("Torch", 100.0)
+    newer = instance("Sword", 200.0)
+    newest = instance("Gem", 300.0)
+    legacy = Document(
+        id="Relic",
+        type="item",
+        schema_version=1,
+        data={"name": "Relic", "kind": "misc", "slot": "", "quantity": 1},
+        meta={},
+    )
+
+    views = render_item_views([older, newest, legacy, newer])
+    assert [v["name"] for v in views] == ["Gem", "Sword", "Torch", "Relic"]
+    assert render_held_items([older, newest, legacy, newer]) == ["Gem", "Sword", "Torch", "Relic"]
+
+
 async def test_item_unarchive_restores_item_to_active_bag():
     services = _services()
     router = CommandRouter(services)

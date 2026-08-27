@@ -520,6 +520,7 @@ class SheetCommands:
             ctx.services,
             request.description,
             system,
+            chat_key=ctx.chat_key,
             name=request.name,
         )
         character, violations = validate_sheet(character, system, initialize_vitals=True)
@@ -684,6 +685,7 @@ class SheetCommands:
                 ctx.services,
                 description or name,
                 system,
+                chat_key=ctx.chat_key,
                 name=name,
                 module_context=module_context,
                 creation="pregen",

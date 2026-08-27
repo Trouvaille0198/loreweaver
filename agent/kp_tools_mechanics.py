@@ -37,6 +37,7 @@ import json
 
 from agent.clue_log import find_worldbook_clue as _find_clue
 from agent.clue_log import reveal_clue as _log_clue
+from agent.tool_trace import active_module_id
 from agent.context import AgentCtx
 from agent.items import (
     aggregate_equipped_bonuses,
@@ -898,7 +899,12 @@ Rules:
             entry = await _find_clue(self.services.worldbook, ctx.chat_key, name)
             if entry is None:
                 return i18n.t("kp_tools.clue.not_found", name=name)
-            added = await _log_clue(self.services.documents, ctx.chat_key, **entry)
+            added = await _log_clue(
+                self.services.documents,
+                ctx.chat_key,
+                module=await active_module_id(self.services, ctx.chat_key),
+                **entry,
+            )
             if not added:
                 return i18n.t("kp_tools.clue.already_added", name=entry["title"])
             return i18n.t("kp_tools.clue.revealed", name=entry["title"])

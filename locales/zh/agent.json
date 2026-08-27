@@ -94,5 +94,6 @@
   "kp_tools.rest.usage": "休息类型必须是 short 或 long。",
   "agent.forge.pack_module_levels_requirement": "本模组直接使用 D&D 5e 规则。recommended_levels 是必填字段：填写适合游玩此剧本的角色等级范围（如 \"1-3\"、\"5-10\"、\"17-20\"），这是剧本的难度标识。",
   "agent.forge.module_difficulty_guidance": "模组难度：{difficulty}。按难度设计本模组的\"环境与挑战\"：\n- easy（轻松）：环境温和宜居，威胁弱小且数量少，资源（补给/休息点/药水）充足，容错高，适合新手团。\n- standard（标准）：常规挑战，接近官方冒险的默认强度。\n- hard（困难）：环境险恶（恶劣地形、污染、危险生物栖息），威胁强大（怪物挑战等级偏高、数量偏多），资源紧缺（休息点/补给稀少），存在时间压力（倒计时、追击、环境恶化）。\n- deadly（极限）：环境致命（近乎不可生存），威胁极高且铺天盖地，资源几乎为零，一步失误即灭团。\n难度是设计指引，不是口号：场景险恶度、威胁数值草案、资源分布、陷阱密度、时间压力都要体现所选难度。",
-  "agent.forge.module_levels_requirement": "本模组针对 {levels} 级角色设计。请在文档开头明确声明推荐等级范围，并让模组中的威胁与资源分布与该等级匹配。"
+  "agent.forge.module_levels_requirement": "本模组针对 {levels} 级角色设计。请在文档开头明确声明推荐等级范围，并让模组中的威胁与资源分布与该等级匹配。",
+  "agent.forge.pack_module_pregen_identity": "本模组使用有等级的系统：pregens 的每个角色必须填写身份字段 —— character_class（职业，用规范 id，如 wizard/bard/rogue/fighter/cleric/druid/monk/ranger/paladin/sorcerer/warlock/artificer）和 race（种族，如 human/elf/dwarf/halfling/gnome/half-orc/tiefling；无法从描述确定时默认 human）。从角色的 background/occupation/名字推断，绝不可留空。"
 }
