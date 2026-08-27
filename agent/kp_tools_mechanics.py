@@ -920,6 +920,62 @@ Rules:
             return i18n.t("kp_tools.item.failed", error=str(exc))
 
     @tool
+    async def update_item(self, ctx: AgentCtx, character: str, item: str, description: str = "", effect: str = "", bonus: str = "") -> str:
+        """Update a held item's DESCRIPTION (flavor text), EFFECT line (what it does in
+        play) and/or BONUS (mechanical edge, format "stat=value,stat=value" — replaces
+        the existing bonus). Only the fields you pass are changed; pass "" to leave one
+        untouched. Use when the player says an item's description or effect is wrong or
+        has changed (e.g. a potion now heals more, a key was mislabeled); narrate the
+        update. Bonus changes recompute the character's equipped bonuses."""
+        i18n = self.services.i18n.with_locale(ctx.locale)
+        try:
+            character = (character or "").strip()
+            item = (item or "").strip()
+            if not character or not item:
+                return i18n.t("kp_tools.item.bad_args")
+            owner = await self.services.characters.get_character_owner(ctx.chat_key, character)
+            if not owner:
+                return i18n.t("kp_tools.item.character_not_found", name=character)
+            doc = await find_instance(self.services.documents, ctx.chat_key, character, item)
+            if doc is None:
+                return i18n.t("kp_tools.item.not_found", name=character, item=item)
+            data = dict(doc.data)
+            changed: list[str] = []
+            if description.strip():
+                data["description"] = description.strip()
+                changed.append(i18n.t("kp_tools.item.field_description"))
+            if effect.strip():
+                data["effect"] = effect.strip()
+                changed.append(i18n.t("kp_tools.item.field_effect"))
+            bonus_changed = False
+            if bonus.strip():
+                try:
+                    bonus_map = parse_bonus_spec(bonus)
+                except ValueError:
+                    return i18n.t("kp_tools.item.improv_invalid_value")
+                error = validate_improvised_bonus(bonus_map)
+                if error:
+                    return i18n.t(f"kp_tools.item.improv_{error}")
+                sheet = await self.services.characters.get_character(owner, ctx.chat_key, character)
+                pack = await _sheet_pack(self.services, ctx, sheet) if has_character(sheet) else None
+                bonus_map, _unresolved = canonicalize_bonus_keys(bonus_map, pack)
+                data["bonus"] = bonus_map
+                data["effect"] = ", ".join(f"{k} {v:+d}" for k, v in bonus_map.items()) or data.get("effect", "")
+                bonus_changed = True
+                changed.append(i18n.t("kp_tools.item.field_bonus"))
+            if not changed:
+                return i18n.t("kp_tools.item.updated_nothing")
+            await self.services.documents.put(ctx.chat_key, "item", doc.id, data)
+            if bonus_changed:
+                await _refresh_character_bonuses(self.services, ctx, character, owner)
+            changed_text = "（" + "、".join(changed) + "）" if ctx.locale.startswith("zh") else " (" + ", ".join(changed) + ")"
+            return i18n.t("kp_tools.item.updated", character=character, item=item, changed=changed_text)
+        except CharacterDataError:
+            return i18n.t("kp_tools.character.data_error")
+        except Exception as exc:
+            return i18n.t("kp_tools.item.failed", error=str(exc))
+
+    @tool
     async def use_item(self, ctx: AgentCtx, character: str, item: str) -> str:
         """Consume one unit of a held item (drinks a potion, spends a token):
         quantity decreases and the item disappears at zero. Args: character,
