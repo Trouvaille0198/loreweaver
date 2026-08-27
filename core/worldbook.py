@@ -99,6 +99,10 @@ class LoreEntry:
     # Rides the document verbatim so a module's bound images survive re-import and project to
     # the keeper's lore view; empty when the entry has no bound image.
     image: str = ""
+    # Explicit alternate names (short forms, titles, other-language spellings) this entry's
+    # subject answers to — NPC mention highlighting and name resolution consume them; never
+    # derived from `keys` (keys hold trigger words, aliases hold names).
+    aliases: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -126,6 +130,7 @@ class LoreEntry:
             "group": self.group,
             "group_weight": self.group_weight,
             "image": self.image,
+            "aliases": list(self.aliases),
         }
 
     @classmethod
@@ -162,6 +167,7 @@ class LoreEntry:
             group=str(data.get("group") or ""),
             group_weight=max(1, _coerce_entry_int(data.get("group_weight"), 100)),
             image=str(data.get("image") or ""),
+            aliases=[str(a) for a in (data.get("aliases") or []) if str(a).strip()],
         )
 
 
@@ -905,8 +911,12 @@ def _normalize_import_entry(raw: dict[str, Any], *, source: str, index: int, is_
             "group": raw.get("group", "") or "",
             "group_weight": raw.get("groupWeight", raw.get("group_weight", 100)) or 100,
             "position": position,
+            # The illustration asset filename forge binds onto the entry it
+            # depicts (scene/NPC/clue portraits); the keeper's lore view and
+            # the NPC import chain resolve it to the media blob.
+            "image": str(raw.get("image") or "").strip(),
         }
-    )
+     )
 
 
 # --- Room lifecycle (M23 WS1) -----------------------------------------------

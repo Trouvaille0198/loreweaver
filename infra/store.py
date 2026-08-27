@@ -11,9 +11,10 @@ here.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import sqlite3
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -277,6 +278,202 @@ class Store:
                 conn.rollback()
                 raise
 
+    @staticmethod
+    def _json_value(value: Any, *, default: str = "{}") -> str:
+        if isinstance(value, str):
+            return value
+        if value is None:
+            return default
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+    @staticmethod
+    def _document_matches(row: tuple | None, expected: Mapping[str, Any] | Any | None) -> bool:
+        """Compare only fields supplied by a document CAS expectation."""
+        if expected is None:
+            return row is None
+        if row is None:
+            return False
+        if not isinstance(expected, Mapping):
+            expected = {
+                name: getattr(expected, name)
+                for name in ("room", "type", "id", "schema_version", "data", "meta", "grants", "seq")
+                if hasattr(expected, name)
+            }
+        actual = {
+            "room": row[0],
+            "type": row[1],
+            "id": row[2],
+            "schema_version": row[3],
+            "data": row[4],
+            "meta": row[5],
+            "grants": row[6],
+            "seq": row[7],
+        }
+        return all(actual.get(str(key)) == value for key, value in expected.items())
+
+    async def compare_and_swap_room(
+        self,
+        room: str,
+        *,
+        expected_state: Iterable[tuple[str, str | None]] = (),
+        state_updates: Iterable[tuple[str, str | None]] = (),
+        state_deletes: Iterable[str] = (),
+        expected_documents: Iterable[tuple[str, str, Mapping[str, Any] | Any | None]] = (),
+        document_updates: Iterable[Mapping[str, Any]] = (),
+        document_deletes: Iterable[tuple[str, str]] = (),
+    ) -> bool:
+        """Commit room-state and document changes under one compare-and-swap.
+
+        All expectations are checked while a single ``BEGIN IMMEDIATE`` transaction
+        owns the store lock.  A false return means no row was changed.  Updates may
+        carry JSON-compatible ``data``/``meta``/``grants`` values; existing
+        insertion sequence numbers are preserved when ``seq`` is omitted.
+        """
+        expected_state_items = list(expected_state)
+        state_update_items = list(state_updates)
+        state_delete_items = list(dict.fromkeys(str(key) for key in state_deletes))
+        expected_document_items = list(expected_documents)
+        document_update_items = [dict(row) for row in document_updates]
+        document_delete_items = list(dict.fromkeys((str(kind), str(doc_id)) for kind, doc_id in document_deletes))
+        if not (
+            expected_state_items
+            or state_update_items
+            or state_delete_items
+            or expected_document_items
+            or document_update_items
+            or document_delete_items
+        ):
+            return True
+
+        async with self._lock:
+            conn = self._ensure_conn()
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                for key, expected_value in expected_state_items:
+                    row = conn.execute(
+                        "SELECT value FROM room_state WHERE room = ? AND key = ?", (room, str(key))
+                    ).fetchone()
+                    if (row[0] if row is not None else None) != expected_value:
+                        conn.rollback()
+                        return False
+
+                for doc_type, doc_id, expected in expected_document_items:
+                    row = conn.execute(
+                        "SELECT room, type, id, schema_version, data, meta, grants, seq"
+                        " FROM documents WHERE room = ? AND type = ? AND id = ?",
+                        (room, str(doc_type), str(doc_id)),
+                    ).fetchone()
+                    if not self._document_matches(row, expected):
+                        conn.rollback()
+                        return False
+
+                for doc_type, doc_id in document_delete_items:
+                    conn.execute(
+                        "DELETE FROM documents WHERE room = ? AND type = ? AND id = ?",
+                        (room, doc_type, doc_id),
+                    )
+
+                for row in document_update_items:
+                    doc_type = str(row.get("type") or "")
+                    doc_id = str(row.get("id") or "")
+                    if not doc_type or not doc_id:
+                        raise ValueError("document CAS update needs type and id")  # i18n-exempt: internal validation diagnostic
+                    existing = conn.execute(
+                        "SELECT seq FROM documents WHERE room = ? AND type = ? AND id = ?",
+                        (room, doc_type, doc_id),
+                    ).fetchone()
+                    if "seq" in row:
+                        seq = int(row["seq"])
+                    elif existing is not None:
+                        seq = int(existing[0])
+                    else:
+                        seq = int(
+                            conn.execute(
+                                "SELECT COALESCE(MAX(seq) + 1, 0) FROM documents WHERE room = ? AND type = ?",
+                                (room, doc_type),
+                            ).fetchone()[0]
+                        )
+                    conn.execute(
+                        "INSERT OR REPLACE INTO documents"
+                        " (room, type, id, schema_version, data, meta, grants, seq)"
+                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                        (
+                            room,
+                            doc_type,
+                            doc_id,
+                            int(row.get("schema_version", 1) or 1),
+                            self._json_value(row.get("data"), default="{}"),
+                            self._json_value(row.get("meta"), default="{}"),
+                            self._json_value(row.get("grants"), default="{}"),
+                            seq,
+                        ),
+                    )
+
+                for key, value in state_update_items:
+                    conn.execute(
+                        "INSERT OR REPLACE INTO room_state (room, key, value) VALUES (?, ?, ?)",
+                        (room, str(key), value),
+                    )
+                for key in state_delete_items:
+                    conn.execute("DELETE FROM room_state WHERE room = ? AND key = ?", (room, key))
+                self._commit(conn)
+                return True
+            except BaseException:
+                conn.rollback()
+                raise
+
+    async def commit_idempotent_room_mutation(
+        self,
+        room: str,
+        action_id: str,
+        result: Any,
+        *,
+        expected_state: Iterable[tuple[str, str | None]] = (),
+        state_updates: Iterable[tuple[str, str | None]] = (),
+        state_deletes: Iterable[str] = (),
+        expected_documents: Iterable[tuple[str, str, Mapping[str, Any] | Any | None]] = (),
+        document_updates: Iterable[Mapping[str, Any]] = (),
+        document_deletes: Iterable[tuple[str, str]] = (),
+    ) -> tuple[bool, Any]:
+        """Commit a mutation once and return the stored result on retries.
+
+        The action result is stored in ``room_state`` under an opaque id-derived
+        key and is written in the same CAS transaction as the supplied changes.
+        The boolean is true only for the caller that committed the mutation.
+        """
+        action_key = f"action_result:{str(action_id).strip()}"
+        if action_key.endswith(":"):
+            raise ValueError("action_id must not be empty")  # i18n-exempt: internal validation diagnostic
+        existing = await self.state_get(room, action_key)
+        if existing is not None:
+            try:
+                return False, json.loads(existing)
+            except json.JSONDecodeError:
+                return False, existing
+        payload = self._json_value(result, default="null")
+        expected = list(expected_state)
+        expected.append((action_key, None))
+        updates = list(state_updates)
+        updates.append((action_key, payload))
+        committed = await self.compare_and_swap_room(
+            room,
+            expected_state=expected,
+            state_updates=updates,
+            state_deletes=state_deletes,
+            expected_documents=expected_documents,
+            document_updates=document_updates,
+            document_deletes=document_deletes,
+        )
+        if committed:
+            return True, result
+        stored = await self.state_get(room, action_key)
+        if stored is None:
+            raise RuntimeError("idempotent mutation lost its result")
+        try:
+            return False, json.loads(stored)
+        except json.JSONDecodeError:
+            return False, stored
+
     # ------------------------------------------------------------------
     # Documents table (M17) — raw row transport; typed semantics (schema
     # validation, projections) live in `core.documents`, never here.
@@ -390,7 +587,45 @@ class Store:
         async with self._lock:
             conn = self._ensure_conn()
             row = conn.execute("SELECT value FROM room_state WHERE room = ? AND key = ?", (room, key)).fetchone()
-            return row[0] if row is not None else None
+            if row is not None:
+                return row[0]
+            # Read-only projection for pre-runtime callers. Runtime packs write
+            # only combat_state; this does not create a second authority.
+            if key in {"initiative", "initiative_meta"}:
+                combat_row = conn.execute(
+                    "SELECT value FROM room_state WHERE room = ? AND key = ?",
+                    (room, "combat_state"),
+                ).fetchone()
+                if combat_row is not None:
+                    try:
+                        combat = json.loads(combat_row[0])
+                    except (TypeError, json.JSONDecodeError):
+                        return None
+                    if isinstance(combat, dict) and combat.get("phase") in {"pending", "active"}:
+                        if key == "initiative":
+                            order = list(combat.get("order") or [])
+                            current = combat.get("current")
+                            if current in order:
+                                current_index = order.index(current)
+                                order = order[current_index:] + order[:current_index]
+                            entries = [
+                                {
+                                    "name": item.get("name", combatant_id),
+                                    "init": item.get("initiative", 0),
+                                }
+                                for combatant_id in order
+                                if isinstance((item := (combat.get("combatants") or {}).get(combatant_id)), dict)
+                            ]
+                            return json.dumps(entries, ensure_ascii=False)
+                        return json.dumps(
+                            {
+                                "round": combat.get("round", 0),
+                                "turns": combat.get("turn_index", 0),
+                                "current": combat.get("current"),
+                            },
+                            ensure_ascii=False,
+                        )
+            return None
 
     async def state_set(self, room: str, key: str, value: str | None) -> None:
         async with self._lock:

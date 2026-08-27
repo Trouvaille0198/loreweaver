@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from core.combat import CombatManager, project_combat
 from core.documents import KEEPER_VIEWER, MODULE_POOL_ID, PLAYER_VIEWER, DocumentStore
 from infra.i18n import I18n
 from infra.store import Store
@@ -331,25 +332,52 @@ async def inject_game_state_prompt(ctx: Any, character_manager: Any, store: Stor
         except Exception:
             pass
 
-        # -- initiative order (combat only) ---------------------------------
+        # -- combat state (one projection choke point) -----------------------
         try:
-            init_data = await store.state_get(chat_key, "initiative")
-            if init_data:
-                initiative_list = json.loads(init_data)
-                if initiative_list:
+            combat = await CombatManager(store, chat_key).get()
+            if combat is not None:
+                view = project_combat(combat, keeper=True)
+                combatants = view.get("combatants") or []
+                if combatants:
                     lines.append("")
                     lines.append(i18n.t("prompt.game_state.initiative_header"))
-                    for idx, entry in enumerate(initiative_list[:5], 1):
-                        marker = " \U0001F448" if idx == 1 else ""
+                    for idx, entry in enumerate(combatants[:5], 1):
+                        marker = " \U0001F448" if entry.get("id") == view.get("current") else ""
                         lines.append(
                             i18n.t(
                                 "prompt.game_state.initiative_line",
                                 index=idx,
-                                name=entry["name"],
-                                initiative=entry["init"],
+                                name=entry.get("name", entry.get("id", "")),
+                                initiative=entry.get("initiative", 0),
                                 marker=marker,
                             )
                         )
+                    lines.append(
+                        i18n.t(
+                            "prompt.game_state.combat_budget",
+                            round=view.get("round", 0),
+                            current=view.get("current") or "-",
+                            budget=json.dumps(view.get("budget") or {}, ensure_ascii=False, sort_keys=True),
+                        )
+                    )
+            else:
+                init_data = await store.state_get(chat_key, "initiative")
+                if init_data:
+                    initiative_list = json.loads(init_data)
+                    if initiative_list:
+                        lines.append("")
+                        lines.append(i18n.t("prompt.game_state.initiative_header"))
+                        for idx, entry in enumerate(initiative_list[:5], 1):
+                            marker = " \U0001F448" if idx == 1 else ""
+                            lines.append(
+                                i18n.t(
+                                    "prompt.game_state.initiative_line",
+                                    index=idx,
+                                    name=entry["name"],
+                                    initiative=entry["init"],
+                                    marker=marker,
+                                )
+                            )
         except Exception:
             pass
 
@@ -554,7 +582,8 @@ async def inject_document_context_prompt(
 
 
 async def inject_interaction_style_prompt(ctx: Any, i18n: I18n) -> str:
-    """Narrative voice, action attribution, the dice contract, companion cueing, and freshness.
+    """Narrative voice, action attribution, the dice contract, companion cueing, freshness,
+    and the `[[name]]` mark convention the client-side mention links bind to.
 
     Each block earns its place with a measured failure mode (formulaic voice,
     misattributed actions, roll abuse, hand-voiced companions, repeated
@@ -572,5 +601,7 @@ async def inject_interaction_style_prompt(ctx: Any, i18n: I18n) -> str:
         i18n.t("prompt.style.companions"),
         "",
         i18n.t("prompt.style.freshness"),
+        "",
+        i18n.t("prompt.style.mention_marks"),
     ]
     return "\n".join(parts)

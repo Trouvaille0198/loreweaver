@@ -488,3 +488,93 @@ async def test_code_fenced_skill_md_is_unwrapped_and_installed(tmp_path: Path) -
     finally:
         skills_module._USER_SKILL_DIR = original_user_dir
         skills_module._discover_registry.cache_clear()
+
+def test_persona_bare_name_strips_the_name_en_gloss() -> None:
+    """The forge's `name_en` convention glosses a CJK persona name in parentheses; the bare
+    form (what the media shot designer typically writes as a shot subject) strips it."""
+    from agent.forge import _persona_bare_name
+
+    assert _persona_bare_name("薇拉·月影（Vera Moonshadow）") == "薇拉·月影"
+    assert _persona_bare_name("薇拉·月影(Vera Moonshadow)") == "薇拉·月影"
+    assert _persona_bare_name("薇拉·月影") == "薇拉·月影"
+    assert _persona_bare_name("Bob Bolton") == "Bob Bolton"  # no gloss, untouched
+    assert _persona_bare_name(" 芬恩·石棘 ") == "芬恩·石棘"
+
+
+def test_bind_pregen_portraits_tolerates_gloss_dropped_from_shot_subject() -> None:
+    """The regression: a world card whose pregen names carry the `name_en` gloss
+    (`薇拉·月影（Vera Moonshadow）`) while the media shot subjects keep only the bare CJK name
+    (`薇拉·月影`) — the old exact-match binding left every `avatar` null. The bare-form
+    fallback binds them."""
+    from agent.forge import _bind_pregen_portraits
+
+    card = {
+        "pregens": [
+            {"name": "薇拉·月影（Vera Moonshadow）"},
+            {"name": "鲍勃·波顿（Bob Bolton）"},
+            {"name": "菲奥娜·贝格（Fiona Bagg）"},
+        ]
+    }
+    media_index = [
+        {"kind": "pregens", "subject": "薇拉·月影", "name": "module-x-pregens-1.png"},
+        {"kind": "pregens", "subject": "鲍勃·波顿", "name": "module-x-pregens-2.png"},
+        {"kind": "pregens", "subject": "菲奥娜·贝格", "name": "module-x-pregens-3.png"},
+    ]
+
+    assert _bind_pregen_portraits(card, media_index) == 3
+    assert card["pregens"][0]["avatar"] == "module-x-pregens-1.png"
+    assert card["pregens"][1]["avatar"] == "module-x-pregens-2.png"
+    assert card["pregens"][2]["avatar"] == "module-x-pregens-3.png"
+
+
+def test_bind_pregen_portraits_exact_match_wins_and_mismatch_leaves_untouched() -> None:
+    """An exact subject match still binds first (a full-gloss subject is fine); a pregen with
+    no matching shot keeps `avatar` unset and the count reflects only real bindings."""
+    from agent.forge import _bind_pregen_portraits
+
+    card = {
+        "pregens": [
+            {"name": "薇拉·月影（Vera Moonshadow）"},
+            {"name": "奥尔加·铁心（Olga Ironheart）"},
+        ]
+    }
+    media_index = [
+        {"kind": "pregens", "subject": "薇拉·月影（Vera Moonshadow）", "name": "module-x-pregens-1.png"},
+        {"kind": "pregens", "subject": "德雷克·烬", "name": "module-x-pregens-2.png"},
+    ]
+
+    assert _bind_pregen_portraits(card, media_index) == 1
+    assert card["pregens"][0]["avatar"] == "module-x-pregens-1.png"
+    assert "avatar" not in card["pregens"][1]
+
+    assert _bind_pregen_portraits(card, []) == 0  # no pregen shots at all
+
+
+def test_normalize_pregen_names_strips_gloss_into_aliases() -> None:
+    """The regression: a model that wrote `薇拉·月影（Vera Moonshadow）` as the pregen name
+    despite the schema — the engine strips the parenthetical gloss, keeps the clean CJK name,
+    and preserves the English name as an alias."""
+    from agent.forge import _normalize_pregen_names
+
+    card = {
+        "pregens": [
+            {"name": "薇拉·月影（Vera Moonshadow）"},
+            {"name": "鲍勃·波顿(Bob Bolton)"},
+            {"name": "奥尔加·铁心"},  # clean name untouched
+        ]
+    }
+    assert _normalize_pregen_names(card) == 2
+    assert card["pregens"][0]["name"] == "薇拉·月影"
+    assert card["pregens"][0]["aliases"] == ["Vera Moonshadow"]
+    assert card["pregens"][1]["name"] == "鲍勃·波顿"
+    assert card["pregens"][1]["aliases"] == ["Bob Bolton"]
+    assert card["pregens"][2]["name"] == "奥尔加·铁心"
+    assert "aliases" not in card["pregens"][2]
+
+
+def test_normalize_pregen_names_merges_existing_aliases_deduplicated() -> None:
+    from agent.forge import _normalize_pregen_names
+
+    card = {"pregens": [{"name": "薇拉·月影（Vera Moonshadow）", "aliases": ["薇拉", "Vera Moonshadow"]}]}
+    assert _normalize_pregen_names(card) == 1
+    assert card["pregens"][0]["aliases"] == ["薇拉", "Vera Moonshadow"]  # gloss not duplicated

@@ -393,7 +393,7 @@ class MediaCommands:
         tasks = getattr(self, "_image_background_tasks", None)
         if tasks is None:
             tasks = set()
-            setattr(self, "_image_background_tasks", tasks)
+            self._image_background_tasks = tasks
         task = asyncio.create_task(
             self._generate_image_background(
                 ctx, kind, prompt, imagegen, intent=intent, focus=focus, story_mode=story_mode

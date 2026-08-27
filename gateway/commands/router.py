@@ -19,9 +19,11 @@ from core.character_manager import (
     CharacterDataError,
 )
 from core.resolution import ResolutionError
+from gateway.commands.advancement import AdvancementCommands
 from gateway.commands.cast import CastCommands
 from gateway.commands.checks import ChecksCommands, _resolution_notice
 from gateway.commands.clues import ClueCommands
+from gateway.commands.encounters import EncounterCommands
 from gateway.commands.item import ItemCommands
 from gateway.commands.llm import LlmCommands
 from gateway.commands.media import MediaCommands
@@ -29,6 +31,7 @@ from gateway.commands.panels import PanelsCommands
 from gateway.commands.plot import PlotCommands
 from gateway.commands.rooms import RoomsCommands, _is_keeper, _privilege_level
 from gateway.commands.rules import RulesCommands
+from gateway.commands.runtime import RuntimeCommands
 from gateway.commands.sheet import SheetCommands
 from gateway.commands.types import CommandCtx, CommandReply, CommandSpec
 from gateway.commands.world import WorldCommands
@@ -63,7 +66,10 @@ class CommandRouter(
     SheetCommands,
     ItemCommands,
     ClueCommands,
+    EncounterCommands,
+    AdvancementCommands,
     RulesCommands,
+    RuntimeCommands,
     RoomsCommands,
     CastCommands,
     WorldCommands,
@@ -295,7 +301,7 @@ class CommandRouter(
             CommandSpec(
                 "check",
                 self.cmd_check,
-                ["check", "save", "attack", "cast", "ra", "rc"],
+                ["check", "save", "ra", "rc"],
                 ["ra", "rc"],
                 {"name": "check"},
                 "commands.help.check",
@@ -406,6 +412,86 @@ class CommandRouter(
                 keeper_help=True,
             ),
             CommandSpec("init", self.cmd_initiative, ["init", "initiative", "ri"], ["ri", "init"], {"name": "init"}, "commands.help.init"),
+            CommandSpec(
+                "combat",
+                self.cmd_combat,
+                ["combat"],
+                ["combat", "战斗", "戰鬥"],
+                {"name": "combat"},
+                "commands.help.combat",
+            ),
+            CommandSpec(
+                "resource",
+                self.cmd_resource,
+                ["resource", "resources"],
+                ["resource", "resources", "资源", "資源"],
+                {"name": "resource"},
+                "commands.help.resource",
+            ),
+            CommandSpec(
+                "rest",
+                self.cmd_rest,
+                ["rest"],
+                ["rest", "休息"],
+                {"name": "rest"},
+                "commands.help.rest",
+            ),
+            CommandSpec(
+                "advance",
+                self.cmd_advance,
+                ["advance"],
+                ["advance", "升级", "升級"],
+                {"name": "advance"},
+                "commands.help.advance",
+            ),
+            CommandSpec(
+                "level",
+                self.cmd_level,
+                ["level"],
+                ["level", "等级", "等級"],
+                {"name": "level"},
+                "commands.help.level",
+            ),
+            CommandSpec(
+                "xp",
+                self.cmd_xp,
+                ["xp"],
+                ["xp", "经验", "經驗"],
+                {"name": "xp"},
+                "commands.help.xp",
+            ),
+            CommandSpec(
+                "attack",
+                self.cmd_attack,
+                ["attack"],
+                ["attack", "攻击", "攻擊"],
+                {"name": "attack"},
+                "commands.help.attack",
+            ),
+            CommandSpec(
+                "cast",
+                self.cmd_typed_cast,
+                ["cast"],
+                ["cast", "施法"],
+                {"name": "cast"},
+                "commands.help.cast",
+            ),
+            CommandSpec(
+                "statblock",
+                self.cmd_statblock,
+                ["statblock", "statblocks"],
+                ["statblock", "statblocks", "数值块", "數值塊"],
+                {"name": "statblock"},
+                "commands.help.statblock",
+            ),
+            CommandSpec(
+                "encounter",
+                self.cmd_encounter,
+                ["encounter", "encounters"],
+                ["encounter", "encounters", "遭遇"],
+                {"name": "encounter"},
+                "commands.help.encounter",
+            ),
             CommandSpec(
                 "genchar",
                 self.cmd_genchar,

@@ -535,8 +535,8 @@ async def test_npc_tools_end_to_end_crud_and_keeper_only_views():
     knowledge_result = await tools.set_npc_knowledge(ctx, npc="Old Tomas", facts="A new fact, another new fact", mode="add")
     assert "Old Tomas" in knowledge_result
 
-    learn_result = await tools.npc_learns(ctx, npc="Old Tomas", fact="Someone was asking about the mayor.")
-    assert "Someone was asking about the mayor." in learn_result
+    learn_result = await tools.npc_tells(ctx, npc="Old Tomas", facts="Someone was asking about the mayor.")
+    assert "Old Tomas" in learn_result
 
     disposition_result = await tools.set_npc_disposition(ctx, npc="Old Tomas", disposition="suspicious")
     assert "suspicious" in disposition_result
@@ -555,7 +555,9 @@ async def test_npc_tools_end_to_end_crud_and_keeper_only_views():
     detail = await tools.get_npc(ctx, npc="Old Tomas")
     assert i18n_en.t("npc.tools.keeper_banner") in detail
     assert "He owes money to the wrong people." in detail
-    assert "Someone was asking about the mayor." in detail
+    # npc_tells records PLAYER-visible public memory, not keeper-side knowledge —
+    # the fact shows up in the public card, not in the keeper's knowledge dump.
+    assert "Someone was asking about the mayor." not in detail
     assert "The tavern" in detail
     assert "suspicious" in detail
     assert "drunk" in detail
@@ -579,7 +581,7 @@ def test_get_npc_and_list_npcs_are_keeper_only_in_build_kp_toolset():
         "create_npc",
         "import_module_npcs",
         "set_npc_knowledge",
-        "npc_learns",
+        "npc_tells",
         "set_npc_disposition",
         "move_npc",
         "update_npc",

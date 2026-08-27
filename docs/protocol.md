@@ -1,13 +1,13 @@
 *English · [中文](protocol.zh.md)*
 
-# loreweaver networked TUI — wire protocol 2.5
+# loreweaver networked TUI — wire protocol 2.8
 
 This is the open, versioned wire protocol between a loreweaver server (started via
 `python -m app --serve`) and the OpenTUI terminal client. The engine itself
 (deterministic core + AI Keeper) is unaffected by transport; the transport-neutral
 session logic is `net.session.SessionCore`, and this document is the language-agnostic seam.
 
-Frames are JSON objects, each shaped `{"type": ...}`. Protocol version: `"2.5"`. The same
+Frames are JSON objects, each shaped `{"type": ...}`. Protocol version: `"2.8"`. The same
 frames + `join` handshake ride the transport; only the carrier + its framing differ:
 
 - **Iroh** (the transport `--serve` starts) — peer-to-peer QUIC. The server
@@ -38,9 +38,32 @@ it does not implement the field, or does not implement that corner of the gramma
 evaluation errors — MUST NOT render the block. Ignoring the gate draws content the author
 hid, so the undecidable case fails CLOSED, exactly as an unresolved `$var` does.
 
+**2.8 (additive)** generalizes narrative `mentions` beyond NPCs: items and
+discovered clues join in. The server annotates `[name](item://<id>)` and
+`[name](clue://<id>)` links alongside `npc://`, and every mention carries a
+`kind` (`"npc" | "item" | "clue"`) plus its PLAYER-visible card subset (an item:
+category/slot/quantity/effect; a clue: content and found-turn). Item keys and
+cards come only from granted instances or non-secret catalog presets, clue
+entries only from the discovered-clue log — so a secret item or an undiscovered
+clue structurally cannot yield a link. A pre-2.8 client that ignores `kind`
+treats every mention as an npc mention.
+
+**2.7 (additive)** adds the campaign catch-up feed (`list_chronicle` →
+`chronicle_records`): the campaign summary plus EVERY chronicle record, all
+through the PLAYER document projections, so keeper annotations and fold
+bookkeeping structurally cannot appear — the same contract `.recap` keeps, as
+structured data for catch-up browsers instead of a trimmed text reply. A
+pre-2.7 client never sends the request and ignores the reply.
+
+**2.6 (additive)** adds optional `mentions` on `narrative` frames: the server
+annotates NPC names in `text` as `[name](npc://<id>)` markdown links and attaches
+each mentioned NPC's PLAYER-visible card (`name`, `public_description`, `location`,
+`status`, `avatar`, `public_memory`) — never keeper-side knowledge. A pre-2.6
+client ignores the unknown field and renders the link as plain text.
+
 **2.5 (additive)** adds `options` on `admin_generate`: for `kind:"module"`, the keeper's
 per-generation opt-ins for extra content — `media` (module illustrations from a closed
-vocabulary: `cover`, `scenes`, `npcs`, `items`) and `companion` (structured extras:
+vocabulary: `cover`, `scenes`, `npcs`, `clue`) and `companion` (structured extras:
 `skills`, `rulepacks`, `cards`). Unknown ids are ignored server-side, an absent field
 means the module is authored exactly as before, and a pre-2.5 client simply never sends
 it (its modules generate unchanged).
@@ -115,12 +138,16 @@ connections receive `error too_many_connections` before `join` is read.
   printed them), never card content; the world/companion import verbs keep
   their keeper gates regardless of how a ref was discovered:
   `{type:"list_pack_cards"}`
+- `list_chronicle` (v2.7) — ask for the campaign catch-up feed. Player-open,
+  read-only and answered off the turn lock (it never queues behind an AI
+  turn); it spends the same rate-limit allowance an input does:
+  `{type:"list_chronicle"}`
 - `ping`: `{type:"ping", t:number}`
 
 ## Server → Client
 
 - `welcome` — sent once, on a successful `join`:
-  `{type:"welcome", protocol:"2.5", features:["media","audio", "imagegen"?, "demo"?, "update"?], room:string, you:{id:string,name:string,role:"player"|"keeper"}, locale:string, server:string, version?:string}`
+  `{type:"welcome", protocol:"2.8", features:["media","audio", "imagegen"?, "demo"?, "update"?], room:string, you:{id:string,name:string,role:"player"|"keeper"}, locale:string, server:string, version?:string}`
   `version` is the server's own release version (compare it to the client's to detect a mismatch). The `"update"` feature appears only for a keeper on a server whose operator configured a self-update command, and gates the `admin_update_server` control.
   `demo` means the server is using its offline sample Keeper, vector support is
   enabled, and this specific Keeper room was empty when the server checked it.
@@ -147,7 +174,7 @@ connections receive `error too_many_connections` before `join` is read.
   `{type:"audio_control", id:string, action:"play"|"stop"|"pause"|"resume"|"volume", layer:"bgm"|"ambience"|"sfx", hash?:string, mime?:string, name?:string, title?:string, loop?:boolean, volume?:number, fade_ms?:int, position_ms?:int, server_ts?:number}`
 - `audio_state` — best-effort persisted BGM/ambience state, replayed on join:
   `{type:"audio_state", layers:[{layer:"bgm"|"ambience"|"sfx", hash?:string, mime?:string, name?:string, title?:string, playing:boolean, volume?:number, loop?:boolean, started_at?:number}]}`
-- `narrative` — one COMPLETE line of story/chat text:
+  `{type:"narrative", id:string, speaker:"kp"|"player"|"system"|"npc", name?:string, text:string, format:"markdown"|"plain", mentions?:[{id:string, kind?:"npc"|"item"|"clue", name:string, card?:{name?:string, public_description?:string, location?:string, status?:string, avatar?:string, public_memory?:string[], kind?:string, slot?:string, quantity?:number, equipped_slot?:string, description?:string, effect?:string, content?:string, found_turn?:number}}]}`
   `{type:"narrative", id:string, speaker:"kp"|"player"|"system"|"npc", name?:string, text:string, format:"markdown"|"plain"}`
   For `speaker:"npc"`, `name` carries the NPC name. A `narrative` frame always
   carries the full, final text. When its `id` matches a draft bubble the client
@@ -299,6 +326,15 @@ connections receive `error too_many_connections` before `join` is read.
   missing one as `"character"`. `cards` is empty — not absent — when no installed
   pack ships card files:
   `{type:"pack_cards", cards:[{ref:string, pack:string, name:string, kind:"character"|"world"}]}`
+- `chronicle_records` (v2.7) — the unicast answer to `list_chronicle`: the
+  campaign summary plus every chronicle record, sorted by `(turn, id)`.
+  `summary` is null — not absent — before the first fold creates it;
+  `through_turn` is the fold watermark: records with `turn <= through_turn`
+  are already condensed into the summary text, so a catch-up view can group
+  them under it. Whether an individual record is folded is derivable from
+  that watermark; fold bookkeeping itself stays keeper-side. `records` is
+  empty — not absent — when the campaign has no chronicle records yet:
+  `{type:"chronicle_records", summary:{text:string, through_turn:int}|null, records:[{id:string, turn:int, text:string, pcs:[string], scene:string}]}`
 - `presence` — the connected-player roster, sent on join/leave:
   `{type:"presence", players:[{id,name,online}], online:int}`
 - `system` — an out-of-band notice: `{type:"system", level:"info"|"warn", text:string, spinner?:boolean}`

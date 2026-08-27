@@ -78,6 +78,12 @@ a Keeper's `.import <file> world`; a character import carries none of it.)
   windows; `position` ordering buckets; timed effects — `sticky`, `cooldown`,
   `delay` — against a per-room turn counter; inclusion groups (weighted, one member
   per group per turn); budgeted insertion.
+- **`keys` vs `aliases` (npc entries).** `keys` are trigger words that pull an entry into the
+  keeper's context — broad by design (places, actions, even generic descriptors like 守卫). A
+  separate `aliases` field holds the NAMES this specific character answers to (short forms,
+  nicknames, other-language spellings) and is consumed by player-facing mention highlighting and
+  name resolution; NEVER put generic descriptors there — a player saying 守卫 in passing would
+  otherwise highlight the wrong NPC's card.
 - **The MVU protocol, end-to-end.** Your card's scaffolding entries import as normal
   lore, the model emits `<UpdateVariable>` blocks, and the engine parses them with
   real code — all five ops (`set` / `insert` / `delete` / `add` / `move`) — applies

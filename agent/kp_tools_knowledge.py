@@ -95,7 +95,7 @@ from agent.tool_phase import CAPABILITY_MODULE_POOL
 from agent.tools import tool
 from core.battle_report import _default_session_name
 from core.documents import KEEPER_VIEWER, MODULE_POOL_ID
-from core.game_clock import advance_game_time, face_is_engine_readable, parse_time_delta
+from core.game_clock import advance_clock_state, advance_game_time, face_is_engine_readable, parse_time_delta
 from infra.i18n import I18n
 from infra.media_store import ALLOWED_IMAGE_MIMES, MediaStore
 from infra.room_facets import STORAGE_DOCUMENTS, RoomStateFacet
@@ -1395,17 +1395,16 @@ class NoteTools(_KnowledgeToolsBase):
                         # Delta AND face parse, yet the engine declined: the move would
                         # land before day 1. A refusal, not an advance — nothing recorded.
                         return i18n.t("kp_tools.know.clock.advance_refused", delta=value, time=current)
-                    # The delta parses; only the FACE does not — a module running its own
-                    # calendar ("澹洲三百年六月初二 午时"). The face stays as written (a
-                    # "X → +2 hours" chain would pollute the HUD and the model can `set` a
-                    # new face), but the advance is still a real event: the room's calendar
-                    # hooks consume the DELTA, never the face, so it is recorded exactly as a
-                    # parseable clock's advance would be. Dropping it here silently froze
-                    # every custom-calendar module's day counter (2026-08-18 《安土》 run 1).
+                    # The delta parses; only the FACE does not. The face stays as written,
+                    # but elapsed time still advances for cooldowns and timed conditions.
+                    updated, _ = advance_clock_state(clock, value)
+                    clock = updated
+                    await store.state_set(ctx.chat_key, store_key, json.dumps(clock, ensure_ascii=False))
                     advances = ctx.extra.setdefault("clock_advances", [])
                     if isinstance(advances, list) and len(advances) < 8:
                         advances.append({"from": str(current), "to": str(current), "delta": value})
                     return i18n.t("kp_tools.know.clock.advance_face_kept", delta=value, time=current)
+                clock, _ = advance_clock_state(clock, value)
                 clock["current_time"] = advanced_time
                 await store.state_set(ctx.chat_key, store_key, json.dumps(clock, ensure_ascii=False))
                 # Record the advance for the room's event hooks (Layer C): the turn

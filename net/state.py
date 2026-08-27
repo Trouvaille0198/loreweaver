@@ -30,6 +30,7 @@ from agent.context import AgentCtx
 from agent.npc import list_companions
 from agent.services import Services
 from core.character_manager import CharacterSheet, character_resources, has_character, resource_label_map
+from core.combat import CombatManager, project_combat
 from core.documents import (
     CLUE_LOG_ID,
     KEEPER_VIEWER,
@@ -67,6 +68,14 @@ async def build_room_state(
             member["initiative"] = initiative_by_name[member["name"]]
 
     state: dict[str, Any] = {"type": "state", "party": party, "initiative": initiative, "online": 0}
+    combat_manager = CombatManager(services.store, ctx.chat_key)
+    try:
+        combat = await combat_manager.get()
+    except Exception:
+        combat = None
+    if combat is not None:
+        role = (ctx.extra.get("role") if isinstance(ctx.extra, dict) else "") or ""
+        state["combat"] = project_combat(combat, keeper=role == "keeper")
     state["room_system"] = (await services.room_rulepack(ctx)).system
 
     # `.share` publishes a player-facing module link: the public face rides the
@@ -236,7 +245,16 @@ async def _character_payload(
     is final. Labels resolve to ``locale`` here, at the per-viewer boundary (M19)."""
     attrs = _wire_attributes(sheet)
     resources = character_resources(sheet, locale)
+    resource_groups: list[dict[str, Any]] = []
+    try:
+        from core.resources import resource_projection
+        from core.rulepacks import load_rulepack
 
+        pack = load_rulepack(sheet.system)
+        if pack.runtime_spec is not None:
+            resource_groups = resource_projection(sheet, pack, locale).get("groups", [])
+    except Exception:
+        resource_groups = []
     status_effects: list[Any] = []
     try:
         roster = await services.characters.get_party_roster(chat_key)
@@ -259,6 +277,8 @@ async def _character_payload(
     # ignore them, while a character page can show the complete card without
     # making a second command round-trip. The portrait rides the same MediaRef
     # shape the party roster uses, so a client's one avatar renderer serves both.
+    if resource_groups:
+        payload["resource_groups"] = resource_groups
     avatar = getattr(sheet, "avatar", None)
     if isinstance(avatar, dict):
         payload["avatar"] = avatar
@@ -505,6 +525,21 @@ async def _companion_sheet_names(services: Services, chat_key: str) -> set[str]:
 
 async def _initiative(services: Services, chat_key: str) -> list[dict[str, Any]]:
     try:
+        combat = await CombatManager(services.store, chat_key).get()
+    except Exception:
+        combat = None
+    if combat is not None:
+        return [
+            {
+                "name": str(combat.combatants[combatant_id].get("name") or combatant_id),
+                "value": int(combat.combatants[combatant_id].get("initiative", 0) or 0),
+                "current": combatant_id == combat.current,
+            }
+            for combatant_id in combat.order
+        ]
+    # Rooms created before the runtime state contract retain their check-only
+    # initiative display until an explicit runtime migration is requested.
+    try:
         raw = await services.store.state_get(chat_key, "initiative")
         entries = json.loads(raw) if raw else []
     except Exception:
@@ -530,6 +565,40 @@ async def _clues(services: Services, chat_key: str) -> list[dict[str, Any]] | No
     return clues if isinstance(clues, list) and clues else None
 
 
+async def _scene_image(services: Services, chat_key: str, name: str) -> dict[str, Any] | None:
+    """The enabled packs' illustration whose `title` names THIS scene, as a wire
+    `{hash, mime, name}` ref — the scene strip's thumbnail. Scene plates ship with
+    their scene's name as the asset title (深水城/漫游塔/…), so the match is the
+    name itself; a `scenes`-kind plate (by the `module-<id>-<kind>-<n>` provenance
+    stem) wins over any other kind. Metadata only: the client pulls bytes through
+    the content-addressed asset channel, which serves ENABLED packs' assets to the
+    whole table."""
+    from pathlib import PurePosixPath
+
+    from gateway.panels import enabled_packs
+
+    wanted = name.strip()
+    if not wanted:
+        return None
+    fallback: dict[str, Any] | None = None
+    for _pack_id, _home, manifest in await enabled_packs(services, chat_key):
+        for asset in manifest.assets:
+            if not str(asset.mime or "").lower().startswith("image/"):
+                continue
+            # Scene plates ship with the scene's short name as the asset title
+            # (深水城/漫游塔/…), while `scene.name` is the fuller display form
+            # ("中央广场·仲夏展台（深水城港口区）") — match by containment so
+            # the thumbnail resolves instead of silently vanishing.
+            asset_title = (asset.title or "").strip()
+            if not asset_title or asset_title not in wanted:
+                continue
+            ref = {"hash": asset.sha256, "mime": asset.mime, "name": PurePosixPath(asset.path).name}
+            if "scenes" in PurePosixPath(asset.path).stem:
+                return ref
+            fallback = fallback or ref
+    return fallback
+
+
 async def _scene(services: Services, chat_key: str) -> dict[str, Any] | None:
     """The `scene` singleton document (all-viewer projection), falling back to
     the module pool's first PLAYER-visible scene for rooms the keeper hasn't
@@ -544,6 +613,9 @@ async def _scene(services: Services, chat_key: str) -> dict[str, Any] | None:
         focus = (view or {}).get("focus")
         if focus:
             scene["focus"] = focus
+        image = await _scene_image(services, chat_key, str(name))
+        if image is not None:
+            scene["image"] = image
         return scene
 
     try:
@@ -557,6 +629,9 @@ async def _scene(services: Services, chat_key: str) -> dict[str, Any] | None:
         scene = {"name": first.get("name", "")}
         if first.get("focus"):
             scene["focus"] = first["focus"]
+        image = await _scene_image(services, chat_key, str(scene["name"]))
+        if image is not None:
+            scene["image"] = image
         return scene
     return None
 
@@ -573,6 +648,12 @@ async def _clock(services: Services, chat_key: str) -> dict[str, Any] | None:
 
 
 async def _combat_round(services: Services, chat_key: str) -> int | None:
+    try:
+        combat = await CombatManager(services.store, chat_key).get()
+    except Exception:
+        combat = None
+    if combat is not None:
+        return combat.round if combat.round > 0 else None
     try:
         raw = await services.store.state_get(chat_key, "initiative_meta")
         meta = json.loads(raw) if raw else {}

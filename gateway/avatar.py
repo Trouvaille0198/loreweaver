@@ -43,13 +43,14 @@ async def set_target_avatar(
     avatar: dict[str, Any] | None,
 ) -> CharacterSheet:
     record = await npc_records.get_npc(services.documents, chat_key, target)
-    if record is None or not record.stat_char:
+    sheet_name = npc_records.sheet_reference(record) if record is not None else ""
+    if record is None or not sheet_name:
         raise AvatarError("avatar_target_not_found")
 
     candidate_user_ids = [f"companion:{record.id}", f"npc:{record.id}"]
     for user_id in candidate_user_ids:
         try:
-            sheet = await services.characters.get_character(user_id, chat_key, record.stat_char)
+            sheet = await services.characters.get_character(user_id, chat_key, sheet_name)
         except CharacterDataError:
             continue
         if has_character(sheet):

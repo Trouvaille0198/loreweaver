@@ -256,6 +256,25 @@ class MediaStore:
             ).fetchone()
         return _row_to_record(row) if row else None
 
+    async def get_record_by_name(self, room: str, name: str) -> MediaRecord | None:
+        """Resolve a media blob by its display name (e.g. a module illustration's stored
+        `module-<id>-npcs-4.png`), so a worldbook `image` reference can be resolved to the
+        blob's content hash for avatar rendering. Best match is the newest record."""
+        await self._ensure_schema()
+        async with self._store._lock:
+            conn = self._store._ensure_conn()
+            row = conn.execute(
+                """
+                SELECT hash, room, mime, size, name, uploader, created_at
+                FROM media_index
+                WHERE room = ? AND name = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (room, name),
+            ).fetchone()
+        return _row_to_record(row) if row else None
+
     async def read_bytes(self, room: str, sha256: str) -> tuple[MediaRecord, bytes]:
         record = await self.get_record(room, sha256.lower())
         if record is None:

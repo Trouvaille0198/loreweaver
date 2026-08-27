@@ -56,7 +56,7 @@ from agent.items import (
     validate_improvised_bonus,
 )
 from agent.module_lifecycle import active_module
-from agent.npc import list_companions
+from agent.npc import list_companions, sheet_reference
 from agent.services import Services, room_rule_variant
 from agent.tools import tool
 from core.battle_recording import record_check, record_dice_roll
@@ -72,6 +72,7 @@ from core.character_manager import (
 from core.character_rules import render_validation_notice, validate_sheet
 from core.check_outcome import CheckOutcome, outcome_wire
 from core.check_roll import favor_modifiers, graded_roll
+from core.combat import CombatManager, claim_turn, create_combat, end_combat, end_turn, join_combat, start_combat
 from core.dice_engine import DiceResult
 from core.rulepacks import RulePack, load_rulepack
 from core.sheets import check_value, has_check_value, set_sheet_value, sheet_value
@@ -325,7 +326,7 @@ class CharacterTools:
             return i18n.t("kp_tools.character.list.failed", error=str(exc))
         try:
             companions = {
-                record.stat_char or record.name
+                sheet_reference(record) or record.name
                 for record in await list_companions(self.services.documents, ctx.chat_key)
             }
         except Exception:
@@ -604,7 +605,9 @@ Rules:
 
             return i18n.t("kp_tools.item.failed", error=str(exc))
 
-    @tool(prep_only=True)  # keeper's off-catalog improv lane is prep-phase work
+    @tool  # off-catalog improv lane must be live during play: evidence trinkets and
+    # scene objects a party picks up mid-session need a real grant channel, or the
+    # model can only narrate a holding claim that the item system never records.
     async def improvise_item(self, ctx: AgentCtx, character: str, name: str, description: str = "", bonus: str = "", qty: int = 1) -> str:
         """Give a character an OFF-CATALOG item the Keeper improvises on the spot (a trinket found in a pocket, a curious stone, a small reward, a few doses of something).
 
@@ -1296,6 +1299,106 @@ class InitiativeTools:
     def __init__(self, services: Services) -> None:
         self.services = services
 
+    async def _runtime_tracker(
+        self,
+        ctx: AgentCtx,
+        *,
+        action: str,
+        name: str | None,
+        initiative: int | None,
+        pack: RulePack,
+    ) -> str:
+        i18n = self.services.i18n.with_locale(ctx.locale)
+        manager = CombatManager(self.services.store, ctx.chat_key)
+        state = await manager.get()
+        if action == "add":
+            if name is None:
+                character = await _get_active_character(self.services, ctx)
+                name = character.name
+                if initiative is None:
+                    initiative = roll_initiative(self.services, character).total
+            if initiative is None:
+                initiative = 0
+            if state is None or state.phase == "ended":
+                state = create_combat(
+                    f"{ctx.chat_key}:combat",
+                    budget={
+                        str(key): int(value)
+                        for key, value in pack.runtime_spec.budgets.items()
+                        if isinstance(value, (int, float)) and not isinstance(value, bool)
+                    },
+                )
+                expected_raw = None
+            else:
+                expected_raw = state.json()
+            controller = "keeper" if ctx.platform == "cli" else "human"
+            controller_id = "keeper" if controller == "keeper" else ctx.uid()
+            updated = join_combat(
+                state,
+                str(name),
+                name=str(name),
+                initiative=int(initiative),
+                controller=controller,
+                controller_id=controller_id,
+                budget={
+                    str(key): int(value)
+                    for key, value in pack.runtime_spec.budgets.items()
+                    if isinstance(value, (int, float)) and not isinstance(value, bool)
+                },
+            )
+            ctx.emit_dice({"kind": "init", "actor": str(name), "expr": pack.runtime_spec.initiative, "rolls": [], "total": int(initiative)})
+            if not await manager.save(updated, expected_raw=expected_raw):
+                return i18n.t("kp_tools.initiative.failed", error="combat_state_changed")
+            return i18n.t("kp_tools.initiative.added", name=name, initiative=initiative)
+        if state is None or not state.order:
+            return i18n.t("kp_tools.initiative.empty")
+        if action in {"list", "show"}:
+            lines = [
+                i18n.t("kp_tools.initiative.list_header"),
+                i18n.t(
+                    "kp_tools.initiative.status",
+                    round=max(1, state.round),
+                    current=state.current or state.order[0],
+                ),
+            ]
+            for index, combatant_id in enumerate(state.order, 1):
+                combatant = state.combatants[combatant_id]
+                lines.append(
+                    i18n.t(
+                        "kp_tools.initiative.list_item",
+                        index=index,
+                        name=combatant.get("name", combatant_id),
+                        initiative=combatant.get("initiative", 0),
+                    )
+                )
+            return "\n".join(lines)
+        if action == "clear":
+            updated = end_combat(state) if state.phase in {"pending", "active"} else state
+            if updated is not state and not await manager.save(updated, expected_raw=state.json()):
+                return i18n.t("kp_tools.initiative.failed", error="combat_state_changed")
+            return i18n.t("kp_tools.initiative.cleared")
+        if action == "next":
+            if state.phase == "pending":
+                started = start_combat(
+                    state,
+                    budget={
+                        str(key): int(value)
+                        for key, value in pack.runtime_spec.budgets.items()
+                        if isinstance(value, (int, float)) and not isinstance(value, bool)
+                    },
+                )
+                if not await manager.save(started, expected_raw=state.json()):
+                    return i18n.t("kp_tools.initiative.failed", error="combat_state_changed")
+                state = started
+            if state.phase != "active" or state.current is None:
+                return i18n.t("kp_tools.initiative.empty")
+            claimed = claim_turn(state, state.current, "keeper", keeper_override=True)
+            updated = end_turn(claimed, state.current, claim_token=str(claimed.claim["token"]))
+            if not await manager.save(updated, expected_raw=state.json()):
+                return i18n.t("kp_tools.initiative.failed", error="combat_state_changed")
+            return i18n.t("kp_tools.initiative.next_turn", name=updated.current or "-")
+        return i18n.t("kp_tools.initiative.unknown_action", action=action)
+
     @tool
     async def initiative_tracker(
         self, ctx: AgentCtx, action: str, name: str | None = None, initiative: int | None = None
@@ -1307,6 +1410,24 @@ class InitiativeTools:
             name: Character/NPC name (defaults to the active character when adding).
             initiative: Initiative value (auto-rolled for the active character when adding, if omitted).
         """
+        try:
+            pack = await self.services.room_rulepack(ctx)
+        except Exception:
+            pack = None
+        if pack is not None and pack.runtime_spec is not None:
+            try:
+                return await self._runtime_tracker(
+                    ctx,
+                    action=action,
+                    name=name,
+                    initiative=initiative,
+                    pack=pack,
+                )
+            except Exception as exc:
+                return self.services.i18n.with_locale(ctx.locale).t(
+                    "kp_tools.initiative.failed",
+                    error=str(exc),
+                )
         i18n = self.services.i18n.with_locale(ctx.locale)
         chat_key = ctx.chat_key
         store_key = "initiative"

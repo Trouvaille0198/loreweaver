@@ -132,6 +132,79 @@ async def test_list_pack_cards_answers_a_player_with_installed_refs(tmp_path):
         await server.close()
 
 
+async def test_list_chronicle_answers_a_player_with_the_projected_feed(tmp_path):
+    """v2.7: the catch-up feed behind the clients' chronicle browser — player-open,
+    off the turn lock, and every field through the PLAYER projections, so the
+    keeper margin and fold bookkeeping structurally cannot cross the wire."""
+    services = build_services(
+        Settings(locale="en", data_dir=str(tmp_path / "data")), llm=FakeLLM(script=[]), embeddings=FakeEmbeddings(64)
+    )
+    chat_key = _room_ctx("chrono").chat_key
+    await services.documents.put(
+        chat_key,
+        "campaign_summary",
+        "summary",
+        {"text": "The party reached the harbour.", "through_turn": 2, "fold_count": 1, "keeper": "they missed the cultist"},
+    )
+    await services.documents.put(
+        chat_key,
+        "chronicle",
+        "c00002",
+        {"text": "The bell tolled once.", "turn": 2, "pcs": ["Vera"], "scene": "chapel", "folded": True, "keeper": "armed"},
+    )
+    await services.documents.put(
+        chat_key,
+        "chronicle",
+        "c00001",
+        {"text": "They lit the lantern.", "turn": 1, "pcs": [], "scene": "", "folded": True},
+    )
+    await services.documents.put(
+        chat_key, "chronicle", "c00003", {"text": "Vera boarded the ferry.", "turn": 3, "pcs": ["Vera"]}
+    )
+
+    keystore = Keystore()
+    key = keystore.add(room="chrono", name="Momo", role="player")
+    server = TuiServer(services, keystore, port=0)
+    url = await _start(server)
+    try:
+        ws, *_ = await _connect_and_join(url, key, "Momo")
+        await ws.send(json.dumps({"type": "list_chronicle"}))
+        frame = await _recv_until(ws, "chronicle_records")
+        # Sorted by (turn, id); the player projection allowlist strips keeper and
+        # fold bookkeeping from BOTH the summary and every record.
+        assert frame["summary"] == {"text": "The party reached the harbour.", "through_turn": 2}
+        assert [record["id"] for record in frame["records"]] == ["c00001", "c00002", "c00003"]
+        assert frame["records"][1] == {
+            "id": "c00002",
+            "turn": 2,
+            "text": "The bell tolled once.",
+            "pcs": ["Vera"],
+            "scene": "chapel",
+        }
+        blob = json.dumps(frame)
+        assert "cultist" not in blob and "armed" not in blob and "folded" not in blob
+    finally:
+        await server.close()
+
+
+async def test_list_chronicle_on_a_fresh_room_is_empty_not_an_error(tmp_path):
+    services = build_services(
+        Settings(locale="en", data_dir=str(tmp_path / "data")), llm=FakeLLM(script=[]), embeddings=FakeEmbeddings(64)
+    )
+    keystore = Keystore()
+    key = keystore.add(room="fresh", name="Momo", role="player")
+    server = TuiServer(services, keystore, port=0)
+    url = await _start(server)
+    try:
+        ws, *_ = await _connect_and_join(url, key, "Momo")
+        await ws.send(json.dumps({"type": "list_chronicle"}))
+        frame = await _recv_until(ws, "chronicle_records")
+        assert frame["summary"] is None
+        assert frame["records"] == []
+    finally:
+        await server.close()
+
+
 async def test_join_with_good_key_gets_welcome_and_bad_key_gets_error():
     services = _services()
     keystore = Keystore()

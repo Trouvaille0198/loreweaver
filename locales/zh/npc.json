@@ -49,5 +49,7 @@
   "npc.tools.speak.mood_unset": "平静",
   "npc.tools.update.bad_field": "❌ 不支持的字段“{field}”；允许的字段：{allowed}",
   "npc.tools.update.done": "✅ 已将 {name} 的 {field} 更新为：{value}",
-  "npc.tools.update.failed": "❌ 更新 NPC 失败：{error}"
+  "npc.tools.update.failed": "❌ 更新 NPC 失败：{error}",
+  "npc.tools.public_memory.done": "📌 {name} 已告知玩家（公开记忆 {count} 条）",
+  "npc.tools.public_memory.failed": "❌ 记录公开记忆失败：{error}"
 }

@@ -85,21 +85,19 @@ async def test_build_system_prompt_includes_keeper_discipline_and_joins_all_sect
     assert "\n\n" in prompt
 
 
-async def test_build_system_prompt_pins_silent_player_boundary_in_attribution():
-    """A speaking player's declared action never lands on a present-but-silent
-    character: the attribution block must carry the boundary in BOTH locales, so
-    the model neither decides a silent player's action nor throws the decision
-    at them (observed failure: the KP kept asking the unspoken 白苏 to act)."""
+async def test_build_system_prompt_pins_off_catalog_holding_claim_rule():
+    """An off-catalog object the party picks up mid-play must go through
+    improvise_item, never a narration-only holding claim: the item discipline
+    block carries the rule in BOTH locales (observed failure: the KP wrote
+    \"物证归我保管\" for a cloth scrap that no item tool ever recorded)."""
     for locale, needle in (
-        ("en", "whose player has NOT spoken this scene"),
-        ("zh", "这一场景还没有发言的玩家角色"),
+        ("en", "goes through improvise_item the moment it changes hands"),
+        ("zh", "易手的当刻就用 improvise_item 落账"),
     ):
         services = _services(locale)
-        ctx = AgentCtx(chat_key=f"chat-attribution-{locale}", user_id="u1", locale=locale)
+        ctx = AgentCtx(chat_key=f"chat-item-discipline-{locale}", user_id="u1", locale=locale)
         prompt = await build_system_prompt(ctx, services)
-        assert needle in prompt, f"{locale}: silent-player clause missing from attribution"
-        # The freshness block no longer invites a spoken line for silent characters.
-        assert "descriptive beat" in prompt if locale == "en" else "描写性的片段" in prompt
+        assert needle in prompt, f"{locale}: off-catalog holding-claim rule missing from item discipline"
 
 
 async def test_build_system_prompt_is_localized_per_ctx_locale():

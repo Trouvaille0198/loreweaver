@@ -251,6 +251,15 @@ class CharacterSheet:
         # every read (checks, dice, sheet) sees the same bonuses without re-aggregating
         # from the document store on each call.
         self.equipped_bonuses: dict[str, int] = {}
+        # Runtime-declared pools are the authoritative mutable counters for
+        # packs that opt into the runtime contract. Non-runtime sheets keep
+        # their existing field-backed meters unchanged.
+        self.resources: dict[str, dict[str, Any]] = {}
+        self.rest_state: dict[str, Any] = {}
+        self.xp: int = 0
+        self.features: list[Any] = []
+        self.advancement: dict[str, Any] = {}
+        self.conditions: list[dict[str, Any]] = []
         self.background = ""
         self.notes = ""
         self.avatar: dict[str, Any] | None = None
@@ -292,6 +301,12 @@ class CharacterSheet:
             "skills": self.skills,
             "equipment": getattr(self, "equipment", []),
             "items": list(getattr(self, "items", [])),
+            "resources": {str(key): dict(value) for key, value in getattr(self, "resources", {}).items() if isinstance(value, dict)},
+            "rest_state": dict(getattr(self, "rest_state", {})),
+            "xp": getattr(self, "xp", 0),
+            "features": list(getattr(self, "features", [])),
+            "advancement": dict(getattr(self, "advancement", {})),
+            "conditions": list(getattr(self, "conditions", [])),
             "equipped_bonuses": dict(getattr(self, "equipped_bonuses", {})),
             "background": getattr(self, "background", ""),
             "notes": getattr(self, "notes", ""),
@@ -308,6 +323,24 @@ class CharacterSheet:
         character.secondary_attributes = data.get("secondary_attributes", {})
         character.skills = data.get("skills", {})
         character.equipment = data.get("equipment", [])
+        resources = data.get("resources", {})
+        if isinstance(resources, dict):
+            character.resources = {
+                str(key): dict(value) for key, value in resources.items() if isinstance(value, dict)
+            }
+        rest_state = data.get("rest_state", {})
+        if isinstance(rest_state, dict):
+            character.rest_state = dict(rest_state)
+        character.xp = int(data.get("xp", 0) or 0)
+        features = data.get("features", [])
+        if isinstance(features, list):
+            character.features = list(features)
+        advancement = data.get("advancement", {})
+        if isinstance(advancement, dict):
+            character.advancement = dict(advancement)
+        conditions = data.get("conditions", [])
+        if isinstance(conditions, list):
+            character.conditions = [dict(value) for value in conditions if isinstance(value, dict)]
         items = data.get("items", [])
         if isinstance(items, list):
             character.items = [i for i in items if isinstance(i, dict)]

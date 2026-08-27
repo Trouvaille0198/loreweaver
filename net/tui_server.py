@@ -318,6 +318,9 @@ class TuiServer(SessionCore):
         except MediaError as exc:
             await member.send_frame(_error_frame(exc.code, i18n))
         except Exception:
+            import traceback
+
+            traceback.print_exc()
             await member.send_frame(_error_frame("server_error", i18n))
 
 

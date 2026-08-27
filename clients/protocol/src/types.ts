@@ -8,7 +8,13 @@
 // skills, folded into a collapsible card section. 2.5 adds `options` on
 // `admin_generate` — keeper-selectable media/companion content for a module forge.
 // A 2.0–2.4 client ignores it.
-export const PROTOCOL_VERSION = "2.5" as const
+// 2.6 adds optional `mentions` on `narrative` frames. 2.7 adds the campaign
+// catch-up feed (`list_chronicle` → `chronicle_records`): the campaign summary
+// plus every chronicle record, player-projected — the structured lane behind
+// "previously on…" catch-up browsers. 2.8 generalizes `mentions` beyond NPCs:
+// items and discovered clues join in (`item://`, `clue://` links), and every
+// mention names its `kind`.
+export const PROTOCOL_VERSION = "2.8" as const
 
 export const FrameType = {
   Join: "join",
@@ -18,6 +24,10 @@ export const FrameType = {
   // lane behind "import from installed pack" pickers.
   ListPackCards: "list_pack_cards",
   PackCards: "pack_cards",
+  // v2.7 additive: the campaign catch-up feed (player-open) — the campaign
+  // summary plus every chronicle record, player-projected like `.recap`.
+  ListChronicle: "list_chronicle",
+  ChronicleRecords: "chronicle_records",
   MediaOffer: "media_offer",
   MediaAccept: "media_accept",
   Media: "media",
@@ -216,6 +226,36 @@ export interface PackCardsFrame {
   cards: PackCardEntry[]
 }
 
+// v2.7: ask the server for the campaign catch-up feed. Player-open — every
+// field comes from the PLAYER document projections, so keeper annotations and
+// fold bookkeeping structurally cannot appear (the same contract `.recap`
+// keeps, as structured data for catch-up browsers).
+export interface ListChronicleFrame {
+  type: typeof FrameType.ListChronicle
+}
+
+// One player-visible chronicle record: what this turn established for the
+// campaign's history. `pcs` tags the characters the record touches; `scene`
+// names the scene when the module tracks one. Whether an old record has been
+// folded into the summary is derivable client-side (`record.turn <=
+// summary.through_turn`) — fold bookkeeping itself stays keeper-side.
+export interface ChronicleRecordEntry {
+  id: string
+  turn: number
+  text: string
+  pcs: string[]
+  scene: string
+}
+
+// v2.7: the unicast answer to `list_chronicle`. `summary` is null (not absent)
+// before the first fold creates it; `records` is empty (not absent) when the
+// campaign has no chronicle records yet.
+export interface ChronicleRecordsFrame {
+  type: typeof FrameType.ChronicleRecords
+  summary: { text: string; through_turn: number } | null
+  records: ChronicleRecordEntry[]
+}
+
 export interface MediaEnabledFrame {
   type: typeof FrameType.MediaEnabled
   enabled: boolean
@@ -310,6 +350,48 @@ export interface NarrativeFrame {
   name?: string
   text: string
   format: NarrativeFormat
+  // Tracked records annotated into `text` as `[name](<kind>://<id>)` markdown
+  // links, each carrying the record's PLAYER-visible card (never keeper-side
+  // knowledge). Optional: absent on older servers / unannotated lines.
+  mentions?: Mention[]
+}
+
+// Which kind of room record a mention binds to — also the link scheme.
+export type MentionKind = "npc" | "item" | "clue"
+
+// One tracked record this narrative line refers to — enough for the client to
+// highlight the name and open its public card on click. Servers before 2.8
+// omit `kind`, which means npc.
+export interface Mention {
+  id: string
+  kind?: MentionKind
+  name: string
+  card?: MentionCard
+}
+
+// The PLAYER-visible subset of one record's projection, flattened into a bag:
+// only the fields the matching kind exposes may appear, and a secret item or
+// an undiscovered clue never yields a mention at all.
+export interface MentionCard {
+  // npc — the player-visible subset of the NPC record; internal knowledge /
+  // secret agenda are structurally absent.
+  name?: string
+  public_description?: string
+  location?: string
+  status?: string
+  avatar?: string // media-blob content hash
+  public_memory?: string[]
+  // item — what an owned instance or a non-secret catalog preset exposes.
+  // Here `kind` is the item's CATEGORY label (武器, tool, …) — not Mention['kind'].
+  kind?: string
+  slot?: string
+  quantity?: number
+  equipped_slot?: string
+  description?: string
+  effect?: string
+  // clue — a discovered-clue log entry (`content`, plus where it was found).
+  content?: string
+  found_turn?: number
 }
 
 // One streaming text delta for the draft bubble `id`; concatenate deltas
@@ -721,11 +803,16 @@ export interface ResourceState {
   value: number
   max?: number
 }
+export interface ResourceGroupState {
+  id: string
+  resources: RuntimeResourceState[]
+}
 
 export interface CharacterState {
   name: string
   system: string
   resources: ResourceState[]
+  resource_groups?: ResourceGroupState[]
   attributes: Record<string, unknown>
   /** v2.4: the sheet's trained skills, name → current value. A long, secondary
    * surface — clients fold it into a collapsible card section, not the main
@@ -824,6 +911,54 @@ export interface InitiativeEntry {
   value: number
   current: boolean
 }
+export interface RuntimeResourceState extends ResourceState {
+  role?: string
+  group?: string
+  revision?: number
+  die?: string
+  prominent?: boolean
+}
+
+export interface RuntimeConditionState {
+  id: string
+  source?: string
+  target?: string
+  start_round?: number
+  start_turn?: number
+  duration?: unknown
+  stacks?: number
+  visibility?: string
+}
+
+export interface CombatantState {
+  id: string
+  name: string
+  initiative: number
+  position: number
+  state?: string
+  budget?: Record<string, number>
+  resources?: RuntimeResourceState[]
+  conditions?: RuntimeConditionState[]
+  health?: unknown
+  health_presentation?: unknown
+}
+
+export interface CombatState {
+  schema_version: number
+  id: string
+  revision: number
+  phase: string
+  round: number
+  turn_index: number
+  current?: string | null
+  budget: Record<string, number>
+  order: string[]
+  combatants: CombatantState[]
+  reaction_window?: Record<string, unknown> | null
+  event_seq: number
+  events?: Record<string, unknown>[]
+}
+
 
 // Rolling per-room LLM token/cache usage aggregate (gateway/turn.py's
 // `_record_usage_stats`, surfaced by `net.state.build_room_state`). Additive/
@@ -891,6 +1026,8 @@ export interface StateFrame {
   scene?: SceneState
   clock?: ClockState
   initiative: InitiativeEntry[]
+  /** Runtime combat projection; mechanics fields are keeper-filtered server-side. */
+  combat?: CombatState
   online: number
   usage?: UsageState
   // v2.5 additive: the room's discovered-clue log (player projection) — every
@@ -1429,6 +1566,7 @@ export type ClientFrame =
   | InputFrame
   | PingFrame
   | ListPackCardsFrame
+  | ListChronicleFrame
   | PanelIntentFrame
   | MediaOfferFrame
   | MediaSetEnabledFrame
@@ -1473,6 +1611,7 @@ export type ServerFrame =
   | NarrativeDeltaFrame
   | NarrativeDraftFrame
   | PackCardsFrame
+  | ChronicleRecordsFrame
   | DiceFrame
   | UiFrame
   | UiManifestFrame

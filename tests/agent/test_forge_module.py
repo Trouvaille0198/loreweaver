@@ -604,7 +604,7 @@ async def test_media_pass_enforces_kind_caps_one_portrait_per_npc_and_total_cap(
         + [_shot("scenes", f"Scene {i}") for i in range(7)]
         + [_shot("npcs", "The Ferryman"), _shot("npcs", "The Ferryman")]
         + [_shot("npcs", f"NPC {i}") for i in range(6)]
-        + [_shot("items", f"Item {i}") for i in range(7)]
+        + [_shot("clue", f"Clue {i}") for i in range(7)]
     )
     services = _option_services(tmp_path, [GENERATED_MODULE_MD, _scripted_analysis_json(), json.dumps(entries)])
     ctx = _ctx(tmp_path)
@@ -613,16 +613,17 @@ async def test_media_pass_enforces_kind_caps_one_portrait_per_npc_and_total_cap(
     forge_module._USER_MODULE_DIR = tmp_path
     try:
         result = await generate_and_install_module(
-            services, ctx, "a marsh mystery", media=["cover", "scenes", "npcs", "items"]
+            services, ctx, "a marsh mystery", media=["cover", "scenes", "npcs", "clue"]
         )
 
         assert result.ok, result.error
-        # 1 cover + 6 scenes + 6 unique NPC portraits = 13 valid shots; the 12-image total cap
-        # bites last. The second Ferryman portrait never renders (one portrait per NPC).
-        assert len(services.imagegen.calls) == 12
+        # 1 cover + 7 scenes + 7 unique NPC portraits + 7 clues = 22 shots — every kind's cap
+        # (20) and the 60-image total cap are generous, so nothing is cut. The second Ferryman
+        # portrait still never renders (one portrait per NPC).
+        assert len(services.imagegen.calls) == 22
         ferryman_prompts = [call["prompt"] for call in services.imagegen.calls if "The Ferryman" in call["prompt"]]
         assert len(ferryman_prompts) == 1
-        assert not any("Item" in call["prompt"] for call in services.imagegen.calls)
+        assert sum(1 for call in services.imagegen.calls if "Clue" in call["prompt"]) == 7
         assert "cover-1" in result.detail
     finally:
         forge_module._USER_MODULE_DIR = original_user_dir

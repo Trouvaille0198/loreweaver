@@ -360,7 +360,18 @@ async def run_turn(
                 # when no draft is open — the check lane closed it, or nothing ever
                 # streamed — it is unset and the rendered id falls back to the record
                 # id (`origin_id`), the persisted reply's record (join replay).
-                final = Event.narrative(speaker="kp", text=result.reply, fmt="markdown", frame_id=stream_state["id"])
+                # Annotate mentions (npc/item/clue highlight + player-visible cards)
+                # ONCE, on the final line, so live and replayed rendering agree.
+                # Never load-bearing.
+                try:
+                    from gateway.mentions import annotate_mentions
+
+                    annotated, mentions = await annotate_mentions(services, ctx.chat_key, result.reply)
+                    final = Event.narrative(speaker="kp", text=annotated, fmt="markdown", frame_id=stream_state["id"])
+                    if mentions:
+                        final.data["mentions"] = mentions
+                except Exception:  # noqa: BLE001 — annotation is never load-bearing
+                    final = Event.narrative(speaker="kp", text=result.reply, fmt="markdown", frame_id=stream_state["id"])
                 final.origin_id = result.reply_record_id
                 await hub.publish(ctx.chat_key, final)
                 # The discarded tool-round narration rides the reply as a KEEPER-ONLY

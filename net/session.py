@@ -54,6 +54,8 @@ from net.room_backup import room_rows, room_vector_points
 
 logger = logging.getLogger(__name__)
 
+# v2.8 generalizes narrative `mentions` beyond NPCs — items and discovered clues
+# join in (`item://`, `clue://` links), and every mention names its `kind`.
 # v2.4 adds `character.skills` — the sheet's trained skills on the state frame, so a
 # client can fold them into the character card. v2.3 added `kind` to every `pack_cards`
 # entry — the 拆卡 classification a picker needs to send the right import verb (without
@@ -65,7 +67,7 @@ logger = logging.getLogger(__name__)
 # `panel_intent` client frame, and pack-asset resolution on the media byte channel.
 # v1.7 added declarative hook-emitted `ui` frames (core.hooks emitUI); v1.6 added
 # player-visible module variables on the state frame.
-_PROTOCOL_VERSION = "2.5"
+_PROTOCOL_VERSION = "2.8"
 # Public alias for out-of-band consumers (the `.lwpack` engine-minimum check in app.py).
 PROTOCOL_VERSION = _PROTOCOL_VERSION
 _SERVER_BANNER = "loreweaver/1"
@@ -237,6 +239,10 @@ def render_frame(event: Event) -> dict[str, Any] | None:
         }
         if event.name:
             frame["name"] = event.name
+        # NPC mention annotations (highlight + player-visible cards) attached at the
+        # event's construction point; forwarded verbatim for the client to render.
+        if event.data.get("mentions"):
+            frame["mentions"] = event.data["mentions"]
         # A `private` line (sensitive command reply, failed-turn feedback) is
         # unicast to one connection; the flag lets a client mark it as visible
         # to this seat only, never as table content.
@@ -634,9 +640,19 @@ class SessionCore:
                             member, Event.narrative(speaker="system", text=text, fmt="plain"), replayed, anchor
                         )
                     else:
-                        await self._deliver_replay(
-                            member, Event.narrative(speaker="kp", text=text, fmt="markdown"), replayed, anchor
-                        )
+                        # Annotate mentions (npc/item/clue) on replay exactly as the live
+                        # path does, so a rejoin renders the same highlights/cards as the
+                        # original broadcast.
+                        try:
+                            from gateway.mentions import annotate_mentions
+
+                            annotated, mentions = await annotate_mentions(self.services, chat_key, text)
+                            replay_event = Event.narrative(speaker="kp", text=annotated, fmt="markdown")
+                            if mentions:
+                                replay_event.data["mentions"] = mentions
+                        except Exception:  # noqa: BLE001 — annotation is never load-bearing
+                            replay_event = Event.narrative(speaker="kp", text=text, fmt="markdown")
+                        await self._deliver_replay(member, replay_event, replayed, anchor)
                         # The discarded streaming draft rides the reply — KEEPER-ONLY: a
                         # player rejoin never learns the pre-tool narration existed.
                         draft = str(entry.get("_lw_draft") or "").strip()
@@ -731,6 +747,22 @@ class SessionCore:
                         "cards": installed_card_entries(Path(self.services.settings.data_dir)),
                     }
                 )
+                return
+            if kind == "list_chronicle":
+                # v2.7, player-open: the campaign's catch-up feed — the campaign
+                # summary + every chronicle record, all through PLAYER
+                # projections, so keeper annotations structurally cannot appear
+                # (the same contract `.recap` keeps, as structured data for
+                # catch-up browsers instead of a trimmed text reply). Read-only
+                # and off the turn lock, so it never queues behind an AI turn;
+                # it spends the same per-member / per-room allowance an input
+                # does, exactly like `list_pack_cards` above.
+                from agent.chronicle import chronicle_records_payload
+
+                if not self.rate_limiter.allow(member.id) or not self.rate_limiter.allow(member.session_key):
+                    await member.send_frame(error_frame("rate_limited", i18n))
+                    return
+                await member.send_frame(await chronicle_records_payload(self.services, member.session_key))
                 return
             if kind == "media_offer":
                 async with self.hub.turn_lock(member.session_key):

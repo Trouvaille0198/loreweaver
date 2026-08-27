@@ -251,6 +251,68 @@ class NpcTools:
 
             module = await active_module(self._services, ctx.chat_key)
             module_source = str((module or {}).get("source_id") or "") or None
+            # The world card's worldbook entries carry each NPC's illustration (a media-blob
+            # name like `module-…-npcs-4.png`); resolve it to the blob's content hash so the
+            # player-facing NPC card can render the portrait through the content-addressed
+            # media channel. Best-effort: a missing entry/blob leaves the avatar empty.
+            from core.worldbook import LORE_DOC_TYPE
+
+            lore_docs = await self._services.documents.list(ctx.chat_key, LORE_DOC_TYPE)
+            npc_images: dict[str, str] = {}
+            npc_aliases: dict[str, list[str]] = {}
+            npc_lore: dict[str, str] = {}
+            for doc in lore_docs or []:
+                data = dict(doc.data)
+                if str(data.get("category") or "").strip().casefold() != "npc":
+                    continue
+                keys = data.get("keys") or []
+                primary = str(keys[0]).strip() if keys and str(keys[0]).strip() else str(data.get("title") or "")
+                title = str(data.get("title") or "").strip()
+                image = str(data.get("image") or "").strip()
+                aliases = [str(a).strip() for a in (data.get("aliases") or []) if str(a).strip()]
+                content = str(data.get("content") or "").strip()
+                # Key the lookup by BOTH the trigger key and the display title:
+                # the pool entry's `name` (e.g. "格伦·哨兵") rarely equals the
+                # entry's first trigger key (e.g. "格伦"), and a title-prefixed
+                # form ("卫兵格伦·哨兵") only matches by containment.
+                for key in {primary.casefold(), title.casefold()}:
+                    if not key:
+                        continue
+                    if image:
+                        npc_images.setdefault(key, image)
+                    if aliases:
+                        npc_aliases.setdefault(key, aliases)
+                    if content:
+                        npc_lore.setdefault(key, content)
+
+            def _lore_lookup(table: dict[str, str], name: str) -> str:
+                """Exact key hit first, then containment (name ⊂ key or key ⊂ name)."""
+                folded = name.strip().casefold()
+                if folded in table:
+                    return table[folded]
+                for key, value in table.items():
+                    if folded and (folded in key or key in folded):
+                        return value
+                return ""
+
+            async def _npc_avatar(name: str) -> str:
+                image = _lore_lookup(npc_images, name)
+                if not image:
+                    return ""
+                try:
+                    from infra.media_store import MediaStore
+
+                    store = MediaStore(
+                        self._services.store,
+                        self._services.settings.data_dir,
+                        max_file_bytes=self._services.settings.tui.media_max_file_bytes,
+                        room_quota_bytes=self._services.settings.tui.media_room_quota_bytes,
+                    )
+                    record = await store.get_record_by_name(ctx.chat_key, image)
+                except Exception:  # noqa: BLE001 — avatar is never load-bearing
+                    return ""
+                return record.hash if record else ""
+
             for entry in entries:
                 if not isinstance(entry, dict):
                     continue
@@ -262,12 +324,17 @@ class NpcTools:
                     continue
 
                 try:
+                    description = str(entry.get("description", "")).strip()
+                    if not description:
+                        description = _lore_lookup(npc_lore, name)
                     await npc_records.create_npc(self._services.documents,
                         ctx.chat_key,
                         name,
-                        public_description=str(entry.get("description", "")),
+                        public_description=description,
                         secret_agenda=str(entry.get("secret", "")),
                         role=str(entry.get("role", "")),
+                        avatar=await _npc_avatar(name),
+                        aliases=_lore_lookup(npc_aliases, name) or None,
                         source=module_source,
                     )
                 except npc_records.PlayerNameReservedError as exc:
@@ -310,25 +377,30 @@ class NpcTools:
         except Exception as exc:
             return i18n.t("npc.tools.knowledge.failed", error=str(exc))
 
-    @tool(prep_only=True)  # low-frequency knowledge injection, prep-phase work
-    async def npc_learns(self, ctx: AgentCtx, npc: str, fact: str) -> str:
-        """Have an NPC learn exactly one new fact during play (appended to their knowledge).
+    @tool
+    async def npc_tells(self, ctx: AgentCtx, npc: str, facts: str) -> str:
+        """Record what the party just learned FROM or ABOUT an NPC — their PLAYER-visible
+        memory, shown in the public NPC card players can open. Use when the NPC tells the party
+        a fact or the party observes something notable about them. NEVER record the NPC's
+        private agenda, secrets, or anything the party hasn't actually learned.
 
         Args:
             npc: The NPC's name or id.
-            fact: The single fact they just learned.
+            facts: Comma- or newline-separated facts the party just learned.
 
         Returns:
-            Confirmation, or a not-found message.
+            Confirmation with the NPC's public-memory count, or a not-found message.
         """
         i18n = self._i18n(ctx)
         try:
-            record = await npc_records.npc_learns(self._services.documents, ctx.chat_key, npc, fact)
+            record = await npc_records.add_public_memory(
+                self._services.documents, ctx.chat_key, npc, _split_knowledge(facts)
+            )
             if record is None:
                 return i18n.t("npc.tools.not_found", npc=npc)
-            return i18n.t("npc.tools.learns.done", name=record.name, fact=fact)
+            return i18n.t("npc.tools.public_memory.done", name=record.name, count=len(record.public_memory))
         except Exception as exc:
-            return i18n.t("npc.tools.learns.failed", error=str(exc))
+            return i18n.t("npc.tools.public_memory.failed", error=str(exc))
 
     @tool
     async def set_npc_disposition(self, ctx: AgentCtx, npc: str, disposition: str) -> str:

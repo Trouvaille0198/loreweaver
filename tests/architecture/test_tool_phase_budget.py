@@ -23,9 +23,13 @@ from infra.embeddings import FakeEmbeddings
 from infra.llm import FakeLLM
 
 # Measured 2026-08-11: the play phase is 32 tools / ~16.6k characters, cut from 35.7k
-# ungated. The ceiling leaves room for a couple of genuinely per-turn additions and no
-# more; a bulk tool cannot slip in under it.
-PLAY_PHASE_SCHEMA_BUDGET = 21_000  # the fork's play toolset adds the item suite, module queries and settlement proposal
+# ungated. The ceiling leaves room for a couple of genuinely per-turn additions and
+# no more; a bulk tool cannot slip in under it. Raised 2026-08-27 with the
+# off-catalog improv lane: improvise_item moved from prep into play so evidence
+# trinkets a party picks up mid-session get a real grant channel (before, the model
+# could only narrate a holding claim the item system never recorded — 21994 chars /
+# 42 tools measured after the move).
+PLAY_PHASE_SCHEMA_BUDGET = 22_500
 
 # What a turn cannot be run without. Losing any of these to a phase reclassification is
 # not a budget question — it breaks play.
@@ -69,7 +73,10 @@ def test_phasing_actually_cut_something():
     prep = _payload(toolset.schemas(phase=PREP_PHASE))
     play = _payload(toolset.schemas(phase=PLAY_PHASE))
 
-    assert play < prep / 2, f"phasing removed almost nothing: prep {prep}, play {play}"
+    # 0.52: measured 0.517 after improvise_item joined play (the off-catalog improv
+    # lane is a per-turn channel, see the budget note above). Still a hard guard
+    # against phasing collapsing — prep keeps 38 of 80 tools off the play payload.
+    assert play < prep * 0.52, f"phasing removed almost nothing: prep {prep}, play {play}"
 
 
 def test_the_per_turn_essentials_are_never_prep_only():

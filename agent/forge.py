@@ -166,12 +166,13 @@ MODULE_MEDIA_INDEX_KEY = "module_media_index"
 # Keeper-selectable extra content for a generated module (the `media`/`companion` options). Two
 # closed vocabularies, ordered so a normalized selection is deterministic; unknown ids are
 # ignored by `_normalize_option_ids`, never an error. Audio is deliberately absent (keeper veto).
-MEDIA_OPTION_IDS: tuple[str, ...] = ("cover", "scenes", "npcs", "items", "pregens")
+MEDIA_OPTION_IDS: tuple[str, ...] = ("cover", "scenes", "npcs", "clue", "pregens")
 COMPANION_OPTION_IDS: tuple[str, ...] = ("skills", "rulepacks", "cards")
 
-# Per-kind and total caps for the media pass: a cover is singular, every other kind illustrates
-# the KEY subjects only, and one generation never renders more than a dozen images.
-_MEDIA_KIND_CAPS: dict[str, int] = {"cover": 1, "scenes": 6, "npcs": 6, "items": 6, "pregens": 6}
+# Per-kind and total caps for the media pass: a cover is singular, every scene/NPC/clue entry
+# and every claimable pregen gets exactly one illustration, and one generation never renders
+# more than the caps below (a generous ceiling — typical modules stay well under).
+_MEDIA_KIND_CAPS: dict[str, int] = {"cover": 1, "scenes": 20, "npcs": 20, "clue": 20, "pregens": 6}
 # Render at most a couple of shots concurrently: image providers rate-limit (HTTP 429) when a
 # cast's portraits fan out at once, and serializing a dozen images is a 10+ minute slog. Two in
 # flight stays under typical per-minute quotas without turning the media pass into a crawl.
@@ -226,7 +227,7 @@ async def _imagegen_generate_retry(imagegen: Any, prompt: str, *, size: str) -> 
             delay = min(10 * 2**attempt, 60) if _is_rate_limit_error(exc) else min(2**attempt, 8)
             await asyncio.sleep(delay)
     raise last  # type: ignore[misc]
-_MEDIA_TOTAL_CAP = 12
+_MEDIA_TOTAL_CAP = 60
 
 # The cards lane ships a small claimable cast, like a published scenario's pregen cards.
 _MAX_COMPANION_CARDS = 4
@@ -286,6 +287,7 @@ async def _llm_authored(
         with lane_scope("authoring", chat_key=chat_key or None):
             result = await llm.chat(messages)
     except Exception as exc:
+        logger.warning("[forge] authoring LLM call failed: %s", exc)
         return None, ForgeResult(False, "", "", "", f"llm_failed: {exc}")  # i18n-exempt
     if chat_key:
         await record_usage_stats(
@@ -297,10 +299,9 @@ async def _llm_authored(
         )
     content = (result.content or "").strip()
     if not content:
+        logger.warning("[forge] authoring LLM returned empty response")
         return None, ForgeResult(False, "", "", "", "empty_response")
     return content, None
-
-
 async def _llm_authored_retry(
     services: Services,
     messages: list[dict],
@@ -1182,19 +1183,19 @@ def _parse_shot_list(raw: str, kinds: list[str]) -> list[_Shot]:
 
 # Which media kind illustrates which worldbook category. The world card's entries are
 # category-tagged (lore/npc/clue/truth/secret); a generated `npcs` shot depicts a `npc`
-# entry, `scenes` shots depict `lore` (place/setting) entries, `items` shots depict `clue`
-# (item/clue) entries. Truth/secret (keeper-only) entries are never illustrated.
-_WORLDBOOK_CATEGORY_TO_MEDIA_KIND: dict[str, str] = {"npc": "npcs", "lore": "scenes", "clue": "items"}
+# entry, `scenes` shots depict `lore` (place/setting) entries, `clue` shots depict `clue`
+# entries. Truth/secret (keeper-only) entries are never illustrated.
+_WORLDBOOK_CATEGORY_TO_MEDIA_KIND: dict[str, str] = {"npc": "npcs", "lore": "scenes", "clue": "clue"}
 
 
 def _worldbook_subject_names(card_text: dict[str, Any]) -> dict[str, list[str]]:
-    """Real scene/NPC/item names per media kind, from the world card's worldbook entries.
+    """Real scene/NPC/clue names per media kind, from the world card's worldbook entries.
 
     Each entry's PRIMARY name is its first trigger key (the worldbook schema has no dedicated
     `name` field; keys[0] is the canonical name the module refers to). Returns e.g.
     ``{"npcs": ["以赛亚·哈德利", …], "scenes": […], "items": […]}`` so the shot-designer is
     told to use the ACTUAL cast/places/objects — otherwise it invents names that cannot bind
-    back to the worldbook entries (the pregens already had this guard; scenes/NPCs/items did
+    back to the worldbook entries (the pregens already had this guard; scenes/NPCs/clue did
     not)."""
     names: dict[str, list[str]] = {}
     for entry in card_text.get("worldbook") or []:
@@ -1223,7 +1224,7 @@ def _bind_worldbook_images(card_text: dict[str, Any], media_index: list[dict[str
     shots_by_kind: dict[str, list[dict[str, str]]] = {}
     for shot in media_index:
         kind = shot.get("kind")
-        if kind in ("npcs", "scenes", "items") and shot.get("name"):
+        if kind in ("npcs", "scenes", "clue") and shot.get("name"):
             shots_by_kind.setdefault(kind, []).append(shot)
     for entry in card_text.get("worldbook") or []:
         if not isinstance(entry, dict):
@@ -1242,6 +1243,73 @@ def _bind_worldbook_images(card_text: dict[str, Any], media_index: list[dict[str
     return bound
 
 
+def _persona_bare_name(name: str) -> str:
+    """Strip a trailing parenthetical — `薇拉·月影（Vera Moonshadow）` → `薇拉·月影`.
+
+    The forge's `name_en` convention appends an English gloss to a CJK persona name;
+    the media shot designer routinely drops that gloss from a shot subject. Binding
+    therefore falls back to the bare form before giving up."""
+    name = name.strip()
+    for open_b, close_b in (("（", "）"), ("(", ")")):
+        if name.endswith(close_b):
+            idx = name.rfind(open_b)
+            if idx > 0:
+                return name[:idx].strip()
+    return name
+
+
+def _normalize_pregen_names(card_text: dict[str, Any]) -> int:
+    """Strip a trailing parenthetical English gloss off pregen names and fold the gloss into
+    `aliases`. The authoring schema forbids the gloss in `name` outright, but a model that
+    slips still lands a clean CJK roster name with the English name preserved as an alias —
+    never a half-translated claimable entry. Returns how many pregens were adjusted."""
+    adjusted = 0
+    for pregen in card_text.get("pregens") or []:
+        if not isinstance(pregen, dict):
+            continue
+        name = str(pregen.get("name") or "").strip()
+        bare = _persona_bare_name(name)
+        if bare == name:
+            continue
+        gloss = name[len(bare):].strip("（）() \t")
+        pregen["name"] = bare
+        aliases = [str(a).strip() for a in (pregen.get("aliases") or []) if str(a).strip()]
+        if gloss and gloss not in aliases and gloss != bare:
+            aliases.append(gloss)
+        pregen["aliases"] = aliases[:8]
+        adjusted += 1
+    return adjusted
+
+
+def _bind_pregen_portraits(card_text: dict[str, Any], media_index: list[dict[str, str]]) -> int:
+    """Stamp generated pregen portraits onto the matching pregen's `avatar`.
+
+    Mirrors `_bind_worldbook_images`: match shot.subject to the pregen's canonical name and
+    write the asset filename onto the pregen. Matching tolerates the shot designer dropping the
+    `name_en` gloss (`薇拉·月影（Vera Moonshadow）` vs a subject of `薇拉·月影`) by falling back
+    to the parenthetical-stripped forms on both sides. Returns how many pregens were stamped."""
+    portraits = {
+        str(shot.get("subject")): str(shot.get("name")) for shot in media_index if shot.get("kind") == "pregens"
+    }
+    if not portraits:
+        return 0
+    # Second index keyed by the parenthetical-stripped subject, so a shot that dropped the
+    # `name_en` gloss still binds back to its pregen. Exact match wins when both forms exist;
+    # a bare collision (two subjects stripping to the same name) is impossible in practice —
+    # the shot designer names shots after the card's own unique pregen list.
+    by_bare = {_persona_bare_name(subject): asset for subject, asset in portraits.items()}
+    bound = 0
+    for pregen in card_text.get("pregens") or []:
+        if not isinstance(pregen, dict):
+            continue
+        name = str(pregen.get("name") or "").strip()
+        avatar = portraits.get(name) or by_bare.get(_persona_bare_name(name))
+        if avatar:
+            pregen["avatar"] = avatar
+            bound += 1
+    return bound
+
+
 def _build_module_media_messages(
     services: Services,
     content: str,
@@ -1256,7 +1324,7 @@ def _build_module_media_messages(
     are appended so `pregens` shots name the ACTUAL cast — otherwise the shot designer invents its
     own names and the portraits cannot bind back to the investigators. ``subject_names`` extends
     the same discipline to the other kinds: real scene/NPC/item names from the world card, so
-    `npcs`/`scenes`/`items` shots depict characters/places/objects that actually exist in the
+    `npcs`/`scenes`/`clue` shots depict characters/places/objects that actually exist in the
     module and can bind back to their worldbook entries."""
     system_prompt = "\n\n".join(
         (
@@ -1599,6 +1667,7 @@ _PACK_MODULE_CARD_SCHEMA = """{
             "title": "short display title for this entry (especially important for clue entries)",
             "content": "a lore entry the keeper uses to run the module (setting, NPC, clue, truth, or a keeper-only secret: an ending plan, an NPC knowledge boundary)",
             "keys": ["trigger keywords that pull this entry into the keeper's context"],
+            "aliases": ["REQUIRED for an NPC entry (category 'npc'): the NAMES this specific character answers to — short forms, epithets or other-language spellings (e.g. 卫兵格伦·哨兵 -> ['格伦']). NEVER generic descriptors like 守卫/商人/店主 or anything that describes a group or a job; omit ONLY for non-NPC entries"],
             "secret": true,
             "category": "lore|npc|clue|truth|secret"
         }
@@ -1614,7 +1683,8 @@ _PACK_MODULE_CARD_SCHEMA = """{
             "options": ["only for enum kind, list the allowed values"],
     "pregens": [
         {
-            "name": "a claimable investigator",
+            "name": "a claimable investigator's name in the module's OWN language — NEVER append an English or any other gloss in parentheses (put short forms and the English name in aliases)",
+            "aliases": ["short forms of the name and its English/translated name, e.g. for 顾晚棠: 小棠, Gu Wantang"],
             "background": "2-4 sentences of persona: their history, personality, manner of speech, and a secret or flaw — the first sentence also serves as the roster one-liner",
             "occupation": "the character's job or occupation (e.g. 'Detective', 'Archaeologist', 'journalist'); empty if genuinely unemployed",
             "skills": {"Spot Hidden": 60, "Fast Talk": 45, "Library Use": 50}
@@ -1833,6 +1903,9 @@ async def generate_and_install_pack_module(
     skills_adjusted = _normalize_pregen_skills(card_text, skills_pack) if skills_pack is not None else 0
     if skills_adjusted:
         logger.info("[pack-forge] normalized %d pregen skill profile(s)", skills_adjusted)
+    pregen_names_adjusted = _normalize_pregen_names(card_text)
+    if pregen_names_adjusted:
+        logger.info("[pack-forge] normalized %d pregen name(s): gloss moved to aliases", pregen_names_adjusted)
 
     name = lorecard.card.name or description
     # A CJK `name` has no ASCII to slug, so the model also supplies `name_en` — a short English
@@ -1862,6 +1935,7 @@ async def generate_and_install_pack_module(
         return ForgeResult(False, "", "", "", f"write_failed: {exc}")
 
     # Optional illustrations: render into the pack's OWN assets/ (travel with the module).
+    media_note = ""
     media_index: list[dict[str, str]] = []
     if media_kinds:
         assets_dir = source / "assets"
@@ -1873,7 +1947,7 @@ async def generate_and_install_pack_module(
                 for p in (card_text.get("pregens") or [])
                 if isinstance(p, dict) and p.get("name")
             ]
-            # Real scene/NPC/item names from the world card, so `npcs`/`scenes`/`items`
+            # Real scene/NPC/clue names from the world card, so `npcs`/`scenes`/`clue`
             # shots use the ACTUAL cast/places/objects and can bind back to their entries.
             subject_names = _worldbook_subject_names(card_text)
             shots_raw, shots_failure = await _llm_authored(
@@ -1890,10 +1964,20 @@ async def generate_and_install_pack_module(
             )
         except Exception:  # noqa: BLE001 — media is never load-bearing
             shots_raw, shots_failure = None, ForgeResult(False, "", "", "", "shot_list_failed")
-        if shots_failure is None and shots_raw:
+        if shots_failure is not None:
+            media_note = i18n.t(
+                "agent.forge.module_media_none",
+                reason=_option_reason(i18n, "shot_list_failed"),
+            )
+        elif shots_raw:
             imagegen = await services.imagegen_for_room(ctx.chat_key)
             if imagegen is not None:
                 shots = _parse_shot_list(shots_raw, media_kinds)
+                if not shots:
+                    media_note = i18n.t(
+                        "agent.forge.module_media_none",
+                        reason=_option_reason(i18n, "no_shots"),
+                    )
                 total = len(shots)
                 done = 0
                 sem = asyncio.Semaphore(_MEDIA_CONCURRENCY)
@@ -1954,7 +2038,7 @@ async def generate_and_install_pack_module(
                     # module-creation path's `_append_module_media_index`).
                     await _append_module_media_index(services, ctx.chat_key, media_index)
                 logger.info("[pack-forge] media pass done: %d images", len(media_index))
-                failed_shots = [s.subject or s.kind for s, r in zip(shots, rendered) if r is None]
+                failed_shots = [s.subject or s.kind for s, r in zip(shots, rendered, strict=False) if r is None]
                 if failed_shots:
                     logger.warning(
                         "[pack-forge] media pass dropped %d shot(s): %s",
@@ -1962,6 +2046,10 @@ async def generate_and_install_pack_module(
                         ", ".join(failed_shots),
                     )
             else:
+                media_note = i18n.t(
+                    "agent.forge.module_media_none",
+                    reason=_option_reason(i18n, "not_configured"),
+                )
                 logger.warning("[pack-forge] no imagegen provider for this room; media skipped")
 
     # Bind generated images to the world card. Investigator portraits stamp onto the matching
@@ -1970,14 +2058,8 @@ async def generate_and_install_pack_module(
     # longer orphans — they ride the card, survive re-import, and appear beside the entry).
     # One rewrite covers both bindings.
     card_rewritten = False
-    pregen_portraits = {
-        str(shot.get("subject")): str(shot.get("name")) for shot in media_index if shot.get("kind") == "pregens"
-    }
-    if pregen_portraits:
-        for pregen in card_text.get("pregens") or []:
-            if isinstance(pregen, dict) and pregen.get("name") in pregen_portraits:
-                pregen["avatar"] = pregen_portraits[pregen["name"]]
-                card_rewritten = True
+    if _bind_pregen_portraits(card_text, media_index):
+        card_rewritten = True
     if _bind_worldbook_images(card_text, media_index):
         card_rewritten = True
     if card_rewritten:
@@ -2083,6 +2165,8 @@ async def generate_and_install_pack_module(
         parts.append(i18n.t("agent.forge.pack_module_generated_not_imported", name=name, path=str(built.path)))
     if media_index:
         parts.append(i18n.t("agent.forge.pack_module_media", count=len(media_index)))
+    elif media_note:
+        parts.append(media_note)
     parts.extend(companion_notes)
     return ForgeResult(True, pack_id, name, str(built.path), "", detail="\n".join(parts))
 

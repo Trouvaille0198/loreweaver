@@ -1,10 +1,10 @@
 *[English](protocol.md) · 中文*
 
-# Loreweaver 联网 TUI —— 协议 2.5
+# Loreweaver 联网 TUI —— 协议 2.8
 
 这是 loreweaver 服务器（通过 `python -m app --serve` 启动）与 OpenTUI 终端客户端之间开放、带版本的协议。引擎本身（确定性内核加 AI 守秘人）和用什么传输无关；与传输无关的会话逻辑在 `net.session.SessionCore` 里，这份文档描述的是接口，不绑定任何编程语言。
 
-控制流使用 `{"type": ...}` 形状的 JSON 帧，协议版本为 `"2.5"`。同一套帧和 `join` 握手可以跑在两种传输上：
+控制流使用 `{"type": ...}` 形状的 JSON 帧，协议版本为 `"2.8"`。同一套帧和 `join` 握手可以跑在两种传输上：
 
 - **Iroh** 是 `--serve` 实际启动的默认传输：点对点 QUIC，服务端打印可分享 ticket，不需要域名、证书或端口转发。控制帧是在长连接双向流上的 newline-delimited JSON；媒体字节使用同一连接上的额外双向流。
 - **WebSocket**（`net.tui_server`）只留作离线测试和本机回环，不是 `--serve` 的一个选项。控制帧是文本消息，媒体字节是二进制消息。
@@ -36,12 +36,14 @@
   `{type:"panel_intent", panel:string, kind:"choice"|"input"|"roll", value:string}`
 - `list_pack_cards`（v2.2）— 请求已安装扩展包携带的卡文件清单，是「从已安装包导入」选择器背后的结构化通道。对玩家开放：回复只携带**文件名**（运营者的安装横幅本来就打印过），绝不携带卡内容；world/companion 导入动词的守秘人门与引用的发现方式无关，照常生效：
   `{type:"list_pack_cards"}`
+- `list_chronicle`（v2.7）— 请求战役前情提要数据。对玩家开放，只读且在回合锁之外应答（不会排在 AI 回合后面）；限速额度与普通输入相同：
+  `{type:"list_chronicle"}`
 - `ping`: `{type:"ping", t:number}`
 
 ## 服务端 → 客户端
 
 - `welcome` — 成功 `join` 时发送一次：
-  `{type:"welcome", protocol:"2.5", features:["media","audio","imagegen"?,"demo"?,"update"?], room:string, you:{id:string,name:string,role:"player"|"keeper"}, locale:string, server:string, version?:string}`
+  `{type:"welcome", protocol:"2.8", features:["media","audio","imagegen"?,"demo"?,"update"?], room:string, you:{id:string,name:string,role:"player"|"keeper"}, locale:string, server:string, version?:string}`
   `version` 是服务端自己的发布版本（和客户端一比就能看出两边不一致）。`"update"` 特性仅在守秘人连接且服务端运维配置了自更新命令时出现，有它才允许发 `admin_update_server`。
   `demo` 表示服务端正在用离线示例守秘人、向量功能已启用，且本次检查时这个守秘人房间为空。服务端会在房间回合锁内再次检查，过期 flag 不会覆盖战役状态；客户端收到 `admin_config{using_demo:false}`（例如从模型页保存后）会立即移除入口，否则重连时重新计算，过期操作也会被服务端拒绝。
 - `error` — 本地化的故障通知；`bad_key`、`join_timeout` 和 `too_many_connections` 关闭连接（它们仅在 `join` 握手期间或之前发生），其他不关闭：
@@ -59,8 +61,8 @@
 - `audio_state` — 尽力持久化的 BGM/环境音状态，在加入房间时回放：
   `{type:"audio_state", layers:[{layer:"bgm"|"ambience"|"sfx", hash?:string, mime?:string, name?:string, title?:string, playing:boolean, volume?:number, loop?:boolean, started_at?:number}]}`
 - `narrative` — 一行**完整的**故事/聊天文本：
-  `{type:"narrative", id:string, speaker:"kp"|"player"|"system"|"npc", name?:string, text:string, format:"markdown"|"plain"}`
-  对于 `speaker:"npc"`，`name` 携带 NPC 名称。`narrative` 帧永远携带完整的最终文本：当其 `id` 与客户端由 `narrative_delta` 累积出的草稿气泡匹配时，最终文本**替换**该草稿（生成后修正已折入）；否则就是一条普通的单发文本。**空的最终文本是撤销，不是消息**：服务器用它收掉被放弃的草稿（守秘人换了下一轮工具草稿、或回合中途夭折），客户端必须**移除**——绝不渲染——最终文本为空的气泡。
+  `{type:"narrative", id:string, speaker:"kp"|"player"|"system"|"npc", name?:string, text:string, format:"markdown"|"plain", mentions?:[{id:string, kind?:"npc"|"item"|"clue", name:string, card?:{name?:string, public_description?:string, location?:string, status?:string, avatar?:string, public_memory?:string[], kind?:string, slot?:string, quantity?:number, equipped_slot?:string, description?:string, effect?:string, content?:string, found_turn?:number}}]}`
+  对于 `speaker:"npc"`，`name` 携带 NPC 名称。`mentions` 是服务端标注进 `text` 的提及链接（`[名字](<kind>://<id>)`），每条携带该记录的玩家可见卡片子集——秘密物品与未发现的线索在结构上不会成为命中。`narrative` 帧永远携带完整的最终文本：当其 `id` 与客户端由 `narrative_delta` 累积出的草稿气泡匹配时，最终文本**替换**该草稿（生成后修正已折入）；否则就是一条普通的单发文本。**空的最终文本是撤销，不是消息**：服务器用它收掉被放弃的草稿（守秘人换了下一轮工具草稿、或回合中途夭折），客户端必须**移除**——绝不渲染——最终文本为空的气泡。
   **加入时的回放。** 每次加入，服务器都把房间最近的记录（最后 30 条对话历史）作为普通 `narrative` 帧回放——只回放故事通道，不回放点命令回显；自 v2.4 起，桌上现场出现过的每个 `dice` 与 npc `narrative` 帧（守秘人的掷骰、同伴的回合、手打的 `.ra`）都紧接在它现场所跟随的那条记录之后回放，交错顺序就是大家当时看到的那样（见"回合流程"第 5–6 步）。成员回放进行期间发布的现场帧，在回放之后按序、且只送一次。回放帧与现场帧刻意不可区分：客户端按到达顺序渲染，并按 `id` 去重 `narrative`。
 - `narrative_delta` — 草稿气泡的一段流式文本增量：
   `{type:"narrative_delta", id:string, speaker:"kp", name?:string, text:string}`
@@ -101,6 +103,8 @@
   `reset:true` 标记的是战役被清空（`.reset` / `admin_reset_room`）之后服务端推的那份快照：面板数据已经是最新的（空的），客户端还应该把本地攒下的聊天记录也清掉。
 - `pack_cards`（v2.2）— 对 `list_pack_cards` 的单播回复：每个已安装扩展包携带的卡文件。`ref` 就是 `.import <ref>` 接受的引用；`pack` 与 `name`（文件名主干）用于展示。`kind`（v2.3）是这张卡的拆卡归类，它决定用哪个动词：`character` 走 `.import <ref> pc`，`world` 是模组机器部件，只能走守秘人的 `.import <ref> world`（面向玩家的选择器应把它标成守秘人专用，而不是当角色卡给出）。2.3 之前的服务端不发 `kind`，缺失按 `"character"` 处理。没有任何包携带卡文件时 `cards` 为空数组（不是缺省）：
   `{type:"pack_cards", cards:[{ref:string, pack:string, name:string, kind:"character"|"world"}]}`
+- `chronicle_records`（v2.7）— 对 `list_chronicle` 的单播回复：战役总述加全部编年记录，按 `(turn, id)` 排序。全部字段都走玩家文档投影，守秘人批注和折叠簿记在结构上不会出现（与 `.recap` 同一条契约，只是给补课浏览界面用的结构化数据）。首次折叠发生前 `summary` 为 null（不是缺省）；`through_turn` 是折叠水位线：`turn <= through_turn` 的记录已经浓缩进总述文本，补课视图可以把它们归到总述之下。没有编年记录时 `records` 为空数组（不是缺省）：
+  `{type:"chronicle_records", summary:{text:string, through_turn:int}|null, records:[{id:string, turn:int, text:string, pcs:[string], scene:string}]}`
 - `presence` — 连接的玩家名单，在加入/离开时发送：
   `{type:"presence", players:[{id,name,online}], online:int}`
 - `system` — 带外通知：`{type:"system", level:"info"|"warn", text:string}`

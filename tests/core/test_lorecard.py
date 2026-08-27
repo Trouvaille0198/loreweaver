@@ -279,6 +279,7 @@ def test_entry_dicts_carry_every_trigger_field_the_importer_reads():
         "cooldown": 3,
         "delay": 1,
         "image": "",
+        "aliases": (),
     }
     plain = _by_title(_parse().card.character_book, "山庄")
     assert (plain["selective"], plain["selective_logic"], plain["position"], plain["priority"]) == (
@@ -576,3 +577,23 @@ def test_items_skip_investigator_starter_gear():
     assert any("手电筒" in warning and "skipped" in warning for warning in parsed.warnings)
     assert any("急救包" in warning and "skipped" in warning for warning in parsed.warnings)
     assert any("打火机" in warning and "skipped" in warning for warning in parsed.warnings)
+
+
+def test_pregens_carry_aliases_normalized():
+    """`pregens[].aliases` (short forms / translated names) parse into the pregen dict:
+    strings and lists both accepted, empty/duplicate entries dropped, capped."""
+    raw = {
+        "format": "loreweaver.card",
+        "format_version": 1,
+        "name": "pregens-aliases",
+        "pregens": [
+            {"name": "薇拉·月影", "aliases": ["薇拉", "Vera Moonshadow", "", "薇拉"]},
+            {"name": "鲍勃", "aliases": "Bob"},
+            {"name": "奥尔加", "aliases": 42},
+        ],
+    }
+    parsed = parse_lorecard_bytes(json.dumps(raw).encode("utf-8"))
+    assert parsed.pregens[0]["aliases"] == ("薇拉", "Vera Moonshadow")  # deduped, empties dropped
+    assert parsed.pregens[1]["aliases"] == ("Bob",)  # plain string accepted
+    assert parsed.pregens[2]["aliases"] == ()  # non-list ignored with a warning
+    assert any("aliases" in warning for warning in parsed.warnings)
