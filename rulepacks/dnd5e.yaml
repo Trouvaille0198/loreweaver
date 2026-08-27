@@ -426,5 +426,3 @@ sheet:
     护甲等级: 护甲等级
     熟练加值: 熟练加值
     被动感知: 被动感知
-  resources:
-    - {id: hp, label: HP, source: hit_points}

@@ -198,7 +198,10 @@ def character_resources(character: CharacterSheet, locale: str | None = None) ->
     """The pack-declared generic resource meters (`{id,label,value,max}`) for
     `character` — the wire/panel/roster vitals shape. Empty when no pack.
 
-    `locale` picks the label a pack declared per language (M19 item 8); callers on a
+    Packs that opt into the runtime contract (`runtime.resources.pools`) feed
+    this from their ungrouped pools (the top-level vitals, HP/temp-HP style);
+    legacy packs fall back to their `sheet.resources` declaration. `locale`
+    picks the label a pack declared per language (M19 item 8); callers on a
     per-VIEWER wire path pass the viewer's, persistence paths leave it unset."""
     from core.sheets import wire_resources
 
@@ -221,12 +224,17 @@ def resource_label_map(system: str, locale: str | None) -> dict[str, str]:
 
     try:
         pack = load_rulepack(system or "")
-        spec = pack.sheet_spec
     except Exception:
         return {}
-    if spec is None:
-        return {}
-    return {resource.id: resource.label_for(locale) for resource in spec.resources}
+    labels: dict[str, str] = {}
+    spec = getattr(pack, "sheet_spec", None)
+    if spec is not None:
+        labels.update({resource.id: resource.label_for(locale) for resource in spec.resources})
+    runtime = getattr(pack, "runtime_spec", None)
+    if runtime is not None:
+        for pool_id, pool in runtime.pools.items():
+            labels[pool_id] = pool.display_label(locale)
+    return labels
 
 
 class CharacterSheet:

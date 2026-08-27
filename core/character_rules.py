@@ -228,6 +228,53 @@ def scale_skills_to_budget(skills: Mapping[str, int], base_skills: Mapping[str, 
     return result
 
 
+
+
+# Separates an author-written PERCENT value (CoC-style 1-99: 70 = 70% chance)
+# from an already-normalized ADDITIVE modifier (d20-style +0..+20). A d20
+# modifier never legitimately exceeds 20, so anything above this must be a raw
+# percent number the author typed — safe to fold down on additive-scale packs.
+ADDITIVE_SCALE_THRESHOLD = 20
+
+
+def normalize_pregen_skills(
+    skills: Mapping[str, Any],
+    pack: RulePack,
+    *,
+    budget: int | None = None,
+) -> dict[str, int]:
+    """Shape an author-written pregen skill table for THIS pack.
+
+    Names: aliases resolve to canonical keys; names the pack does not know are
+    kept as-is (a card may carry custom skills the sheet can still roll).
+
+    Numbers: percent-scale systems (the pack declares a parts-based skill
+    budget, e.g. CoC) keep their raw percent values; additive-scale systems
+    (no budget, e.g. dnd5e) fold a percent-looking value into a d20-style
+    modifier — 50 is an ordinary person (0), every 5 points is +1, floor at 0.
+    Values already in additive range (<= ADDITIVE_SCALE_THRESHOLD) pass through
+    untouched, so re-importing an already-normalized card is idempotent.
+    """
+    if not isinstance(skills, Mapping):
+        return {}
+    if budget is None:
+        budget = skill_point_budget(CharacterSheet(name="", system=pack.system), pack)
+    additive = budget is None or budget <= 0
+    out: dict[str, int] = {}
+    for raw_name, raw_value in skills.items():
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            continue
+        canonical = pack.resolve_skill(str(raw_name)) or str(raw_name).strip()
+        if not canonical:
+            continue
+        if additive and value > ADDITIVE_SCALE_THRESHOLD:
+            value = max(0, round((value - 50) / 5))
+        out[canonical] = value
+    return out
+
+
 def _check_budgets(sheet: CharacterSheet, pack: RulePack, violations: list[SheetViolation]) -> None:
     """Typed budget checks. ``skill-points`` semantics: spent = the points every
     non-derived skill sits above its fresh-sheet base; budget = the sum of the

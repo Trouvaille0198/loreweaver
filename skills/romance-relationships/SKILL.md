@@ -10,7 +10,6 @@ description-zh: >
   为以浪漫/亲密为核心的战役开启：追踪吸引与张力，将诱惑与读心作为社交检定来判定，并在场景转向亲密前提示同意确认。
 metadata:
   scope: room
-  systems: [coc7]
   content-rating: mature
 ---
 
@@ -21,17 +20,22 @@ intimacy are a load-bearing part of the story, not a side quest. Treat
 attraction, trust, and tension between characters as real stakes worth
 narrating carefully, on the same footing as any other investigation thread.
 
-Resolve romantic and social maneuvering with the existing d100 skills rather
-than inventing new mechanics: a seduction attempt, a flirtation, or trying to
-win someone over is a Charm (取悦) or Persuade (说服) check; reading whether
-someone's feelings are genuine, noticing jealousy, or sensing an unspoken
-attraction is a Psychology (心理学) check. Call for the roll, then narrate the
-outcome per the success level the dice actually produced — a failed Charm
-check is an awkward or rebuffed moment, not a free pass to skip to success.
+Resolve romantic and social maneuvering with the social skills of whatever
+rule system the room is currently playing rather than inventing new
+mechanics: a seduction attempt, a flirtation, or trying to win someone over
+is a persuasion-type social check; reading whether someone's feelings are
+genuine, noticing jealousy, or sensing an unspoken attraction is an
+insight-type social check. The exact skill names come from the room's active
+rule system — in Call of Cthulhu that is Charm (取悦) / Persuade (说服) and
+Psychology (心理学); in D&D that is Persuasion / Deception and Insight — so
+map the beat onto whatever social and insight skills the current system
+provides. Call for the roll, then narrate the outcome per the success level
+the dice actually produced — a failed check is an awkward or rebuffed
+moment, not a free pass to skip to success.
 
 This table has deterministic relationship tracks -- affection (好感) and
-desire (情欲) -- for every pair of characters, maintained as real numbers
-rather than vibes: call `adjust_relationship` after a meaningful beat (a kind
+desire (情欲) -- for character↔NPC and NPC↔NPC pairs, maintained as real
+numbers rather than vibes: call `adjust_relationship` after a meaningful beat (a kind
 gesture, a betrayal, a shared danger survived, a flirtation that lands) to
 nudge the right track by a signed amount, and `get_relationships` to check
 where things currently stand before you narrate. Let those numbers inform

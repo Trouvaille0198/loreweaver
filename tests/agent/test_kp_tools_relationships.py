@@ -23,9 +23,25 @@ from infra.i18n import t
 from infra.llm import FakeLLM
 
 
-def _build() -> tuple[Services, AgentCtx]:
+async def _build() -> tuple[Services, AgentCtx]:
+    """Seed a room with one player character ("Alice", a sheet) and one NPC ("Bob",
+    an `npc` record) so the entity-checked tools resolve real names — since the
+    pair-scope ruling, relationship writes only accept room entities."""
     services = build_services(Settings(), llm=FakeLLM(script=[]), embeddings=FakeEmbeddings(64))
     ctx = AgentCtx(chat_key="chat-relationships", user_id="kp", locale="en")
+    await services.documents.put(ctx.chat_key, "sheet", "pc-alice", {"name": "Alice", "owner": "tui:user:1"})
+    await services.documents.put(
+        ctx.chat_key,
+        "npc",
+        "npc-bob",
+        {"name": "Bob", "persona": "the barkeep", "knowledge": [], "relationships": {}},
+    )
+    await services.documents.put(
+        ctx.chat_key,
+        "npc",
+        "npc-carol",
+        {"name": "Carol", "persona": "the guard", "knowledge": [], "relationships": {}},
+    )
     return services, ctx
 
 
@@ -35,7 +51,7 @@ def _build() -> tuple[Services, AgentCtx]:
 
 
 async def test_adjust_relationship_persists_and_returns_localized_done():
-    services, ctx = _build()
+    services, ctx = await _build()
     tools = RelationshipTools(services)
 
     result = await tools.adjust_relationship(ctx, "Alice", "Bob", "affection", 15)
@@ -57,7 +73,7 @@ async def test_adjust_relationship_persists_and_returns_localized_done():
 
 
 async def test_adjust_relationship_accumulates_across_calls():
-    services, ctx = _build()
+    services, ctx = await _build()
     tools = RelationshipTools(services)
 
     await tools.adjust_relationship(ctx, "Alice", "Bob", "affection", 15)
@@ -76,7 +92,7 @@ async def test_adjust_relationship_accumulates_across_calls():
 
 
 async def test_adjust_relationship_clamps_at_the_tracks_boundary():
-    services, ctx = _build()
+    services, ctx = await _build()
     tools = RelationshipTools(services)
 
     result = await tools.adjust_relationship(ctx, "Alice", "Bob", "desire", 500)
@@ -94,7 +110,7 @@ async def test_adjust_relationship_clamps_at_the_tracks_boundary():
 
 
 async def test_adjust_relationship_bad_track_is_reported_without_raising():
-    services, ctx = _build()
+    services, ctx = await _build()
     tools = RelationshipTools(services)
 
     result = await tools.adjust_relationship(ctx, "Alice", "Bob", "nonexistent-track", 5)
@@ -104,7 +120,7 @@ async def test_adjust_relationship_bad_track_is_reported_without_raising():
 
 
 async def test_adjust_relationship_bad_delta_via_direct_call_is_reported_without_raising():
-    services, ctx = _build()
+    services, ctx = await _build()
     tools = RelationshipTools(services)
 
     # Bypassing Toolset's own int coercion (a direct python call, as a bad-delta unit test) --
@@ -116,7 +132,7 @@ async def test_adjust_relationship_bad_delta_via_direct_call_is_reported_without
 
 
 async def test_adjust_relationship_accepts_an_optional_reason():
-    services, ctx = _build()
+    services, ctx = await _build()
     tools = RelationshipTools(services)
 
     result = await tools.adjust_relationship(ctx, "Alice", "Bob", "affection", 5, reason="a kind gesture")
@@ -130,7 +146,7 @@ async def test_adjust_relationship_accepts_an_optional_reason():
 
 
 async def test_set_relationship_stores_the_clamped_value():
-    services, ctx = _build()
+    services, ctx = await _build()
     tools = RelationshipTools(services)
 
     result = await tools.set_relationship(ctx, "Alice", "Bob", "affection", -500)
@@ -146,7 +162,7 @@ async def test_set_relationship_stores_the_clamped_value():
 
 
 async def test_set_relationship_bad_track_is_reported_without_raising():
-    services, ctx = _build()
+    services, ctx = await _build()
     tools = RelationshipTools(services)
 
     result = await tools.set_relationship(ctx, "Alice", "Bob", "nonexistent-track", 5)
@@ -156,7 +172,7 @@ async def test_set_relationship_bad_track_is_reported_without_raising():
 
 
 async def test_set_relationship_bad_value_via_direct_call_is_reported_without_raising():
-    services, ctx = _build()
+    services, ctx = await _build()
     tools = RelationshipTools(services)
 
     result = await tools.set_relationship(ctx, "Alice", "Bob", "affection", "not-a-number")  # type: ignore[arg-type]
@@ -171,7 +187,7 @@ async def test_set_relationship_bad_value_via_direct_call_is_reported_without_ra
 
 
 async def test_get_relationships_empty_reports_localized_empty_notice():
-    services, ctx = _build()
+    services, ctx = await _build()
     tools = RelationshipTools(services)
 
     result = await tools.get_relationships(ctx)
@@ -181,45 +197,45 @@ async def test_get_relationships_empty_reports_localized_empty_notice():
 
 
 async def test_get_relationships_returns_header_and_all_lines_when_entity_is_empty():
-    services, ctx = _build()
+    services, ctx = await _build()
     tools = RelationshipTools(services)
     await tools.adjust_relationship(ctx, "Alice", "Bob", "affection", 15)
-    await tools.adjust_relationship(ctx, "Carol", "Dave", "desire", 20)
+    await tools.adjust_relationship(ctx, "Carol", "Bob", "desire", 20)
 
     result = await tools.get_relationships(ctx)
 
     i18n = services.i18n.with_locale("en")
     assert i18n.t("relationships.tools.get.header") in result
     assert "Alice" in result and "Bob" in result
-    assert "Carol" in result and "Dave" in result
+    assert "Carol" in result and "Bob" in result
 
 
 async def test_get_relationships_filters_by_entity_as_subject():
-    services, ctx = _build()
+    services, ctx = await _build()
     tools = RelationshipTools(services)
     await tools.adjust_relationship(ctx, "Alice", "Bob", "affection", 15)
-    await tools.adjust_relationship(ctx, "Carol", "Dave", "desire", 20)
+    await tools.adjust_relationship(ctx, "Carol", "Bob", "desire", 20)
 
     result = await tools.get_relationships(ctx, entity="Alice")
 
     assert "Alice" in result and "Bob" in result
-    assert "Carol" not in result and "Dave" not in result
+    assert "Carol" not in result
 
 
 async def test_get_relationships_filters_by_entity_as_target():
-    services, ctx = _build()
+    services, ctx = await _build()
     tools = RelationshipTools(services)
     await tools.adjust_relationship(ctx, "Alice", "Bob", "affection", 15)
-    await tools.adjust_relationship(ctx, "Carol", "Dave", "desire", 20)
+    await tools.adjust_relationship(ctx, "Carol", "Bob", "desire", 20)
 
-    result = await tools.get_relationships(ctx, entity="Dave")
+    result = await tools.get_relationships(ctx, entity="Bob")
 
-    assert "Carol" in result and "Dave" in result
-    assert "Alice" not in result and "Bob" not in result
+    # Both pairs target Bob, so both appear when filtering by the target entity.
+    assert "Alice" in result and "Carol" in result and "Bob" in result
 
 
 async def test_get_relationships_entity_filter_is_case_insensitive():
-    services, ctx = _build()
+    services, ctx = await _build()
     tools = RelationshipTools(services)
     await tools.adjust_relationship(ctx, "Alice", "Bob", "affection", 15)
 
@@ -229,7 +245,7 @@ async def test_get_relationships_entity_filter_is_case_insensitive():
 
 
 async def test_get_relationships_entity_filter_with_no_match_reports_empty_notice():
-    services, ctx = _build()
+    services, ctx = await _build()
     tools = RelationshipTools(services)
     await tools.adjust_relationship(ctx, "Alice", "Bob", "affection", 15)
 
@@ -246,8 +262,13 @@ async def test_get_relationships_entity_filter_with_no_match_reports_empty_notic
 _TOOL_NAMES = ("adjust_relationship", "set_relationship", "get_relationships")
 
 
+def _bare_services() -> Services:
+    """A services object without room entities — enough for schema/gating checks."""
+    return build_services(Settings(), llm=FakeLLM(script=[]), embeddings=FakeEmbeddings(64))
+
+
 def test_relationship_tools_are_gated_and_not_keeper_only():
-    services, _ctx = _build()
+    services = _bare_services()
     toolset = Toolset(RelationshipTools(services))
 
     for name in _TOOL_NAMES:
@@ -256,7 +277,7 @@ def test_relationship_tools_are_gated_and_not_keeper_only():
 
 
 def test_relationship_tools_hidden_from_schemas_by_default():
-    services, _ctx = _build()
+    services = _bare_services()
     toolset = build_kp_toolset(services)
 
     names = {schema["function"]["name"] for schema in toolset.schemas()}
@@ -265,7 +286,7 @@ def test_relationship_tools_hidden_from_schemas_by_default():
 
 
 def test_relationship_tools_hidden_when_a_different_tool_is_unlocked():
-    services, _ctx = _build()
+    services = _bare_services()
     toolset = build_kp_toolset(services)
 
     names = {schema["function"]["name"] for schema in toolset.schemas(unlocked={"some_other_tool"})}
@@ -274,7 +295,7 @@ def test_relationship_tools_hidden_when_a_different_tool_is_unlocked():
 
 
 def test_relationship_tools_present_once_unlocked():
-    services, _ctx = _build()
+    services = _bare_services()
     toolset = build_kp_toolset(services)
 
     names = {schema["function"]["name"] for schema in toolset.schemas(unlocked=set(_TOOL_NAMES))}
@@ -283,7 +304,7 @@ def test_relationship_tools_present_once_unlocked():
 
 
 async def test_dispatch_refuses_a_locked_relationship_tool_with_a_localized_message():
-    services, ctx = _build()
+    services, ctx = await _build()
     toolset = build_kp_toolset(services)
 
     result = await toolset.dispatch("adjust_relationship", ctx, {"subject": "Alice", "target": "Bob", "track": "affection", "delta": 5})
@@ -292,7 +313,7 @@ async def test_dispatch_refuses_a_locked_relationship_tool_with_a_localized_mess
 
 
 async def test_dispatch_runs_a_relationship_tool_once_unlocked():
-    services, ctx = _build()
+    services, ctx = await _build()
     toolset = build_kp_toolset(services)
 
     result = await toolset.dispatch(

@@ -173,10 +173,6 @@ COMPANION_OPTION_IDS: tuple[str, ...] = ("skills", "rulepacks", "cards")
 # and every claimable pregen gets exactly one illustration, and one generation never renders
 # more than the caps below (a generous ceiling — typical modules stay well under).
 _MEDIA_KIND_CAPS: dict[str, int] = {"cover": 1, "scenes": 20, "npcs": 20, "clue": 20, "pregens": 6}
-# Render at most a couple of shots concurrently: image providers rate-limit (HTTP 429) when a
-# cast's portraits fan out at once, and serializing a dozen images is a 10+ minute slog. Two in
-# flight stays under typical per-minute quotas without turning the media pass into a crawl.
-_MEDIA_CONCURRENCY = 2
 # A 429 quota window is usually tens of seconds, so retries must outlast it: six attempts with
 # the rate-limit backoff below span ~5 minutes before a shot is dropped.
 _MEDIA_RETRIES = 6
@@ -1845,7 +1841,11 @@ async def generate_and_install_pack_module(
     # this long structured prompt (same failure mode as the companion skill/rulepack lanes), so
     # retry once before failing the whole module — a provider hiccup shouldn't sink a complete
     # .lwpack the way it used to.
-    raw, failure = await _llm_authored_retry(services, _build_pack_module_messages(services, description, ctx.locale), chat_key=ctx.chat_key)
+    raw, failure = await _llm_authored_retry(
+        services,
+        _build_pack_module_messages(services, description, ctx.locale, system=system),
+        chat_key=ctx.chat_key,
+    )
     if failure is not None:
         logger.warning("[pack-forge] world-card authoring failed: %s", failure.error)
         return failure
@@ -1934,123 +1934,35 @@ async def generate_and_install_pack_module(
     except OSError as exc:
         return ForgeResult(False, "", "", "", f"write_failed: {exc}")
 
-    # Optional illustrations: render into the pack's OWN assets/ (travel with the module).
+    # Optional illustrations: plan the shot list NOW (one fast LLM call) and let the async
+    # media lane render the images in the background — module generation never waits for
+    # pictures. Jobs are recorded in the installed pack home's `media-jobs.json` right after
+    # install (below); the module detail page shows their live status and the finished plates.
     media_note = ""
     media_index: list[dict[str, str]] = []
+    planned_jobs: list[dict[str, Any]] = []
     if media_kinds:
-        assets_dir = source / "assets"
         logger.info("[pack-forge] media pass: %s", media_kinds)
         await _emit(progress, "media")
         try:
-            pregen_names = [
-                str(p.get("name"))
-                for p in (card_text.get("pregens") or [])
-                if isinstance(p, dict) and p.get("name")
-            ]
-            # Real scene/NPC/clue names from the world card, so `npcs`/`scenes`/`clue`
-            # shots use the ACTUAL cast/places/objects and can bind back to their entries.
-            subject_names = _worldbook_subject_names(card_text)
-            shots_raw, shots_failure = await _llm_authored(
+            from gateway.module_media import plan_media_jobs
+
+            planned_jobs, plan_note = await plan_media_jobs(
                 services,
-                _build_module_media_messages(
-                    services,
-                    description,
-                    media_kinds,
-                    i18n,
-                    pregen_names=pregen_names or None,
-                    subject_names=subject_names or None,
-                ),
-                chat_key=ctx.chat_key,
+                module_id,
+                source,
+                card_text,
+                media_kinds,
+                ctx.chat_key,
+                i18n,
+                content=description,
             )
         except Exception:  # noqa: BLE001 — media is never load-bearing
-            shots_raw, shots_failure = None, ForgeResult(False, "", "", "", "shot_list_failed")
-        if shots_failure is not None:
-            media_note = i18n.t(
-                "agent.forge.module_media_none",
-                reason=_option_reason(i18n, "shot_list_failed"),
-            )
-        elif shots_raw:
-            imagegen = await services.imagegen_for_room(ctx.chat_key)
-            if imagegen is not None:
-                shots = _parse_shot_list(shots_raw, media_kinds)
-                if not shots:
-                    media_note = i18n.t(
-                        "agent.forge.module_media_none",
-                        reason=_option_reason(i18n, "no_shots"),
-                    )
-                total = len(shots)
-                done = 0
-                sem = asyncio.Semaphore(_MEDIA_CONCURRENCY)
-                media_settings = services.settings.tui
-                media_store = MediaStore(
-                    services.store,
-                    services.settings.data_dir,
-                    max_file_bytes=media_settings.media_max_file_bytes,
-                    room_quota_bytes=media_settings.media_room_quota_bytes,
-                    allowed_mimes=ALLOWED_IMAGE_MIMES,
-                )
-
-                async def _render_one(index: int, shot: Any) -> dict[str, str] | None:
-                    nonlocal done
-                    logger.info("[pack-forge] rendering %s #%d (%s)", shot.kind, index, shot.subject)
-                    data: bytes | None = None
-                    mime = ""
-                    async with sem:
-                        try:
-                            data, mime = await _imagegen_generate_retry(
-                                imagegen, shot.prompt, size=services.settings.imagegen.size
-                            )
-                        except Exception as exc:  # noqa: BLE001 — one bad shot never fails the pass
-                            logger.warning("[pack-forge] imagegen failed for %s: %s", shot.subject, exc)
-                    done += 1
-                    await _emit(progress, "media", detail=f"{done}/{total}")
-                    if data is None:
-                        return None
-                    asset_name = f"module-{pack_id}-{shot.kind}-{index}{_IMAGE_MIME_EXTS.get(mime, '.png')}"
-                    try:
-                        _safe_write(assets_dir / asset_name, data)
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning("[pack-forge] asset write failed %s: %s", asset_name, exc)
-                        return None
-                    # Register in the room's media store so `.image` can reuse this illustration
-                    # as a REFERENCE (content-addressed: the pack-import path re-registers the
-                    # same bytes and dedupes). Best-effort — a quota/mime rejection drops only
-                    # this image from the reference pool, never the forge.
-                    try:
-                        record = await media_store.register_blob(
-                            room=ctx.chat_key,
-                            data=data,
-                            mime=mime,
-                            name=asset_name,
-                            uploader=ctx.uid(),
-                        )
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning("[pack-forge] media register failed %s: %s", asset_name, exc)
-                        return None
-                    return {"kind": shot.kind, "subject": shot.subject, "name": asset_name, "hash": record.hash}
-
-                # Render at most `_MEDIA_CONCURRENCY` shots in flight, with per-shot retry.
-                rendered = await asyncio.gather(*(_render_one(i, s) for i, s in enumerate(shots, 1)))
-                media_index = [r for r in rendered if r]
-                if media_index:
-                    # Persist shot→image provenance so `.image <kind> <subject>` can reuse the
-                    # room's illustration as a generation reference (same contract as the
-                    # module-creation path's `_append_module_media_index`).
-                    await _append_module_media_index(services, ctx.chat_key, media_index)
-                logger.info("[pack-forge] media pass done: %d images", len(media_index))
-                failed_shots = [s.subject or s.kind for s, r in zip(shots, rendered, strict=False) if r is None]
-                if failed_shots:
-                    logger.warning(
-                        "[pack-forge] media pass dropped %d shot(s): %s",
-                        len(failed_shots),
-                        ", ".join(failed_shots),
-                    )
-            else:
-                media_note = i18n.t(
-                    "agent.forge.module_media_none",
-                    reason=_option_reason(i18n, "not_configured"),
-                )
-                logger.warning("[pack-forge] no imagegen provider for this room; media skipped")
+            plan_note = _option_reason(i18n, "shot_list_failed")
+        if planned_jobs:
+            media_note = i18n.t("agent.forge.module_media_queued", count=len(planned_jobs))
+        elif plan_note:
+            media_note = i18n.t("agent.forge.module_media_none", reason=plan_note)
 
     # Bind generated images to the world card. Investigator portraits stamp onto the matching
     # pregen's `avatar` (a player claiming the pregen inherits the portrait); npc/scene/item
@@ -2142,6 +2054,14 @@ async def generate_and_install_pack_module(
     logger.info("[pack-forge] installing pack into %s", data_dir)
     await _emit(progress, "installing")
     install_report = install_pack_here(data_dir, built.path)
+    if planned_jobs and install_report.pack_dir is not None:
+        # The async media lane takes over from here: jobs persist in the installed home, the
+        # worker renders them in the background, and the detail page surfaces their status.
+        from gateway.module_media import append_jobs, schedule_pack_media
+
+        append_jobs(install_report.pack_dir, planned_jobs, room=ctx.chat_key)
+        schedule_pack_media(services, pack_id)
+        logger.info("[pack-forge] queued %d illustration job(s) for %s", len(planned_jobs), pack_id)
 
     parts = [i18n.t("agent.forge.pack_module_installed", name=name, path=str(built.path))]
     if skills_adjusted:
@@ -2171,8 +2091,43 @@ async def generate_and_install_pack_module(
     return ForgeResult(True, pack_id, name, str(built.path), "", detail="\n".join(parts))
 
 
-def _build_pack_module_messages(services: Services, description: str, locale: str | None = None) -> list[dict]:
-    """The two-message pack-module authoring prompt: localized framing + the fixed JSON schema."""
+def _pack_skill_names(pack: Any) -> list[str]:
+    """A pack's skill canonical names: its declared defaults minus attribute and
+    field keys (and the few numeric/sheet keys that live in defaults, like ac/hp).
+
+    dnd5e keeps skills only in defaults (18 of them), so this is the one source
+    the forge prompt can feed the model -- guessing names makes the model invent
+    CoC-style skills for a dnd5e module (the observed bug)."""
+    excluded = {"ac", "hp", "hpmax", "dc", "pp", "hd", "等级", "熟练", "体型"}
+    spec = pack.sheet_spec
+    if spec is not None:
+        excluded |= set(spec.attr_keys)
+        excluded |= set(spec.field_keys)
+    return [key for key in pack.defaults if key not in excluded]
+
+
+def _pack_module_skill_guidance(pack: Any, i18n: Any) -> str:
+    """System-specific pregen skill guidance for the pack-module authoring prompt.
+
+    Percent-scale systems (a declared skill-point budget, e.g. CoC) keep their
+    percent values; additive-scale systems (no budget, e.g. dnd5e) must get
+    d20-style modifiers -- the previous hardcoded CoC guidance made the model
+    author percent numbers into dnd5e cards (the observed bug)."""
+    budget = _nominal_skill_budget(pack)
+    skills = "、".join(_pack_skill_names(pack))
+    if budget is None or budget <= 0:
+        return i18n.t("agent.forge.pack_module_skill_scale_additive", system=pack.system, skills=skills)
+    return i18n.t("agent.forge.pack_module_skill_scale_percent", system=pack.system, skills=skills, budget=budget)
+
+
+def _build_pack_module_messages(
+    services: Services, description: str, locale: str | None = None, system: str = ""
+) -> list[dict]:
+    """The two-message pack-module authoring prompt: localized framing + the fixed JSON schema.
+
+    ``system`` (a built-in rulepack id the module directly uses) injects the
+    system-specific skill guidance so the model authors pregen skills in that
+    system's names and value scale, not a remembered CoC default."""
     i18n = services.i18n.with_locale(locale) if locale else services.i18n
     system_prompt = "\n\n".join(
         (
@@ -2180,16 +2135,20 @@ def _build_pack_module_messages(services: Services, description: str, locale: st
             i18n.t("agent.forge.pack_module_language_requirement"),
         )
     )
+    user_content = i18n.t(
+        "agent.forge.pack_module_request",
+        description=description,
+        schema=_PACK_MODULE_CARD_SCHEMA,
+    )
+    if system:
+        try:
+            guidance = _pack_module_skill_guidance(rulepacks.load_rulepack(system), i18n)
+            user_content = f"{user_content}\n\n{guidance}"
+        except Exception:
+            pass  # unknown system: fall back to the schema's own generic example
     return [
         {"role": "system", "content": system_prompt},
-        {
-            "role": "user",
-            "content": i18n.t(
-                "agent.forge.pack_module_request",
-                description=description,
-                schema=_PACK_MODULE_CARD_SCHEMA,
-            ),
-        },
+        {"role": "user", "content": user_content},
     ]
 
 

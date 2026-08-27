@@ -658,7 +658,8 @@ class CharcardTools:
                     persona = str(spec.get("notes") or "").strip()
                     if persona:
                         sheet.background = persona
-                    for skill_name, value in dict(spec.get("skills", {})).items():
+                    from core.character_rules import normalize_pregen_skills
+                    for skill_name, value in normalize_pregen_skills(spec.get("skills") or {}, pack).items():
                         try:
                             set_sheet_value(sheet, pack, skill_name, int(value))
                         except Exception:

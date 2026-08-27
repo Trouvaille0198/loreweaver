@@ -7,6 +7,7 @@ all responses; ``serve_both.py`` installs it on the web server's AdminService.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
 import json
@@ -39,8 +40,7 @@ _CUSTOM_KINDS = frozenset(
         "module_upload",
         "module_update",
         "module_bundle_upload",
-        "module_import",
-        "module_delete",
+        "module_media_generate",
         "worldbook_list",
         "worldbook_detail",
         "worldbook_upload",
@@ -125,8 +125,8 @@ class ModuleAdminService:
             requested_locale = str(payload.get("locale") or "").replace("_", "-").split("-", 1)[0].casefold()
             import_i18n = i18n.with_locale(requested_locale) if requested_locale in {"en", "zh"} else i18n
             return await self._import(caller_room, root, payload, import_i18n)
-        if kind == "module_delete":
-            return await self._delete(caller_room, root, payload)
+        if kind == "module_media_generate":
+            return await self._media_generate(caller_room, payload, i18n)
         worldbook_root = self._worldbook_root()
         worldbook_root.mkdir(parents=True, exist_ok=True)
         if kind == "worldbook_list":
@@ -423,6 +423,27 @@ class ModuleAdminService:
                     **({"subject": asset_path.title} if asset_path.title else {}),
                 }
             )
+        # Live illustration job state: pending/generating plates the detail page renders as
+        # "正在生成中" placeholders; failed jobs keep their prompt for a one-click retry.
+        from gateway.module_media import load_jobs
+
+        jobs_doc = load_jobs(home)
+        media_jobs = [
+            {
+                "id": str(job.get("id") or ""),
+                "kind": str(job.get("kind") or ""),
+                "subject": str(job.get("subject") or ""),
+                "prompt": str(job.get("prompt") or ""),
+                "caption": str(job.get("caption") or ""),
+                "status": str(job.get("status") or "pending"),
+                "asset": str(job.get("asset") or ""),
+                "hash": str(job.get("hash") or ""),
+                "mime": str(job.get("mime") or ""),
+                "error": str(job.get("error") or ""),
+            }
+            for job in jobs_doc.get("jobs", [])
+            if isinstance(job, dict) and job.get("id")
+        ]
         return _module_reply(
             "module_detail",
             True,
@@ -446,6 +467,7 @@ class ModuleAdminService:
                 "importing": False,
                 "pool": None,
                 "media": media,
+                "media_jobs": media_jobs,
                 "worldbook_entries": entries,
                 "variables": variables,
                 "pregens": pregens,
@@ -864,7 +886,79 @@ class ModuleAdminService:
             from gateway.panels import publish_ui_manifests
 
             await publish_ui_manifests(self.hub, self.services, chat_key)
+        # A pack imported mid-generation: remember this room for completion registration and
+        # resume the background worker if its illustrations are still pending.
+        from gateway.module_media import attach_importing_room
+
+        attach_importing_room(self.services, home, chat_key)
         return _module_reply("module_import", True, pack_id, {"receipt": receipt, "current": True})
+
+
+    async def _media_generate(self, caller_room: str, payload: dict[str, Any], i18n: Any) -> dict[str, Any]:
+        """Trigger or retry illustration generation for an installed pack, WITHOUT re-running
+        module generation. ``retry`` (a job-id list) re-queues failed jobs with their persisted
+        prompts verbatim; otherwise ``kinds`` (media ids) plans fresh shots through the LLM
+        shot-list lane. Both persist the jobs and schedule the background worker, returning
+        immediately — the module detail page shows live status."""
+        from gateway.module_media import (
+            append_jobs,
+            plan_media_jobs,
+            requeue_jobs,
+            schedule_pack_media,
+        )
+        from gateway.panels import installed_pack_homes
+
+        pack_id = str(payload.get("name") or "").strip()
+        homes = installed_pack_homes(Path(self.services.settings.data_dir))
+        home = homes.get(pack_id)
+        if home is None:
+            return _module_reply("module_media_generate", False, pack_id, {"error": "source_not_found"})
+        requested_locale = str(payload.get("locale") or "").replace("_", "-").split("-", 1)[0].casefold()
+        media_i18n = i18n.with_locale(requested_locale) if requested_locale in {"en", "zh"} else i18n
+
+        retry_ids = payload.get("retry")
+        if isinstance(retry_ids, list) and retry_ids:
+            retry_ids = [str(i) for i in retry_ids if str(i).strip()]
+            requeued = requeue_jobs(home, retry_ids)
+            if requeued:
+                schedule_pack_media(self.services, pack_id)
+            return _module_reply(
+                "module_media_generate", True, pack_id, {"queued": requeued, "retry": len(retry_ids)}
+            )
+
+        kinds_raw = payload.get("kinds")
+        if not isinstance(kinds_raw, list) or not kinds_raw:
+            return _module_reply("module_media_generate", False, pack_id, {"error": "bad_request"})
+        from agent.forge import MEDIA_OPTION_IDS
+
+        kinds = [str(k) for k in kinds_raw if str(k) in MEDIA_OPTION_IDS]
+        if not kinds:
+            return _module_reply("module_media_generate", False, pack_id, {"error": "bad_request"})
+        # Fresh-shot planning runs the LLM shot-list call, which can take tens of seconds —
+        # NEVER inside the room's turn lock (the admin dispatch choke point holds it): the
+        # whole plan+queue happens in a detached task, and the reply says "planning" — the
+        # detail page polls and the queued jobs surface when they exist.
+        _manifest, world_cards = self._pack_world_cards(home)
+        if not world_cards:
+            return _module_reply("module_media_generate", False, pack_id, {"error": "no_world_card"})
+        try:
+            card = json.loads(world_cards[0][1].read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return _module_reply("module_media_generate", False, pack_id, {"error": "no_world_card"})
+        chat_key = chat_key_for_room(caller_room)
+
+        async def _plan_and_queue() -> None:
+            try:
+                jobs, _note = await plan_media_jobs(
+                    self.services, pack_id, home, card, kinds, chat_key, media_i18n
+                )
+                if jobs and append_jobs(home, jobs, room=chat_key):
+                    schedule_pack_media(self.services, pack_id)
+            except Exception:  # noqa: BLE001 — a failed plan leaves the pack untouched
+                logger.exception("module media planning failed for %s", pack_id)
+
+        asyncio.get_running_loop().create_task(_plan_and_queue())
+        return _module_reply("module_media_generate", True, pack_id, {"queued": 0, "planning": True})
 
 
     async def _delete(self, caller_room: str, root: Path, payload: dict[str, Any]) -> dict[str, Any]:

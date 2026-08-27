@@ -34,7 +34,7 @@ from agent.forge import (
 from agent.services import ROOM_LLM_SELECTION_KEY, Services
 from core.preset_store import list_preset_ids, load_preset, preset_source, sanitize_preset_id
 from core.rulepacks import available_systems, built_in_rulepack_ids
-from core.skills import available_skills
+from core.skills import available_skills, skill_source
 from gateway.ops import (
     get_ai_length,
     get_enabled_preset,
@@ -1683,6 +1683,13 @@ async def _skills_frame(
             "description": (skill.description_zh if use_zh and skill.description_zh else skill.description),
             "content_rating": skill.content_rating,
             "enabled": skill.id in enabled_ids,
+            # Additive fields (protocol 2.x clients ignore unknown keys): the full
+            # SKILL.md body, the tools this skill unlocks, and its provenance
+            # (builtin / user-forged / shipped by an installed pack) — the web
+            # skill page's double-click detail view reads them.
+            "body": skill.body,
+            "allowed_tools": skill.allowed_tools,
+            "source": skill_source(skill.id),
         }
         for skill in available_skills()
     ]

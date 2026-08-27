@@ -112,7 +112,6 @@ class NpcRecord:
     secret_agenda: str = ""  # private goal/secret the NPC itself knows (never auto-shown to players)
     knowledge: list[str] = field(default_factory=list)  # discrete facts THIS npc currently knows
     disposition: str = "neutral"  # attitude toward the party (+ free notes)
-    relationships: dict[str, str] = field(default_factory=dict)  # name -> relation
     location: str = ""
     status: str = ""
     stat_char: str | None = None  # sheet-name input for imported records
@@ -157,7 +156,6 @@ class NpcRecord:
             "secret_agenda": self.secret_agenda,
             "knowledge": list(self.knowledge),
             "disposition": self.disposition,
-            "relationships": dict(self.relationships),
             "location": self.location,
             "status": self.status,
             "stat_char": self.stat_char,
@@ -185,7 +183,6 @@ class NpcRecord:
             secret_agenda=data.get("secret_agenda", ""),
             knowledge=list(data.get("knowledge") or []),
             disposition=data.get("disposition", "neutral"),
-            relationships=dict(data.get("relationships") or {}),
             location=data.get("location", ""),
             status=data.get("status", ""),
             stat_char=data.get("stat_char"),

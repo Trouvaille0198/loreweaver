@@ -424,19 +424,32 @@ class WorldCommands:
         that base system. `--media`/`--companion` are comma-separated opt-in ids (``cover``,
         ``scenes``, ``npcs``, ``items`` / ``skills``, ``rulepacks``, ``cards``).
 
+        `.forge skill <description>` / `.forge rule <description>` author a brand-new KP skill
+        or rule system from a description, installing it globally (visible to every room).
+
         Keeper-only, and a module is never auto-imported into the room — the keeper imports it
         explicitly (`.import … world` for the pack path)."""
         from agent.forge import generate_and_install_module, generate_and_install_pack_module
 
         if not _is_keeper(ctx.raw_ctx):
             return ctx.fail(ctx.i18n.t("rooms.denied"))
-        args = ctx.args
-        if not args.strip():
-            return ctx.i18n.t("commands.forge.usage")
+        args = ctx.args.strip()
+        # `.forge media …` — the async illustration lane for an ALREADY-INSTALLED pack:
+        # generate fresh shots, retry failed ones, or show job status, without re-running
+        # module generation.
+        if args.split()[0].casefold() == "media":
+            return await self._forge_media(ctx, args.split()[1:])
+        # `.forge skill <description>` / `.forge rule <description>` — author a brand-new
+        # KP skill or rule system from a description (the same engines the skill/rule forge
+        # skills gate behind the AI lane; the CLI entry is keeper-only by construction).
+        if args.split()[0].casefold() in {"skill", "rule"}:
+            return await self._forge_skill_or_rule(ctx, args.split()[1:])
         pack = False
         system = ""
         extends_base = ""
         media: list[str] = []
+        companion: list[str] = []
+
         companion: list[str] = []
         pieces: list[str] = []
         tokens = args.split()
@@ -500,6 +513,118 @@ class WorldCommands:
         if result.error == "no_data_dir":
             return ctx.i18n.t("agent.forge.module_no_data_dir")
         return ctx.i18n.t("commands.forge.failed", error=result.error or "unknown")
+
+    async def _forge_media(self, ctx: CommandCtx, tokens: list[str]) -> str:
+        """`.forge media <pack_id> [kinds…]` — plan + queue illustrations for an installed
+        pack; `.forge media retry <pack_id>` — re-queue every failed job (prompts preserved);
+        `.forge media status <pack_id>` — list job states. All rendering happens in the
+        background; the module detail page shows live status and finished plates."""
+        from gateway.module_media import (
+            append_jobs,
+            load_jobs,
+            plan_media_jobs,
+            requeue_jobs,
+            schedule_pack_media,
+        )
+        from gateway.panels import installed_pack_homes
+
+        i18n = ctx.i18n
+        if not tokens:
+            return i18n.t("commands.forge.media_usage")
+        verb = tokens[0].casefold()
+        homes = installed_pack_homes(Path(ctx.services.settings.data_dir))
+        if verb == "status":
+            if len(tokens) < 2:
+                return i18n.t("commands.forge.media_usage")
+            home = homes.get(tokens[1])
+            if home is None:
+                return i18n.t("commands.forge.media_unknown", pack_id=tokens[1])
+            jobs = load_jobs(home).get("jobs", [])
+            if not jobs:
+                return i18n.t("commands.forge.media_no_jobs", pack_id=tokens[1])
+            lines = [
+                i18n.t(
+                    "commands.forge.media_status_line",
+                    status=job.get("status") or "pending",
+                    kind=job.get("kind") or "",
+                    subject=job.get("subject") or "",
+                    error=job.get("error") or "",
+                )
+                for job in jobs
+                if isinstance(job, dict)
+            ]
+            return "\n".join(lines)
+        if verb == "retry":
+            if len(tokens) < 2:
+                return i18n.t("commands.forge.media_usage")
+            home = homes.get(tokens[1])
+            if home is None:
+                return i18n.t("commands.forge.media_unknown", pack_id=tokens[1])
+            failed = [
+                str(job.get("id"))
+                for job in load_jobs(home).get("jobs", [])
+                if isinstance(job, dict) and job.get("status") == "failed"
+            ]
+            requeued = requeue_jobs(home, failed) if failed else 0
+            if requeued:
+                schedule_pack_media(ctx.services, tokens[1])
+            return i18n.t("commands.forge.media_requeued", count=requeued, pack_id=tokens[1])
+        # Default verb: plan + queue fresh shots for the given kinds.
+        pack_id = tokens[0]
+        home = homes.get(pack_id)
+        if home is None:
+            return i18n.t("commands.forge.media_unknown", pack_id=pack_id)
+        from agent.forge import MEDIA_OPTION_IDS
+
+        kinds = [t for t in tokens[1:] if t in MEDIA_OPTION_IDS]
+        if not kinds:
+            return i18n.t("commands.forge.media_usage")
+        from gateway.module_media import world_card_paths
+
+        card_paths = world_card_paths(home)
+        if not card_paths:
+            return i18n.t("commands.forge.media_no_card", pack_id=pack_id)
+        try:
+            card = json.loads(card_paths[0].read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return i18n.t("commands.forge.media_no_card", pack_id=pack_id)
+        jobs, plan_note = await plan_media_jobs(
+            ctx.services,
+            pack_id,
+            home,
+            card,
+            kinds,
+            ctx.chat_key,
+            i18n,
+        )
+        if not jobs:
+            return i18n.t("commands.forge.media_no_shots", pack_id=pack_id, reason=plan_note or "no_shots")
+        added = append_jobs(home, jobs, room=ctx.chat_key)
+        if added:
+            schedule_pack_media(ctx.services, pack_id)
+        return i18n.t("commands.forge.media_queued", count=added, pack_id=pack_id)
+
+    async def _forge_skill_or_rule(self, ctx: CommandCtx, tokens: list[str]) -> str:
+        """`.forge skill <description>` / `.forge rule <description>` — author and install a
+        brand-new KP skill or rule system from a natural-language description. Keeper-only;
+        the generated artifact lands in the server's global user directory (visible to every
+        room), and a skill still needs `.skill enable <id>` per room to take effect."""
+        from agent.forge import generate_and_install_rulepack, generate_and_install_skill
+
+        kind = tokens[0].casefold() if tokens else ""
+        description = " ".join(tokens[1:]).strip() if kind else ""
+        if not description:
+            return ctx.i18n.t("commands.forge.usage_skill_rule")
+        if kind == "skill":
+            result = await generate_and_install_skill(ctx.services, description, chat_key=ctx.chat_key)
+        else:
+            result = await generate_and_install_rulepack(ctx.services, description, chat_key=ctx.chat_key)
+        if result.ok:
+            return result.detail or ctx.i18n.t("commands.forge.done", name=result.name)
+        if result.error == "no_data_dir":
+            return ctx.i18n.t("agent.forge.module_no_data_dir")
+        return ctx.i18n.t("commands.forge.failed", error=result.error or "unknown")
+
 
     def _module_progress(self, ctx: CommandCtx, chat_key: str) -> Any:
         """Build a progress reporter that STREAMS import-stage frames to the issuer while a

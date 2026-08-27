@@ -16,8 +16,8 @@ from core.sheets import (
     has_check_value,
     parse_sheet_section,
     refresh_sheet,
-    sheet_value,
     set_sheet_value,
+    sheet_value,
     wire_resources,
 )
 
@@ -144,11 +144,17 @@ def test_wire_resources_lists_declared_meters():
     assert set(meters) == {"hp", "san", "mp"}
     assert meters["hp"] == {"id": "hp", "label": "HP", "value": 10, "max": 10}
 
+    # dnd5e opted into the runtime pools contract: its top-level meters come
+    # from the UNGROUPED pools (HP + temporary HP), never the grouped hit-dice
+    # or spell-slot pools, and labels resolve per viewer locale.
     dnd = load_rulepack("dnd5e")
     fighter = CharacterSheet("Kael", "DnD5e")
     meters = {entry["id"]: entry for entry in wire_resources(fighter, dnd)}
-    assert set(meters) == {"hp"}
-    assert meters["hp"]["value"] == 8 and meters["hp"]["max"] == 8
+    assert set(meters) == {"hp", "temp_hp"}
+    assert meters["hp"] == {"id": "hp", "label": "HP", "value": 8, "max": 8}
+    assert meters["temp_hp"] == {"id": "temp_hp", "label": "Temporary HP", "value": 0, "max": None}
+    zh = {entry["id"]: entry["label"] for entry in wire_resources(fighter, dnd, "zh")}
+    assert zh["hp"] == "生命值" and zh["temp_hp"] == "临时生命值"
 
 
 def test_canonical_values_translate_storage_keys():

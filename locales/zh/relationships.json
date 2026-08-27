@@ -5,6 +5,8 @@
   "relationships.describe.pair": "{label} {value}",
   "relationships.tools.bad_track": "未知的关系轨。可用关系轨：{allowed}。",
   "relationships.tools.bad_delta": "该数值无法解析为整数。",
+  "relationships.tools.unknown_entity": "无法识别的名字「{name}」：房间内没有叫这个名字的玩家角色或 NPC。",
+  "relationships.tools.pc_pair": "关系轨只记录角色↔NPC 或 NPC↔NPC 的配对——{subject} 和 {target} 都是玩家角色。",
   "relationships.tools.adjust.done": "{subject} → {target} {track}：{old} → {new}（变化：{delta}）。",
   "relationships.tools.set.done": "已将 {subject} → {target} 的 {track} 设为 {value}。",
   "relationships.tools.get.empty": "尚未记录任何关系轨数据。",

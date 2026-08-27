@@ -252,7 +252,9 @@ async def _character_payload(
 
         pack = load_rulepack(sheet.system)
         if pack.runtime_spec is not None:
-            resource_groups = resource_projection(sheet, pack, locale).get("groups", [])
+            resource_groups = [
+                group for group in resource_projection(sheet, pack, locale).get("groups", []) if group.get("id")
+            ]
     except Exception:
         resource_groups = []
     status_effects: list[Any] = []

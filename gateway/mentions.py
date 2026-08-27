@@ -37,6 +37,7 @@ from agent.items import item_name_key
 from agent.npc import NPC_DOC_TYPE
 from core.documents import CLUE_LOG_ID, PLAYER_VIEWER
 from core.documents import project as _project
+from core.relationships import TRACKS, RelationshipManager
 
 # The model-side mark: `[[名字]]` around any tracked name (see prompt.style.mention_marks).
 _MARK_RE = re.compile(r"\[\[([^\]]{1,64})\]\]")
@@ -51,7 +52,7 @@ _ITEM_DOC_TYPE = "item"
 _CATALOG_DOC_TYPE = "item_catalog"
 _CLUE_DOC_TYPE = "clue_log"
 
-_NPC_CARD_FIELDS = ("name", "public_description", "location", "status", "avatar", "public_memory")
+_NPC_CARD_FIELDS = ("name", "public_description", "location", "status", "avatar", "public_memory", "relationships")
 _ITEM_CARD_FIELDS = ("name", "kind", "slot", "description", "effect", "quantity", "equipped_slot")
 _CLUE_CARD_FIELDS = ("title", "content", "found_turn")
 
@@ -156,12 +157,35 @@ async def _mention_table(services: Any, chat_key: str) -> dict[str, tuple[str, s
         return {field: entry[field] for field in fields if field in entry}
 
     # NPCs — every registered record, matched by name or explicit alias.
+    # The card also carries the NPC's deterministic relationship tracks toward
+    # other entities (好感/情欲), read straight off the room state the same way
+    # `net.state` projects a player character's tracks: only non-default values,
+    # only the player-visible half of the pair. Tracks are mechanical state, not
+    # keeper secrets — an NPC's public feelings are as visible as a sheet's.
+    try:
+        rel_state = await RelationshipManager(services.store).load(chat_key)
+    except Exception:  # noqa: BLE001 — a broken relationship store must not kill annotation
+        rel_state = {}
     for doc in await docs.list(chat_key, NPC_DOC_TYPE):
         data = doc.data
         name = str(data.get("name") or "").strip()
         if not name:
             continue
         card = _restrict(_project(doc, PLAYER_VIEWER), _NPC_CARD_FIELDS)
+        tracks = rel_state.get(name)
+        if tracks:
+            rendered = []
+            for target, values in tracks.items():
+                pairs = []
+                for track_id, value in values.items():
+                    spec = TRACKS.get(track_id)
+                    if spec is None or value == spec.default:
+                        continue
+                    pairs.append({"track": str(track_id), "value": int(value)})
+                if pairs:
+                    rendered.append({"target": str(target), "tracks": pairs})
+            if rendered:
+                card = {**card, "relationships": rendered}
         _put(name, "npc", doc.id, name, card)
         for alias in data.get("aliases") or []:
             _put(str(alias), "npc", doc.id, name, card)

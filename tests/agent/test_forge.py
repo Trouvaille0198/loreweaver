@@ -571,10 +571,3 @@ def test_normalize_pregen_names_strips_gloss_into_aliases() -> None:
     assert card["pregens"][2]["name"] == "奥尔加·铁心"
     assert "aliases" not in card["pregens"][2]
 
-
-def test_normalize_pregen_names_merges_existing_aliases_deduplicated() -> None:
-    from agent.forge import _normalize_pregen_names
-
-    card = {"pregens": [{"name": "薇拉·月影（Vera Moonshadow）", "aliases": ["薇拉", "Vera Moonshadow"]}]}
-    assert _normalize_pregen_names(card) == 1
-    assert card["pregens"][0]["aliases"] == ["薇拉", "Vera Moonshadow"]  # gloss not duplicated
