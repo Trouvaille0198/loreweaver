@@ -18,6 +18,10 @@ Subcommands:
     .item equip <name> [slot]   — equip an item (bonus applies)
     .item unequip <name>        — unequip an item (bonus stops)
 
+    `.item drop/archive/unarchive` accept `--on <character>` to address one of
+    your OWN characters by name (a retired sheet's bag can be cleaned up); other
+    characters' holdings are only readable (`inv`) or keeper-granted (`give`).
+
 Every user-facing string routes through `infra.i18n` + `locales/{en,zh}/commands.json`.
 """
 
@@ -58,12 +62,25 @@ from gateway.turn import publish_state
 
 def _parse_item_qty(rest: str) -> tuple[str, int]:
     """Split `<name> [qty]` — a trailing all-digits token is the quantity."""
-    parts = rest.split()
+    parts = rest.strip().split()
     if not parts:
         return "", 1
-    if len(parts) >= 2 and parts[-1].isdigit():
+    if len(parts) > 1 and parts[-1].isdigit():
         return " ".join(parts[:-1]), int(parts[-1])
     return " ".join(parts), 1
+
+
+def _split_owner_flag(rest: str) -> tuple[str, str | None]:
+    """Split a trailing `--on <character>` target off `rest`. The character name
+    may contain spaces — everything after `--on` is taken as the name. Returns
+    `(rest, target)` with target `None` when the flag is absent."""
+    rest = rest.strip()
+    marker = "--on"
+    idx = rest.find(marker)
+    if idx < 0:
+        return rest, None
+    target = rest[idx + len(marker):].strip()
+    return rest[:idx].strip(), target or None
 
 def _parse_give_flags(rest: str) -> tuple[str, str, dict[str, int], str, int, bool]:
     """Split `.item give` args: `<item> <to> [--desc <text>] [--bonus stat=n,…] [--qty n] [--secret]`.
@@ -176,6 +193,18 @@ async def _own_active_name(ctx: CommandCtx) -> str | None:
     return sheet.name
 
 
+async def _resolve_own_or_target(ctx: CommandCtx, target: str | None) -> str | None:
+    """The character an item verb operates on: the caller's active character, or
+    `target` when `--on` names one of the caller's OWN characters (a retired sheet
+    the caller still owns may be cleaned up; anyone else's sheet is refused)."""
+    if target is None:
+        return await _own_active_name(ctx)
+    owner = await ctx.services.characters.get_character_owner(ctx.chat_key, target)
+    if owner != ctx.user_id:
+        return None
+    return target
+
+
 class ItemCommands:
     """`.item` — phase 2: view/grant/drop/equip gear on `item` documents."""
 
@@ -260,11 +289,14 @@ class ItemCommands:
             return ctx.fail(ctx.i18n.t("kp_tools.character.data_error"))
 
     async def _item_drop(self, ctx: CommandCtx, rest: str) -> str:
+        rest, target = _split_owner_flag(rest)
         item, _qty = _parse_item_qty(rest)
         if not item:
             return ctx.fail(ctx.i18n.t("commands.item.usage"))
-        name = await _own_active_name(ctx)
+        name = await _resolve_own_or_target(ctx, target)
         if name is None:
+            if target is not None:
+                return ctx.fail(ctx.i18n.t("commands.item.not_owned", name=target))
             return ctx.fail(ctx.i18n.t("commands.item.character_not_found", name="?"))
         try:
             doc = await find_instance(ctx.services.documents, ctx.chat_key, name, item)
@@ -433,15 +465,19 @@ class ItemCommands:
             return ctx.fail(ctx.i18n.t("kp_tools.character.data_error"))
 
     async def _item_archive(self, ctx: CommandCtx, rest: str) -> str:
-        """`.item archive <name>` — shelf an item on your active character: out of
-        the active bag, the wire views and the bonus aggregation, so it stops
+        """`.item archive <name> [--on <character>]` — shelf an item on your active
+        character (or one of your own characters via `--on`, e.g. a retired sheet):
+        out of the active bag, the wire views and the bonus aggregation, so it stops
         mattering in play and does not carry into another scenario. The record
         survives — `.item unarchive <name>` brings it back."""
+        rest, target = _split_owner_flag(rest)
         item = rest.strip()
         if not item:
             return ctx.fail(ctx.i18n.t("commands.item.usage"))
-        name = await _own_active_name(ctx)
+        name = await _resolve_own_or_target(ctx, target)
         if name is None:
+            if target is not None:
+                return ctx.fail(ctx.i18n.t("commands.item.not_owned", name=target))
             return ctx.fail(ctx.i18n.t("commands.item.character_not_found", name="?"))
         try:
             doc = await find_instance(ctx.services.documents, ctx.chat_key, name, item)
@@ -457,12 +493,16 @@ class ItemCommands:
             return ctx.fail(ctx.i18n.t("kp_tools.character.data_error"))
 
     async def _item_unarchive(self, ctx: CommandCtx, rest: str) -> str:
-        """`.item unarchive <name>` — bring a shelved item back into the active bag."""
+        """`.item unarchive <name> [--on <character>]` — bring a shelved item back
+        into the active bag (or one of your own characters via `--on`)."""
+        rest, target = _split_owner_flag(rest)
         item = rest.strip()
         if not item:
             return ctx.fail(ctx.i18n.t("commands.item.usage"))
-        name = await _own_active_name(ctx)
+        name = await _resolve_own_or_target(ctx, target)
         if name is None:
+            if target is not None:
+                return ctx.fail(ctx.i18n.t("commands.item.not_owned", name=target))
             return ctx.fail(ctx.i18n.t("commands.item.character_not_found", name="?"))
         try:
             doc = await find_instance(ctx.services.documents, ctx.chat_key, name, item)

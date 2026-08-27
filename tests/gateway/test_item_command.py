@@ -313,22 +313,65 @@ async def test_item_views_order_newest_first():
     assert render_held_items([older, newest, legacy, newer]) == ["Gem", "Sword", "Torch", "Relic"]
 
 
-async def test_item_unarchive_restores_item_to_active_bag():
+async def test_item_drop_on_targets_own_retired_character():
+    """`--on <character>` addresses one of the caller's OWN characters by name —
+    a retired (non-active) sheet's bag can still be cleaned up."""
+    services = _services()
+    router = CommandRouter(services)
+    chat_key = "cli:dm:items"
+    await _make(services, chat_key, "p1", "Alice")  # retired: no longer active
+    await _make(services, chat_key, "p1", "Bob")  # active character
+    await _seed(services, chat_key, _tpl("Torch"))
+    await router.dispatch(_keeper_ctx(chat_key), ".item give Torch Alice")
+
+    reply = await router.dispatch(_player_ctx(chat_key), ".item drop Torch --on Alice")
+
+    assert "Removed" in reply
+    assert await instances_for_owner(services.documents, chat_key, "Alice") == []
+    # The active character's bag is untouched.
+    assert await instances_for_owner(services.documents, chat_key, "Bob") == []
+
+
+async def test_item_archive_with_on_retired_character():
+    """`--on` also works for archive: the retired sheet's item is shelved (and
+    can be restored the same way)."""
     services = _services()
     router = CommandRouter(services)
     chat_key = "cli:dm:items"
     await _make(services, chat_key, "p1", "Alice")
+    await _make(services, chat_key, "p1", "Bob")
     await _seed(services, chat_key, _tpl("Bronze Mirror"))
-    await router.dispatch(_player_ctx(chat_key), ".item add Bronze Mirror")
-    await router.dispatch(_player_ctx(chat_key), ".item archive Bronze Mirror")
+    await router.dispatch(_keeper_ctx(chat_key), ".item give Bronze Mirror Alice")
 
-    reply = await router.dispatch(_player_ctx(chat_key), ".item unarchive Bronze Mirror")
+    reply = await router.dispatch(_player_ctx(chat_key), ".item archive Bronze Mirror --on Alice")
 
-    assert "Restored" in reply
+    assert "Archived" in reply
     instances = await instances_for_owner(services.documents, chat_key, "Alice")
-    assert instances[0].data.get("archived") is False
-    assert "Bronze Mirror" in (await router.dispatch(_player_ctx(chat_key), ".item inv"))
-    assert "Bronze Mirror" not in (await router.dispatch(_player_ctx(chat_key), ".item inv --archived"))
+    assert instances[0].data.get("archived") is True
+    restored = await router.dispatch(_player_ctx(chat_key), ".item unarchive Bronze Mirror --on Alice")
+    assert "Restored" in restored
+    assert (await instances_for_owner(services.documents, chat_key, "Alice"))[0].data.get(
+        "archived"
+    ) is False
+
+
+async def test_item_drop_on_refuses_other_players_character():
+    """`--on` is owner-gated: another player's character is refused, and the
+    item survives."""
+    services = _services()
+    router = CommandRouter(services)
+    chat_key = "cli:dm:items"
+    await _make(services, chat_key, "p1", "Alice")
+    await _make(services, chat_key, "p2", "Carol")
+    await _seed(services, chat_key, _tpl("Torch"))
+    await router.dispatch(_keeper_ctx(chat_key), ".item give Torch Carol")
+
+    reply = await router.dispatch(_player_ctx(chat_key), ".item drop Torch --on Carol")
+
+    assert "not your character" in reply
+    assert [d.data.get("name") for d in await instances_for_owner(services.documents, chat_key, "Carol")] == [
+        "Torch"
+    ]
 
 
 async def test_item_equip_rejects_archived_item():
