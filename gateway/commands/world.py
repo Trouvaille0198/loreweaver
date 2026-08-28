@@ -368,6 +368,11 @@ class WorldCommands:
                 ctx.chat_key,
                 Event.system("info", ctx.i18n.t("commands.share.done", name=name, url=url)),
             )
+            # The public face rides `state.module_share`; without an immediate push,
+            # members keep the stale frame until the next turn and the freshly shared
+            # link opens on a page missing its description (same refresh pattern as
+            # `.var` above).
+            await publish_state(ctx.router.hub, ctx.services, ctx.raw_ctx)
         return None
 
     async def cmd_module(self, ctx: CommandCtx) -> str:
