@@ -729,10 +729,10 @@ Server → client:
   present when the request supplied one:
   `{type:"admin_generated", kind:"skill"|"rule"|"module"|"pack"|"module_prompt", ok:boolean, id:string, name:string, error:string, detail:string, request_id?:string}`
 - `admin_generate_started` — sent immediately in reply to an async `admin_generate` (`kind:"module"`/`"pack"`), confirming the generation is queued and runs in the background; the final result arrives later as `admin_generated`:
-  `{type:"admin_generate_started", kind:"module"|"pack"}`
+  `{type:"admin_generate_started", kind:"module"|"pack", id:string}`
 - `admin_generate_progress` — streamed during an async module/pack generation, one per pipeline stage, so a client can show live progress instead of a bare spinner:
-  `{type:"admin_generate_progress", kind:"module"|"pack", stage:string, detail:string}`
-  `stage` is a closed vocabulary — `authoring`, `world_card`, `media`, `skill`, `rulepack`, `analyzing`, `building`, `installing`, `importing` — and `detail` carries an optional stage-specific note.
+  `{type:"admin_generate_progress", kind:"module"|"pack", stage:string, detail:string, id:string}`
+  `stage` is a closed vocabulary — `authoring`, `world_card`, `media`, `skill`, `rulepack`, `analyzing`, `building`, `installing`, `importing` — and `detail` carries an optional stage-specific note. `id` is the generation's stable identifier (also echoed on `admin_generate_started`); parallel forges each carry their own id so a client can keep their progress rows separate.
 - `admin_update_server` — a keeper asks the server to update itself in place. No parameters: the
   server runs its OWN operator-configured command (`TRPG_TUI__UPDATE_COMMAND`, e.g.
   `git pull && uv sync`), never anything the client supplies, and requires the `"update"` feature

@@ -282,10 +282,10 @@ role = "player"  # 或 "keeper"；默认为 "player"
 - `admin_generated` — 锻造引擎的结果；`ok` 为 `false` 时 `id`/`name` 为空、`error` 携带（未翻译的）创作或文件安装诊断。对 `kind:"module"`/`"pack"`，`detail` 携带按房间的安装/导入结果；要据此判断模组是否真的进入房间（`ok` 只表示创作出的产物已写入，不保证后续房间导入成功）。对 `skill`/`rule` 为空：
   `{type:"admin_generated", kind:"skill"|"rule"|"module"|"pack", ok:boolean, id:string, name:string, error:string, detail:string}`
 - `admin_generate_started` — 在异步 `admin_generate`（`kind:"module"`/`"pack"`）时立即回给请求方，确认生成已排队并在后台运行；最终结果稍后以 `admin_generated` 到达：
-  `{type:"admin_generate_started", kind:"module"|"pack"}`
+  `{type:"admin_generate_started", kind:"module"|"pack", id:string}`
 - `admin_generate_progress` — 在异步模组/包生成过程中逐阶段推送，让客户端可以显示实时进度而不是光转圈：
-  `{type:"admin_generate_progress", kind:"module"|"pack", stage:string, detail:string}`
-  `stage` 是封闭词表——`authoring`、`world_card`、`media`、`skill`、`rulepack`、`analyzing`、`building`、`installing`、`importing`——`detail` 携带可选的阶段说明。
+  `{type:"admin_generate_progress", kind:"module"|"pack", stage:string, detail:string, id:string}`
+  `stage` 是封闭词表——`authoring`、`world_card`、`media`、`skill`、`rulepack`、`analyzing`、`building`、`installing`、`importing`——`detail` 携带可选的阶段说明。`id` 是该次生成的稳定标识（与 `admin_generate_started` 帧一致）；并行多次生成时各自携带自己的 `id`，客户端据此把各生成的进度行区分开。
 - `admin_error` — 本地化的故障通知（不关闭连接）：
   `{type:"admin_error", code:"forbidden"|"unknown_provider"|"bad_request"|"set_failed"|"not_found"|"op_failed"|"not_configured"|"last_keeper", message?:string}`
 

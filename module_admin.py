@@ -311,6 +311,9 @@ class ModuleAdminService:
                         "content": str(entry.get("content") or ""),
                         "keys": keys,
                         "secret": bool(entry.get("secret", False)),
+                        # The entry's bound illustration (NPC portraits etc.) —
+                        # rendered beside the entry, not in the material gallery.
+                        "image": str(entry.get("image") or ""),
                     }
                 )
             variables.extend([dict(v) for v in (card.get("variables") or []) if isinstance(v, dict)])
@@ -436,7 +439,7 @@ class ModuleAdminService:
             # Figure kind from the provenance name (`module-<id>-<kind>-<n>.jpg`): cover/scenes/npcs/items.
             kind = "asset"
             stem = p.stem
-            for token in ("cover", "scenes", "npcs", "items", "item", "pregens"):
+            for token in ("cover", "scenes", "npcs", "clue", "items", "item", "pregens"):
                 if token in stem:
                     kind = token
                     break
@@ -459,6 +462,9 @@ class ModuleAdminService:
         from gateway.module_media import load_jobs
 
         jobs_doc = load_jobs(home)
+        # A failed fresh-shot plan persists its localized reason in the sidecar; the detail
+        # page shows it so the keeper knows why nothing was queued.
+        media_plan_error = str(jobs_doc.get("plan_error") or "")
         media_jobs = [
             {
                 "id": str(job.get("id") or ""),
@@ -499,6 +505,7 @@ class ModuleAdminService:
                 "pool": None,
                 "media": media,
                 "media_jobs": media_jobs,
+                "media_plan_error": media_plan_error,
                 "worldbook_entries": entries,
                 "variables": variables,
                 "pregens": pregens,
@@ -599,30 +606,41 @@ class ModuleAdminService:
                     "importing": False,
                     }
                 )
-        # A generation currently running in this room shows as a placeholder source so the keeper
-        # sees it in the library while it authors/renders — and after a refresh, because the
-        # in-flight stage is persisted by `net.admin._progress` and cleared on completion.
-        generating = await self.services.store.state_get(chat_key, "generation_progress")
-        if generating:
+        # Generations currently running in this room show as placeholder sources so the keeper
+        # sees them in the library while they author/render — and after a refresh, because the
+        # in-flight stages are persisted by `net.admin._progress` and cleared on completion.
+        # One row per generation id (`generation_progress:<id>`): parallel forges each keep a
+        # live placeholder instead of overwriting one shared key.
+        generating_rows = await self.services.store.state_list(chat_key, prefix="generation_progress:")
+        placeholders: list[dict[str, Any]] = []
+        for row in sorted(generating_rows, key=lambda r: str(r.get("key") or "")):
+            raw = row.get("value")
+            if not raw:
+                continue
             try:
-                gen = json.loads(generating)
-                modules.insert(
-                    0,
-                    {
-                        "name": "__generating__",
-                        "title": "",
-                        "size": 0,
-                        "modified": 0,
-                        "source_kind": "generating",
-                        "generating": True,
-                        "stage": str(gen.get("stage") or ""),
-                        "detail": str(gen.get("detail") or ""),
-                        "current": False,
-                        "importing": False,
-                    },
-                )
+                gen = json.loads(raw)
             except (TypeError, ValueError):
-                pass
+                continue
+            if not isinstance(gen, dict):
+                continue
+            gen_id = str(row.get("key") or "").partition(":")[2]
+            placeholders.append(
+                {
+                    "name": f"__generating__:{gen_id}",
+                    "title": "",
+                    "size": 0,
+                    "modified": 0,
+                    "source_kind": "generating",
+                    "generating": True,
+                    "generation_kind": str(gen.get("kind") or ""),
+                    "stage": str(gen.get("stage") or ""),
+                    "detail": str(gen.get("detail") or ""),
+                    "current": False,
+                    "importing": False,
+                }
+            )
+        if placeholders:
+            modules = [*placeholders, *modules]
         status = str(await self.services.store.state_get(chat_key, "module_init_status") or "")
         visible_current = current
         if not visible_current and active.get("kind") == "world_card":
@@ -936,6 +954,7 @@ class ModuleAdminService:
         from gateway.module_media import (
             append_jobs,
             plan_media_jobs,
+            record_plan_error,
             requeue_jobs,
             schedule_pack_media,
         )
@@ -982,13 +1001,27 @@ class ModuleAdminService:
 
         async def _plan_and_queue() -> None:
             try:
-                jobs, _note = await plan_media_jobs(
+                jobs, note = await plan_media_jobs(
                     self.services, pack_id, home, card, kinds, chat_key, media_i18n
                 )
                 if jobs and append_jobs(home, jobs, room=chat_key):
                     schedule_pack_media(self.services, pack_id)
+                elif note:
+                    # The detached plan's failure must reach the keeper: persist the
+                    # localized reason (shot_list_failed / no_shots / …) for the detail
+                    # page instead of dropping it into silence.
+                    record_plan_error(home, note)
             except Exception:  # noqa: BLE001 — a failed plan leaves the pack untouched
                 logger.exception("module media planning failed for %s", pack_id)
+                from agent.forge import _option_reason
+
+                record_plan_error(
+                    home,
+                    media_i18n.t(
+                        "agent.forge.module_media_none",
+                        reason=_option_reason(media_i18n, "shot_list_failed"),
+                    ),
+                )
 
         asyncio.get_running_loop().create_task(_plan_and_queue())
         return _module_reply("module_media_generate", True, pack_id, {"queued": 0, "planning": True})

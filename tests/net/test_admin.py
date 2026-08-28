@@ -3862,8 +3862,10 @@ async def test_admin_generate_module_streams_started_progress_then_result(tmp_pa
                 seen.append(str(frame.get("type")))
                 if frame.get("type") == "admin_generate_started":
                     assert frame.get("kind") == "module"
+                    assert frame.get("id")
                 if frame.get("type") == "admin_generate_progress":
                     assert frame.get("stage")
+                    assert frame.get("id")
                 if frame.get("type") == "admin_generated":
                     result = frame
                     break

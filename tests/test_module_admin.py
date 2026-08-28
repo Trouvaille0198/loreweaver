@@ -192,18 +192,30 @@ async def test_module_list_includes_in_flight_generation(tmp_path):
     empty = json.loads((await admin._list(room, root))["detail"])
     assert all(not m.get("generating") for m in empty["modules"])
 
-    # What `net.admin._progress` persists during a forge.
+    # What `net.admin._progress` persists during a forge: one row per generation id, so two
+    # forges running at once each keep their own placeholder in the library.
     await store.state_set(
         chat_key,
-        "generation_progress",
+        "generation_progress:aaaa",
         json.dumps({"kind": "pack", "stage": "media", "detail": "rendering cover"}),
     )
+    await store.state_set(
+        chat_key,
+        "generation_progress:bbbb",
+        json.dumps({"kind": "module", "stage": "authoring", "detail": "writing source"}),
+    )
     listed = json.loads((await admin._list(room, root))["detail"])
+    assert [m["name"] for m in listed["modules"]] == ["__generating__:aaaa", "__generating__:bbbb"]
     first = listed["modules"][0]
     assert first["generating"] is True
     assert first["stage"] == "media"
     assert first["detail"] == "rendering cover"
     assert first["source_kind"] == "generating"
+    assert first["generation_kind"] == "pack"
+    second = listed["modules"][1]
+    assert second["generating"] is True
+    assert second["generation_kind"] == "module"
+    assert second["stage"] == "authoring"
 
 
 async def test_import_pack_routes_to_world_card_import(tmp_path, monkeypatch):
@@ -389,6 +401,30 @@ async def test_pack_detail_includes_designed_items(tmp_path, monkeypatch):
     assert items[0]["scope"] == "module"
     assert items[0]["origin"] == "the chapel crypt"
     assert items[0]["original_holder"] == "the ferryman"
+
+
+@pytest.mark.asyncio
+async def test_pack_detail_surfaces_failed_media_plan_reason(tmp_path, monkeypatch):
+    """A failed fresh-shot media plan persists its localized reason in the pack's jobs
+    sidecar (`record_plan_error`, what `_media_generate`'s detached plan task calls), and
+    the detail reply carries it — so the keeper sees WHY nothing was queued instead of
+    silence."""
+    from gateway.module_media import record_plan_error
+
+    services, admin, home = _pack_services(tmp_path)
+    monkeypatch.setattr("gateway.panels.installed_pack_homes", lambda data_dir: {"fog": home})
+
+    record_plan_error(home, "no usable shot list")
+    reply = await admin._detail("fog-room", tmp_path / "modules", "fog")
+    assert reply["ok"] is True
+    assert json.loads(reply["detail"])["media_plan_error"] == "no usable shot list"
+
+    # A fresh successful plan (append_jobs) supersedes the stale failure note.
+    from gateway.module_media import append_jobs
+
+    assert append_jobs(home, [{"id": "cover-1", "kind": "cover", "status": "pending"}]) == 1
+    reply = await admin._detail("fog-room", tmp_path / "modules", "fog")
+    assert json.loads(reply["detail"])["media_plan_error"] == ""
 
 
 @pytest.mark.asyncio
