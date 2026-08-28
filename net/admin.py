@@ -20,6 +20,7 @@ import hashlib
 import json
 import logging
 import time
+import uuid
 from typing import Any
 
 from agent.context import AgentCtx, FsAdapter
@@ -1996,6 +1997,11 @@ async def _generate(
     # push the final result when done — so the keeper's UI is not blocked on a spinner for the
     # whole pipeline. `emit_frame` is the connection's `send_frame` (provided by the session);
     # without it (a test caller), we fall back to a synchronous await so the reply still lands.
+    # Each in-flight generation owns its own progress row (`generation_progress:<id>`) so two
+    # modules forging at once each keep a live placeholder in the keeper's module library — the
+    # single shared key they previously wrote made parallel forges overwrite each other's
+    # progress, and whichever finished first deleted the other's row too.
+    gen_id = uuid.uuid4().hex[:12]
     ctx = AgentCtx(
         chat_key=room_chat_key,
         user_id="keeper",
@@ -2007,18 +2013,19 @@ async def _generate(
 
     async def _progress(stage: str, detail: str = "") -> None:
         if emit_frame is not None:
-            frame = {"type": "admin_generate_progress", "kind": kind, "stage": stage, "detail": detail}
+            frame = {"type": "admin_generate_progress", "kind": kind, "stage": stage, "detail": detail, "id": gen_id}
             try:
                 await emit_frame(frame)
             except Exception:  # noqa: BLE001 — a dead connection must not fail the generation
                 pass
         # Persist the in-flight stage so a refreshed/reconnected keeper still sees the running
         # generation in the module library (`module_admin._list` merges this row) — progress that
-        # only lived on the wire vanished on every refresh.
+        # only lived on the wire vanished on every refresh. One row per generation id: parallel
+        # forges keep their own placeholder, and finishing one never hides another.
         try:
             await services.store.state_set(
                 chat_key_for_room(caller_room),
-                "generation_progress",
+                f"generation_progress:{gen_id}",
                 json.dumps({"kind": kind, "stage": stage, "detail": detail}, ensure_ascii=False),
             )
         except Exception:  # noqa: BLE001 — progress persistence must never fail a generation
@@ -2054,8 +2061,10 @@ async def _generate(
     import asyncio
 
     if emit_frame is not None:
-        asyncio.get_running_loop().create_task(_finish_generation(_run(), kind, emit_frame, services, caller_room))
-        return {"type": "admin_generate_started", "kind": kind}
+        asyncio.get_running_loop().create_task(
+            _finish_generation(_run(), kind, emit_frame, services, caller_room, gen_id)
+        )
+        return {"type": "admin_generate_started", "kind": kind, "id": gen_id}
     result = await _run()
     return _generated_frame(kind, result)
 
@@ -2066,10 +2075,11 @@ async def _finish_generation(
     emit_frame: Any,
     services: Services | None = None,
     caller_room: str = "",
+    gen_id: str = "",
 ) -> None:
     """Await a background forge generation and push its `admin_generated` result to the caller.
     Best-effort: a dead connection just loses the result frame; the persisted generation-progress
-    row is cleared either way."""
+    row (one per generation id) is cleared either way."""
     try:
         result = await coro
         if emit_frame is not None:
@@ -2079,7 +2089,9 @@ async def _finish_generation(
     finally:
         if services is not None and caller_room:
             try:
-                await services.store.state_delete(chat_key_for_room(caller_room), "generation_progress")
+                await services.store.state_delete(
+                    chat_key_for_room(caller_room), f"generation_progress:{gen_id}"
+                )
             except Exception:  # noqa: BLE001 — clearing progress is best-effort
                 pass
 
@@ -2140,10 +2152,12 @@ ROOM_FACETS = (
         name="generation_progress",
         owner="net.admin",
         reset_scope="all",
-        # In-flight module-generation progress for the keeper's module library —
-        # transient by nature (written per stage, deleted when the generation
-        # settles), so any reset may drop it.
+        # In-flight module-generation progress for the keeper's module library — transient by
+        # nature (written per stage, deleted when the generation settles), so any reset may
+        # drop it. One row per generation id (`generation_progress:<id>`), so parallel forges
+        # each keep their own placeholder; the legacy single key is swept too.
         state_keys=frozenset({"generation_progress"}),
+        state_prefixes=frozenset({"generation_progress:"}),
         storages=frozenset({STORAGE_ROOM_STATE}),
     ),
 )
