@@ -64,6 +64,50 @@ Keys are remembered **per provider**, so switching back to one you've used befor
 new `base_url` is never paired with an older key: supply the matching key on the same request, or the
 endpoint gets an empty one. Keeper clients can do all of this from the model screen instead.
 
+### Per-room model selection
+
+The model screen has two separate layers:
+
+1. **Global model profiles** — `admin_set_llm` saves typed chat, embedding, and image profiles
+   (`provider::kind::model`). Saving a profile adds it to the library; it does not assign that
+   profile to every room.
+2. **This room's usage selection** — `admin_set_room_model` assigns profile IDs independently to
+   `main`, `scribe`, `director`, and `imagegen`. The selected room profile wins for that lane.
+   An empty lane follows the corresponding global default.
+
+For image generation specifically, the effective value is:
+
+```text
+room_config.stored.imagegen
+  -> the selected image profile's provider / model / base_url / key
+  -> global admin_config.imagegen when the room selection is empty
+```
+
+The global `admin_config.imagegen` can therefore show a different provider from the one actually
+used by a room. It describes the deployment-wide fallback, not every room's live image client.
+Likewise, `welcome.features` only says that image generation is available; it does not identify the
+provider or model.
+
+When checking a room, always inspect these frames in this order:
+
+1. `admin_room_config` for the current room's `stored.main`, `stored.scribe`, `stored.director`,
+   and `stored.imagegen` profile IDs.
+2. `admin_config.llms` to resolve the selected profile's `kind`, provider, model, effective
+   `base_url`, and key presence.
+3. Only when a lane's room profile ID is empty, use the matching global default from
+   `admin_config`.
+
+The web screen addresses a room by its human name, while persistent room state uses its canonical
+session key (for example, `table` is stored under `tui:group:table`). This is an implementation
+detail of the same room selection, not a second configuration.
+
+For a custom OpenAI-compatible image endpoint, create or edit an `image` profile, enter the
+custom base URL and matching API key, save it, then assign that profile under **This room's usage
+selection → Image generation**. The base URL is the API root, such as
+`https://image.kuaipao.pro/v1`; Loreweaver appends `/images/generations` (or `/images/edits`
+when a reference image is used). A changed endpoint is a new credential boundary, so its matching
+API key must be supplied again.
+
 ### The Scribe — small model, real job
 
 The Scribe is on by default and runs one extra call after every Keeper turn — on every channel,

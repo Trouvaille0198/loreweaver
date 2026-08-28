@@ -54,6 +54,46 @@ Subscription providers need `.model login` first.
 
 key 是**按 provider 记住**的，所以换回一个用过的不会再问你要。但新的 `base_url` 永远不会配旧 key：要么你在同一条请求里把对应的 key 给上，要么这个端点拿到的是空 key。守秘人客户端在模型页也能做同样的事。
 
+### 按房间选择模型
+
+模型页面分成两层，不能混看：
+
+1. **全局模型 profile**——`admin_set_llm` 保存带类型的对话、Embedding 和图像 profile
+   （`provider::kind::model`）。保存 profile 只是把它加入全局候选库，不会自动分配给所有房间。
+2. **本房间用途选择**——`admin_set_room_model` 分别为 `main`、`scribe`、`director` 和
+   `imagegen` 指定 profile ID。某个用途选中了房间 profile，就优先使用它；该用途为空时，
+   才跟随对应的全局默认值。
+
+对于图像生成，实际生效顺序是：
+
+```text
+room_config.stored.imagegen
+  -> 被选中的图像 profile 的 provider / model / base_url / key
+  -> 房间没有选择时，才使用全局 admin_config.imagegen
+```
+
+因此，全局 `admin_config.imagegen` 显示的 provider 可能和当前房间实际使用的 provider
+不同。它描述的是整台部署的默认回退，不是每个房间的实时图像客户端。
+同样，`welcome.features` 里有 `imagegen` 只代表房间具备生图能力，不代表使用哪个
+provider 或模型。
+
+排查某个房间时，固定按以下顺序看：
+
+1. 先看当前房间的 `admin_room_config`，读取
+   `stored.main`、`stored.scribe`、`stored.director`、`stored.imagegen` profile ID。
+2. 再在 `admin_config.llms` 中按 profile ID 找到对应的 `kind`、provider、模型、
+   实际 `base_url` 和密钥是否存在。
+3. 只有某个用途的房间 profile ID 为空时，才使用 `admin_config` 中对应的全局默认配置。
+
+网页管理帧使用房间的人类可读名称；持久化的房间状态使用规范化 session key（例如
+`table` 保存为 `tui:group:table`）。这是同一份房间选择的两种寻址方式，不是两套配置。
+
+配置自定义 OpenAI-compatible 生图服务时，应先创建或编辑 `image` profile，填写自定义
+API 根地址和匹配的 API Key，保存后再到**本房间用途模型 → 图像生成**里选中该 profile。
+例如快跑应填写 `https://image.kuaipao.pro/v1`；Loreweaver 会自动追加
+`/images/generations`（有参考图时追加 `/images/edits`）。更换 endpoint 就是新的凭据
+边界，必须再次提供该 endpoint 对应的 API Key。
+
 ### 书记官——小模型，正经活
 
 书记官默认开着，在守秘人每回合之后多跑一次调用——每条通道都跑，离线 `--cli` 也不例外（在那里它内联执行、跑完才交还提示符；只有演出导演保持仅限联机——它上演的全是线路帧，无枢纽的通道无处投递）。它拿这回合实际叙述出来的内容去对模组的追踪器（要求引用原文，引不出来就不许写）、把判断以悄悄话的形式塞进守秘人的**下一**回合（“看起来过了一天，该推时钟了”、“刚才那段恐怖暴露可能该掷一次理智”），顺便给演出导演分类这回合的剧情节拍。
