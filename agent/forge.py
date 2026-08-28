@@ -2193,6 +2193,20 @@ def _pack_skill_names(pack: Any) -> list[str]:
     return [key for key in pack.defaults if key not in excluded]
 
 
+def _pack_module_genre_note(pack: Any, i18n: Any) -> str:
+    """The pack's declared genre/tone guidance for the module authoring prompt
+    (``""`` when the pack declares none). The world card schema's own wording is
+    investigation-flavoured (clue/reveals/evidence), which silently drags every
+    generated module toward CoC-style mystery horror — this injects the SYSTEM's
+    genre so a dnd5e module lands as sword-and-sorcery fantasy, not a remembered
+    TRPG default."""
+    genre = getattr(pack, "genre", {}) or {}
+    text = genre.get(i18n.locale) or genre.get("en") or ""
+    if not text:
+        return ""
+    return i18n.t("agent.forge.pack_module_genre_note", system=pack.system, genre=text)
+
+
 def _pack_module_skill_guidance(pack: Any, i18n: Any) -> str:
     """System-specific pregen skill guidance for the pack-module authoring prompt.
 
@@ -2241,6 +2255,11 @@ def _build_pack_module_messages(
     if resolved_system:
         try:
             pack = rulepacks.load_rulepack(resolved_system)
+            # Genre first: the schema's investigation-flavoured wording would otherwise
+            # drag every module toward CoC-style mystery horror.
+            genre_note = _pack_module_genre_note(pack, i18n)
+            if genre_note:
+                user_content = f"{user_content}\n\n{genre_note}"
             guidance = _pack_module_skill_guidance(pack, i18n)
             user_content = f"{user_content}\n\n{guidance}"
             # Level-based systems (D&D): the recommended level range is REQUIRED

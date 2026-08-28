@@ -3,6 +3,9 @@
 # and the ladder below grades the counted successes. No engine code knows this
 # system exists; deleting this file removes it.
 names: [wod, "world of darkness"]
+genre:
+  en: "Modern dark fantasy: our world's cities and hidden powers — vampires, werewolves, mages, and stranger things. Threats are personal and political as much as supernatural; moral ambiguity, faction intrigue, and the cost of power drive the story."
+  zh: "现代黑暗奇幻：当代都市与潜藏的势力——血族、狼人、法师与更诡异的存在。威胁既有超自然层面，也有个人与政治层面；道德灰区、派系博弈与力量的代价推动剧情。"
 set_keys: [wod]
 defaults: {}
 resolution:
