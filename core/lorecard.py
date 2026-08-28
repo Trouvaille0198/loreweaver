@@ -220,15 +220,17 @@ def parse_lorecard_bytes(data: bytes, filename: str = "") -> Lorecard:
 def _parse_pregens(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
     """Native pregen-cast list → normalized entries the world importer registers.
 
-    Shape: ``[{name, occupation?, background|notes?, appearance?, aliases?, skills?: {canonical: int}}]``.
+    Shape: ``[{name, occupation?, character_class?, race?, background|notes?, appearance?, aliases?, skills?: {canonical: int}}]``.
     ``occupation`` (the character's job, e.g. "Detective" / "考古研究员") lands in the
-    sheet's occupation field when the system declares one; ``background`` (the persona
-    paragraph, legacy name ``notes``) lands in the sheet's background; ``appearance``
-    (the character's concrete look — build, hair, clothes, marks) is the portrait
-    prompt's primary source; ``aliases`` (short forms / translated names / the English
-    gloss of a CJK name) ride the roster entry so players and the AI can refer to the
-    character by any of them. Sheets are built downstream from the target system's
-    DEFAULTS plus these overrides — deterministic,
+    sheet's occupation field when the system declares one; ``character_class`` (the
+    system's canonical class id, e.g. "cleric") and ``race`` (the canonical race id,
+    e.g. "human") land in the sheet's corresponding identity fields for level-based
+    systems; ``background`` (the persona paragraph, legacy name ``notes``) lands in the
+    sheet's background; ``appearance`` (the character's concrete look — build, hair,
+    clothes, marks) is the portrait prompt's primary source; ``aliases`` (short forms /
+    translated names / the English gloss of a CJK name) ride the roster entry so players
+    and the AI can refer to the character by any of them. Sheets are built downstream
+    from the target system's DEFAULTS plus these overrides — deterministic,
     no LLM — so a module ships a claimable multi-investigator cast."""
     if raw is None:
         return ()
@@ -255,6 +257,12 @@ def _parse_pregens(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
         ).strip()
         blurb = blurb[:200]
         occupation = _text(item.get("occupation")).strip()[:60]
+        # `character_class` / `race` are the system's canonical identity ids (e.g.
+        # "cleric" / "human") for level-based packs; the world importer writes them
+        # into the sheet's identity fields so a claimed card shows the class/race the
+        # module authored — never the pack's empty defaults.
+        character_class = _text(item.get("character_class")).strip()[:60]
+        race = _text(item.get("race")).strip()[:60]
         # `background` is the forge's persona paragraph (history/personality/voice/
         # secret); hand-authored packs may use the legacy `notes` name instead.
         notes = _text(item.get("background") or item.get("notes")).strip()[:400]
@@ -290,7 +298,7 @@ def _parse_pregens(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
         # the field the illustration lane folds into a portrait prompt. Optional: a
         # pregen without one still gets a portrait from its persona text.
         appearance = _text(item.get("appearance")).strip()[:400]
-        out.append({"name": name, "blurb": blurb, "occupation": occupation, "notes": notes, "skills": skills, "aliases": tuple(aliases), "avatar": avatar, "appearance": appearance})
+        out.append({"name": name, "blurb": blurb, "occupation": occupation, "character_class": character_class, "race": race, "notes": notes, "skills": skills, "aliases": tuple(aliases), "avatar": avatar, "appearance": appearance})
     return tuple(out)
 
 

@@ -718,6 +718,13 @@ class CharcardTools:
                     persona = str(spec.get("notes") or "").strip()
                     if persona:
                         sheet.background = persona
+                    # The module authors identity ids (character_class/race) that the
+                    # sheet's own identity fields carry — a claimed card then shows the
+                    # class/race the module wrote, not the pack's empty defaults.
+                    for field in ("character_class", "race"):
+                        value = str(spec.get(field) or "").strip()
+                        if value and hasattr(sheet, field):
+                            setattr(sheet, field, value)
                     from core.character_rules import normalize_pregen_skills
                     for skill_name, value in normalize_pregen_skills(spec.get("skills") or {}, pack).items():
                         try:
