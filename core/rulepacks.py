@@ -330,6 +330,12 @@ class RulePack:
     # The pack's spell catalog (loaded from `runtime.spells_file`, a sibling
     # YAML in the pack's own directory). None when the pack declares none.
     spells: Any = None
+    # The pack's genre/tone guidance for AI authoring lanes (`agent.forge`),
+    # keyed by locale (``{"en": …, "zh": …}``). Declared in the pack YAML as
+    # ``genre:``; the module forge injects it into authoring prompts so a
+    # generated module's world and threats follow the SYSTEM's genre instead of
+    # the model's remembered TRPG default (CoC-style horror investigation).
+    genre: dict[str, str] = field(default_factory=dict)
 
     def normalize_class(self, name: str) -> str:
         """Resolve a class name as the model wrote it ("法师", "Wizard", "wiz")
@@ -526,6 +532,13 @@ def _build_rulepack(
     derived = data.get("derived") or {}
     defaults = dict(data.get("defaults") or {})
     runtime_spec = parse_runtime_section(pack_id, data.get("runtime"))
+    genre_raw = data.get("genre")
+    if isinstance(genre_raw, dict):
+        genre = {str(key): str(value).strip() for key, value in genre_raw.items() if str(value).strip()}
+    elif isinstance(genre_raw, str) and genre_raw.strip():
+        genre = {"en": genre_raw.strip(), "zh": genre_raw.strip()}
+    else:
+        genre = {}
     return RulePack(
         system=pack_id,
         defaults=defaults,
@@ -551,6 +564,7 @@ def _build_rulepack(
         turn_checks=_parse_turn_checks_section(pack_id, data.get("turn_checks")),
         runtime_spec=runtime_spec,
         spells=_load_pack_spells(pack_id, runtime_spec, script_loader),
+        genre=genre,
     )
 
 

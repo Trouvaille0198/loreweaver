@@ -1,4 +1,7 @@
 names: [dnd, dnd5e, "d&d5e"]
+genre:
+  en: "Sword-and-sorcery fantasy adventure. Threats are tangible: monsters, warlords, cults, dungeons, wilderness, and magic. Combat and heroism are expected resolutions — investigation is a tool, not the genre itself. Scenes and NPCs belong to a living fantasy world, not a modern or historical-realist one."
+  zh: "剑与魔法奇幻冒险。威胁是具体的：怪物、军阀、邪教、地城、荒野与魔法。战斗与英雄主义是常态结局——调查只是手段，不是体裁本身。场景与 NPC 应处在一个鲜活的奇幻世界，而不是现代或写实历史世界。"
 defaults:
   力量: 10
   敏捷: 10

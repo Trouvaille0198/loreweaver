@@ -1,4 +1,7 @@
 names: [coc, coc7, "call of cthulhu"]
+genre:
+  en: "Real-world horror investigation in a 1920s-flavoured mundane world: everyday settings hiding impossible, mythos-tinged truths. Threats are cosmic and unknowable; sanity frays; direct combat is rarely the answer — uncovering the truth is the core, and the mystery-investigation structure IS the genre."
+  zh: "现实世界恐怖调查（1920 年代风格）：日常场景之下藏着不可名状的真相。威胁是宇宙尺度的、不可知的存在；理智在磨损；正面战斗往往不是出路——查明真相才是核心，调查解谜结构就是体裁本身。"
 defaults:
   力量: 50
   体质: 50
