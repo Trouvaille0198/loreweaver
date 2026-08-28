@@ -16,6 +16,7 @@ proxy can host the web client); the operator is told so.
 from __future__ import annotations
 
 import mimetypes
+import re
 import urllib.parse
 from pathlib import Path
 
@@ -32,6 +33,8 @@ from net.tui_server import (
 # The static directory's index document. Served for `/` and as the SPA
 # fallback for any unknown path.
 _INDEX = "index.html"
+_MODULE_DOWNLOAD_PREFIX = "/__module-download/"
+_MODULE_DOWNLOAD_TOKEN = re.compile(r"^[A-Za-z0-9_-]{40,}$")
 
 
 class WebServer(TuiServer):
@@ -72,7 +75,40 @@ class WebServer(TuiServer):
             return None
         if request.headers.get("Upgrade", "").lower() == "websocket":
             return None
+        download = self._module_download_response(request.path)
+        if download is not None:
+            return download
         return self._static_response(request.path)
+
+    def _module_download_response(self, raw_path: str) -> Response | None:
+        """Serve one authenticated-by-capability pack export and consume it."""
+        path_only = urllib.parse.urlsplit(raw_path).path
+        if not path_only.startswith(_MODULE_DOWNLOAD_PREFIX):
+            return None
+        parts = path_only[len(_MODULE_DOWNLOAD_PREFIX) :].split("/", 1)
+        if len(parts) != 2:
+            return self._response(404, "Not Found", b"", "text/plain")
+        token, raw_filename = parts
+        filename = urllib.parse.unquote(raw_filename)
+        if not _MODULE_DOWNLOAD_TOKEN.fullmatch(token):
+            return self._response(404, "Not Found", b"", "text/plain")
+        if not filename or Path(filename).name != filename or Path(filename).suffix.casefold() != ".lwpack":
+            return self._response(404, "Not Found", b"", "text/plain")
+        source = Path(self.services.settings.data_dir).resolve() / "module_exports" / f"{token}.lwpack"
+        try:
+            body = source.read_bytes()
+            source.unlink(missing_ok=True)
+        except OSError:
+            return self._response(404, "Not Found", b"", "text/plain")
+        safe_filename = filename.replace('"', "")
+        return self._response(
+            200,
+            "OK",
+            body,
+            "application/zip",
+            cache="no-store",
+            extra_headers={"Content-Disposition": f'attachment; filename="{safe_filename}"'},
+        )
 
     def _static_response(self, raw_path: str) -> Response | None:
         """Resolve one HTTP path to a `Response` under the static root,
@@ -114,10 +150,21 @@ class WebServer(TuiServer):
             return self._response(404, "Not Found", b"", "text/plain")
 
     @staticmethod
-    def _response(status: int, reason: str, body: bytes, content_type: str | None, *, cache: str | None = None) -> Response:
+    def _response(
+        status: int,
+        reason: str,
+        body: bytes,
+        content_type: str | None,
+        *,
+        cache: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+    ) -> Response:
         headers = Headers()
         if content_type:
             headers["Content-Type"] = content_type
         if cache:
             headers["Cache-Control"] = cache
+        if extra_headers:
+            for name, value in extra_headers.items():
+                headers[name] = value
         return Response(status, reason, headers, body)

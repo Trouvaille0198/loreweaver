@@ -9,14 +9,21 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import io
 import json
 import logging
+import secrets
+import shutil
+import tempfile
+import time
 import zipfile
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import quote
 
 import core.pack as core_pack
+import yaml
 from agent.context import AgentCtx, LocalFs
 from agent.kp_tools_knowledge import DocumentTools
 from agent.module_lifecycle import active_module
@@ -39,10 +46,15 @@ _CUSTOM_KINDS = frozenset(
         "module_detail",
         "module_upload",
         "module_update",
+        "module_pregen_update",
+        "module_pack_export",
         "module_delete",
+        "module_bundle_upload",
+        "module_import",
         "module_media_generate",
         "pregen_avatar",
         "worldbook_list",
+        "worldbook_detail",
         "worldbook_upload",
         "worldbook_select",
         "worldbook_disable",
@@ -90,7 +102,10 @@ class ModuleAdminService:
                 reauthorize=reauthorize,
                 emit_frame=emit_frame,
             )
-        if role != "keeper":
+        # `module_detail` is a pure read: the shared module link renders the same page to
+        # the room's players, so any member may fetch it. Every WRITE (upload, update,
+        # export, delete, generate, import) stays keeper-only.
+        if role != "keeper" and kind != "module_detail":
             return _error("forbidden", i18n)
         try:
             # NO room lock here: the transport choke point (`net.session._on_frame`) already
@@ -117,6 +132,10 @@ class ModuleAdminService:
             return await self._detail(caller_room, root, str(payload.get("name") or ""))
         if kind == "module_upload":
             return await self._upload(root, payload)
+        if kind == "module_pregen_update":
+            return await self._update_pregen(payload)
+        if kind == "module_pack_export":
+            return await self._export_pack(payload)
         if kind == "module_delete":
             return await self._delete(caller_room, root, payload)
         if kind == "module_bundle_upload":
@@ -281,7 +300,7 @@ class ModuleAdminService:
         # card is the pack's module content — showing it needs no room import.
         entries: list[dict[str, Any]] = []
         variables: list[dict[str, Any]] = []
-        pregens: list[dict[str, str]] = []
+        pregens: list[dict[str, Any]] = []
         items: list[dict[str, Any]] = []
         scenario = ""
         opening = ""
@@ -317,22 +336,37 @@ class ModuleAdminService:
                     }
                 )
             variables.extend([dict(v) for v in (card.get("variables") or []) if isinstance(v, dict)])
-            pregens.extend(
-                {
-                    "name": str(p.get("name", "")),
-                    # Field contract matches core.lorecard._parse_pregens (the authoritative
-                    # parser): `background` is the forge's persona paragraph, `notes` its legacy
-                    # name, and `concept`/`blurb` only legacy hand-authored spellings. First
-                    # non-empty wins, so a forge pack and a hand-written pack render alike.
-                    "concept": str(
-                        p.get("background") or p.get("notes") or p.get("concept") or p.get("blurb") or ""
-                    ),
-                    "avatar": str(p.get("avatar") or ""),
-                    "aliases": [str(a) for a in (p.get("aliases") or []) if str(a).strip()],
-                }
-                for p in (card.get("pregens") or [])
-                if isinstance(p, dict) and p.get("name")
-            )
+            for pregen_index, p in enumerate(card.get("pregens") or []):
+                if not isinstance(p, dict) or not p.get("name"):
+                    continue
+                # Keep the complete editable character payload visible to the keeper. The
+                # stable card path/index pair lets the update lane target a character even
+                # after its display name is changed.
+                persona = str(
+                    p.get("background") or p.get("notes") or p.get("concept") or p.get("blurb") or ""
+                )
+                # `character_class` / `race` are first-class identity fields the detail
+                # page renders (localized); everything else unknown rides `extra`.
+                known = {"name", "background", "notes", "concept", "blurb", "appearance", "occupation", "character_class", "race", "aliases", "skills", "avatar"}
+                extra = {key: value for key, value in p.items() if key not in known}
+                pregens.append(
+                    {
+                        "id": f"{_card_entry.path}#{pregen_index}",
+                        "card_path": _card_entry.path,
+                        "index": pregen_index,
+                        "name": str(p.get("name", "")),
+                        "concept": persona,
+                        "background": persona,
+                        "appearance": str(p.get("appearance") or ""),
+                        "occupation": str(p.get("occupation") or ""),
+                        "character_class": str(p.get("character_class") or ""),
+                        "race": str(p.get("race") or ""),
+                        "aliases": [str(a) for a in (p.get("aliases") or []) if str(a).strip()],
+                        "skills": dict(p.get("skills") or {}) if isinstance(p.get("skills"), dict) else {},
+                        "avatar": str(p.get("avatar") or ""),
+                        **({"extra": extra} if extra else {}),
+                    }
+                )
             # The pack's designed items (the catalog templates `.item grant` hands out).
             for it in card.get("items") or []:
                 if not isinstance(it, dict) or not str(it.get("name", "")).strip():
@@ -514,6 +548,243 @@ class ModuleAdminService:
                 "skills": skills,
                 "levels": levels,
                 "difficulty": difficulty,
+            },
+        )
+
+    @staticmethod
+    def _write_pack_file(path: Path, content: bytes) -> None:
+        """Replace one installed-pack file atomically after its content is validated."""
+        temporary = path.with_name(f".{path.name}.tmp")
+        temporary.write_bytes(content)
+        temporary.replace(path)
+
+    @classmethod
+    def _update_pack_manifest(cls, home: Path, relative_path: str, content: bytes) -> None:
+        """Keep the installed pack's file digest aligned with an edited world card."""
+        manifest_path = home / core_pack.MANIFEST_NAME
+        raw = safe_load_no_aliases(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("invalid pack manifest")
+        files = raw.get("files")
+        if not isinstance(files, list):
+            files = []
+            raw["files"] = files
+        digest = hashlib.sha256(content).hexdigest()
+        for entry in files:
+            if isinstance(entry, dict) and entry.get("path") == relative_path:
+                entry["sha256"] = digest
+                entry["size"] = len(content)
+                break
+        else:
+            files.append({"path": relative_path, "sha256": digest, "size": len(content)})
+        cls._write_pack_file(
+            manifest_path,
+            yaml.safe_dump(raw, sort_keys=False, allow_unicode=True, default_flow_style=False).encode("utf-8"),
+        )
+
+    async def _update_pregen(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Persist one claimable investigator back into its installed world card."""
+        from gateway.panels import installed_pack_homes
+
+        raw_name = str(payload.get("name") or "").strip()
+        pack_id, _, selected_path = raw_name.partition("/")
+        home = installed_pack_homes(Path(self.services.settings.data_dir)).get(pack_id)
+        if home is None:
+            return _module_reply("module_pregen_update", False, raw_name, {"error": "source_not_found"})
+        card_path = str(payload.get("card_path") or "").strip()
+        index = payload.get("index")
+        updates = payload.get("pregen")
+        if not card_path or not isinstance(index, int) or index < 0 or not isinstance(updates, dict):
+            return _module_reply("module_pregen_update", False, raw_name, {"error": "bad_request"})
+        if selected_path and selected_path != card_path:
+            return _module_reply("module_pregen_update", False, raw_name, {"error": "bad_request"})
+        _manifest, world_cards = self._pack_world_cards(home)
+        card_match = next(((entry, path) for entry, path in world_cards if entry.path == card_path), None)
+        if card_match is None:
+            return _module_reply("module_pregen_update", False, raw_name, {"error": "source_not_found"})
+        _entry, path = card_match
+        try:
+            card = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return _module_reply("module_pregen_update", False, raw_name, {"error": "invalid_world_card"})
+        pregens = card.get("pregens") if isinstance(card, dict) else None
+        if not isinstance(pregens, list) or index >= len(pregens) or not isinstance(pregens[index], dict):
+            return _module_reply("module_pregen_update", False, raw_name, {"error": "source_not_found"})
+
+        current = dict(pregens[index])
+        name = str(updates.get("name") or "").strip()[:60]
+        if not name:
+            return _module_reply("module_pregen_update", False, raw_name, {"error": "invalid_pregen_name"})
+        if any(
+            offset != index
+            and isinstance(other, dict)
+            and str(other.get("name") or "").strip().casefold() == name.casefold()
+            for offset, other in enumerate(pregens)
+        ):
+            return _module_reply("module_pregen_update", False, raw_name, {"error": "pregen_name_taken"})
+
+        def clean_text(key: str, limit: int) -> str:
+            return str(updates.get(key) or "").strip()[:limit]
+
+        aliases_raw = updates.get("aliases")
+        aliases = (
+            [str(alias).strip()[:64] for alias in aliases_raw if str(alias).strip()][:8]
+            if isinstance(aliases_raw, list)
+            else []
+        )
+        skills_raw = updates.get("skills")
+        skills: dict[str, int] = {}
+        if isinstance(skills_raw, dict):
+            for key, value in list(skills_raw.items())[:32]:
+                try:
+                    skills[str(key).strip()[:60]] = int(value)
+                except (TypeError, ValueError):
+                    return _module_reply("module_pregen_update", False, raw_name, {"error": "invalid_pregen_skills"})
+        # Identity ids are first-class editable fields on the keeper's pregen editor;
+        # a client that never sends them (older builds) must not wipe existing values.
+        for identity_key in ("character_class", "race"):
+            if updates.get(identity_key) is not None:
+                current[identity_key] = clean_text(identity_key, 60)
+        # Canonicalize legacy persona spellings so an old `notes`/`concept` value cannot
+        # silently override the keeper's edited `background` on the next import.
+        for legacy_key in ("notes", "concept", "blurb"):
+            current.pop(legacy_key, None)
+        extra = updates.get("extra")
+        if isinstance(extra, dict):
+            reserved = {"name", "background", "appearance", "occupation", "character_class", "race", "aliases", "skills", "avatar"}
+            current.update({str(key): value for key, value in extra.items() if str(key) not in reserved})
+        pregens[index] = current
+        encoded = json.dumps(card, ensure_ascii=False, indent=2).encode("utf-8")
+        self._write_pack_file(path, encoded)
+        self._update_pack_manifest(home, card_path, encoded)
+        return _module_reply(
+            "module_pregen_update",
+            True,
+            raw_name,
+            {"card_path": card_path, "index": index, "name": name},
+        )
+
+    async def _export_pack(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Build the edited installed pack for download or replacement of its source archive."""
+        from gateway.panels import installed_pack_homes
+
+        raw_name = str(payload.get("name") or "").strip()
+        overwrite = bool(payload.get("overwrite"))
+        pack_id, _, _selected_path = raw_name.partition("/")
+        home = installed_pack_homes(Path(self.services.settings.data_dir)).get(pack_id)
+        if home is None:
+            return _module_reply("module_pack_export", False, raw_name, {"error": "source_not_found"})
+        manifest, world_cards = self._pack_world_cards(home)
+        if manifest is None or not world_cards:
+            return _module_reply("module_pack_export", False, raw_name, {"error": "source_not_found"})
+
+        export_dir = Path(self.services.settings.data_dir).resolve() / "module_exports"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        expiry = time.time() - 3600
+        for old_file in export_dir.glob("*.lwpack"):
+            try:
+                if old_file.stat().st_mtime < expiry:
+                    old_file.unlink()
+            except OSError:
+                continue
+
+        token = secrets.token_urlsafe(32)
+        output = export_dir / f"{token}.lwpack"
+        try:
+            # Installed homes contain the built manifest, while build_pack expects an author
+            # manifest. Work on a temporary copy so the downloaded archive is validated by the
+            # normal pack builder without mutating the installed source or its provenance.
+            with tempfile.TemporaryDirectory(prefix=".pack-export-", dir=export_dir) as source_name:
+                source = Path(source_name)
+                shutil.copytree(home, source, dirs_exist_ok=True)
+                data_dir = Path(self.services.settings.data_dir).resolve()
+
+                # `install_pack` keeps cards/assets in the pack home but extracts skills,
+                # rulepacks and presets into their shared discovery directories. Restore
+                # those declared files into the temporary source so the exported archive
+                # remains complete for a later install on another server.
+                for relative in manifest.contents["skills"]:
+                    target = source / PurePosixPath(relative)
+                    if target.is_dir():
+                        continue
+                    shared = data_dir / "skills" / PurePosixPath(relative).name
+                    if shared.is_dir():
+                        shutil.copytree(shared, target, dirs_exist_ok=True)
+                for relative in manifest.contents["rulepacks"]:
+                    target = source / PurePosixPath(relative)
+                    if target.is_file():
+                        continue
+                    shared = data_dir / "rulepacks" / PurePosixPath(relative).name
+                    if shared.is_file():
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(shared, target)
+                        pack_id = PurePosixPath(relative).stem
+                        shared_scripts = data_dir / "rulepacks" / pack_id
+                        if shared_scripts.is_dir():
+                            shutil.copytree(shared_scripts, target.parent / pack_id, dirs_exist_ok=True)
+                for relative in manifest.contents["presets"]:
+                    target = source / PurePosixPath(relative)
+                    if target.is_file():
+                        continue
+                    from core.preset_store import sanitize_preset_id
+
+                    shared = data_dir / "presets" / f"{sanitize_preset_id(PurePosixPath(relative).name)}.json"
+                    if shared.is_file():
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(shared, target)
+                source_manifest = safe_load_no_aliases(
+                    (source / core_pack.MANIFEST_NAME).read_text(encoding="utf-8")
+                )
+                if not isinstance(source_manifest, dict):
+                    raise ValueError("invalid pack manifest")
+                contents = source_manifest.get("contents")
+                if isinstance(contents, dict) and isinstance(contents.get("cards"), list):
+                    for card in contents["cards"]:
+                        if isinstance(card, dict):
+                            card.pop("kind", None)
+                source_manifest.pop("files", None)
+                source_manifest.pop("trust", None)
+                (source / core_pack.MANIFEST_NAME).write_text(
+                    yaml.safe_dump(source_manifest, sort_keys=False, allow_unicode=True, default_flow_style=False),
+                    encoding="utf-8",
+                )
+                built = core_pack.build_pack(source, output)
+        except Exception:  # noqa: BLE001 — return a safe operation error to the keeper
+            logger.exception("module pack export failed for %s", raw_name)
+            output.unlink(missing_ok=True)
+            return _module_reply("module_pack_export", False, raw_name, {"error": "pack_export_failed"})
+
+        filename = f"{built.manifest.id}-{built.manifest.version}{core_pack.PACK_SUFFIX}"
+        if overwrite:
+            original = Path(self.services.settings.data_dir).resolve() / "modules" / filename
+            if not original.is_file() or original.is_symlink():
+                output.unlink(missing_ok=True)
+                return _module_reply("module_pack_export", False, raw_name, {"error": "source_archive_not_found"})
+            temporary_original = original.with_name(f".{original.name}.{token}.tmp")
+            try:
+                shutil.copyfile(output, temporary_original)
+                temporary_original.replace(original)
+                output.unlink(missing_ok=True)
+            except OSError:
+                temporary_original.unlink(missing_ok=True)
+                logger.exception("module pack source overwrite failed for %s", original)
+                output.unlink(missing_ok=True)
+                return _module_reply("module_pack_export", False, raw_name, {"error": "pack_export_failed"})
+            return _module_reply(
+                "module_pack_export",
+                True,
+                raw_name,
+                {"filename": filename, "overwritten": True},
+            )
+        return _module_reply(
+            "module_pack_export",
+            True,
+            raw_name,
+            {
+                "download_url": f"/__module-download/{token}/{quote(filename)}",
+                "filename": filename,
+                "size": output.stat().st_size,
+                "overwritten": False,
             },
         )
 
