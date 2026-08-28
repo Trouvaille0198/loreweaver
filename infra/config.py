@@ -232,7 +232,7 @@ class ImageGenSettings(BaseModel):
     api_key: str = ""
     model: str = ""
     size: str = "1024x1024"
-    per_room_per_hour: int = 10
+    per_room_per_hour: int = 10000
 
 
 class Settings(BaseSettings):
