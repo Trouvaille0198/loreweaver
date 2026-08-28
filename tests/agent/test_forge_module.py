@@ -1082,6 +1082,55 @@ async def test_pack_module_generates_lwpack_and_populates_room(tmp_path: Path) -
         forge_module._USER_MODULE_DIR = original_user_dir
 
 
+async def test_pack_module_writes_complete_forge_trace(tmp_path: Path) -> None:
+    """A module generation writes a per-run trace under `<data_dir>/traces/forge/`: the
+    session start, every LLM call's FULL input/output (lane + messages + content), the key
+    tool invocations, and the outcome — the operator's complete-record requirement (the room
+    tool trace only carries model-call metadata, not messages)."""
+    services = _option_services(tmp_path, [_VALID_PACK_LORECARD], imagegen=False)
+    ctx = _ctx(tmp_path)
+
+    original_user_dir = forge_module._USER_MODULE_DIR
+    forge_module._USER_MODULE_DIR = tmp_path
+    try:
+        result = await generate_and_install_pack_module(services, ctx, "a marsh-town disappearance mystery")
+        assert result.ok, result.error
+
+        trace_dir = tmp_path / "traces" / "forge"
+        files = sorted(trace_dir.glob("*.jsonl"))
+        assert len(files) == 1, f"expected one forge trace, found {files}"
+        rows = [
+            json.loads(line)
+            for line in files[0].read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        kinds = [row["type"] for row in rows]
+        assert kinds[0] == "forge_start"
+        assert kinds[-1] == "forge_end"
+        assert rows[0]["description"] == "a marsh-town disappearance mystery"
+        assert rows[0]["options"]["room"] == CHAT_KEY
+
+        calls = [row for row in rows if row["type"] == "forge_llm_call"]
+        assert len(calls) == 1
+        call = calls[0]
+        assert call["lane"] == "pack_world_card"
+        assert call["ok"] is True
+        assert call["content"]  # the authored world card JSON
+        assert call["messages"] and call["messages"][0]["content"]  # FULL input recorded
+        assert call["duration_s"] > 0
+
+        tools = [row["tool"] for row in rows if row["type"] == "forge_tool_call"]
+        assert "build_pack" in tools
+        assert "install_pack" in tools
+
+        end = rows[-1]
+        assert end["ok"] is True
+        assert end["pack_id"] == result.skill_id
+        assert end["path"] == result.path
+    finally:
+        forge_module._USER_MODULE_DIR = original_user_dir
+
+
 async def test_pack_module_media_pass_persists_reference_index(tmp_path: Path) -> None:
     """Path two with media: rendered illustrations land in the room's media store AND the
     `module_media_index` provenance is persisted — `.image <kind> <subject>` reuses the

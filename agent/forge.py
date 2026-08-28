@@ -57,6 +57,7 @@ from agent.char_from_persona import build_sheet_from_description
 from agent.context import AgentCtx, LocalFs
 from agent.kp_tools_charcard import CharcardTools
 from agent.kp_tools_knowledge import DocumentTools
+from agent.forge_trace import forge_session, log_forge, set_forge_pack, set_forge_result
 from agent.module_initializer import ProgressCb, _emit
 from agent.services import Services
 from core.character_manager import CharacterSheet
@@ -272,19 +273,27 @@ async def _llm_authored(
     messages: list[dict],
     *,
     chat_key: str | None = None,
+    lane: str = "authoring",
 ) -> tuple[str | None, ForgeResult | None]:
     """Call the LLM to author an artifact. Returns `(content, None)` on success, or
     `(None, ForgeResult)` when the call itself failed (timeout / rate-limit / auth error) or came
     back empty — so a backend LLM failure becomes a clean `ForgeResult` the admin/tool path reports,
     NOT an uncaught exception that surfaces as a generic `error` frame (which would leave a client's
     "generating…" spinner stuck forever)."""
+    started = time.perf_counter()
     try:
         llm = await services.main_llm(chat_key) if chat_key else services.llm
         with lane_scope("authoring", chat_key=chat_key or None):
             result = await llm.chat(messages)
     except Exception as exc:
+        duration_s = round(time.perf_counter() - started, 3)
         logger.warning("[forge] authoring LLM call failed: %s", exc)
+        log_forge(
+            "forge_llm_call",
+            {"lane": lane, "messages": messages, "ok": False, "error": str(exc)[:500], "duration_s": duration_s},
+        )
         return None, ForgeResult(False, "", "", "", f"llm_failed: {exc}")  # i18n-exempt
+    duration_s = round(time.perf_counter() - started, 3)
     if chat_key:
         await record_usage_stats(
             services.store,
@@ -294,6 +303,19 @@ async def _llm_authored(
             context_window=services.settings.llm.context_window,
         )
     content = (result.content or "").strip()
+    # Full input/output of every authoring call lands in the forge trace when a module
+    # generation session is active — the operator's complete-record requirement.
+    log_forge(
+        "forge_llm_call",
+        {
+            "lane": lane,
+            "messages": messages,
+            "ok": True,
+            "content": content,
+            "duration_s": duration_s,
+            "usage": result.usage,
+        },
+    )
     if not content:
         logger.warning("[forge] authoring LLM returned empty response")
         return None, ForgeResult(False, "", "", "", "empty_response")
@@ -304,6 +326,7 @@ async def _llm_authored_retry(
     *,
     chat_key: str | None = None,
     attempts: int = 2,
+    lane: str = "authoring",
 ) -> tuple[str | None, ForgeResult | None]:
     """`_llm_authored`, retried on failure. A live provider (e.g. a remote LLM) can transiently
     time out or return empty for a long structured prompt (a rulepack YAML) — the pack engine's
@@ -311,7 +334,7 @@ async def _llm_authored_retry(
     skill/rulepack lands, at the cost of one extra slow call on a genuinely hard failure."""
     last: ForgeResult | None = None
     for attempt in range(max(1, attempts)):
-        content, failure = await _llm_authored(services, messages, chat_key=chat_key)
+        content, failure = await _llm_authored(services, messages, chat_key=chat_key, lane=lane)
         if failure is None:
             return content, None
         last = failure
@@ -426,6 +449,7 @@ async def generate_and_install_skill(
         services,
         _build_messages(services, description),
         chat_key=chat_key,
+        lane="skill",
     )
     if failure is not None:
         return failure
@@ -566,6 +590,7 @@ async def generate_and_install_rulepack(
         services,
         _build_rulepack_messages(services, description),
         chat_key=chat_key,
+        lane="rulepack",
     )
     if failure is not None:
         return failure
@@ -922,6 +947,7 @@ async def generate_module_prompt(
             locale=locale,
         ),
         chat_key=chat_key,
+        lane="module_prompt",
     )
     if failure is not None:
         return failure
@@ -930,6 +956,47 @@ async def generate_module_prompt(
 
 
 async def generate_and_install_module(
+    services: Services,
+    ctx: AgentCtx,
+    description: str,
+    *,
+    media: list[str] | None = None,
+    companion: list[str] | None = None,
+    difficulty: str = "",
+    levels: str = "",
+    progress: ProgressCb = None,
+    auto_import: bool = True,
+) -> ForgeResult:
+    """Session wrapper: every LLM call and tool invocation of this module generation lands
+    in a per-run trace (`agent.forge_trace`) — the operator's complete-record requirement."""
+    async with forge_session(
+        Path(services.settings.data_dir),
+        description,
+        {
+            "media": _normalize_option_ids(media, MEDIA_OPTION_IDS),
+            "companion": _normalize_option_ids(companion, COMPANION_OPTION_IDS),
+            "difficulty": difficulty,
+            "levels": levels,
+            "room": ctx.chat_key,
+            "locale": ctx.locale,
+        },
+    ):
+        result = await _generate_and_install_module_impl(
+            services,
+            ctx,
+            description,
+            media=media,
+            companion=companion,
+            difficulty=difficulty,
+            levels=levels,
+            progress=progress,
+            auto_import=auto_import,
+        )
+        set_forge_result(result.ok, result.path, result.error)
+        return result
+
+
+async def _generate_and_install_module_impl(
     services: Services,
     ctx: AgentCtx,
     description: str,
@@ -1003,6 +1070,7 @@ async def generate_and_install_module(
             locale=ctx.locale,
         ),
         chat_key=ctx.chat_key,
+        lane="module",
     )
     if failure is not None:
         return failure
@@ -1026,6 +1094,7 @@ async def generate_and_install_module(
     # suffixing behavior.
     requested_id = module_id
     module_id = await _owned_module_id(services, ctx, user_dir, requested_id)
+    set_forge_pack(module_id)
 
     # Write, confined to the user module directory. Nothing downstream (the room install) runs
     # before this succeeds.
@@ -1049,12 +1118,21 @@ async def generate_and_install_module(
     }
     previous_pool_doc = await services.documents.get(ctx.chat_key, "module_pool", MODULE_POOL_ID)
 
+    _t0 = time.perf_counter()
     try:
         atomic_write_private(target, content)
     except OSError as exc:
         # A filesystem-level failure (permissions, name-too-long, disk) is reported through the same
         # ForgeResult contract as every other failure instead of escaping as an unhandled OSError.
+        log_forge(
+            "forge_tool_call",
+            {"tool": "write_module", "input": {"path": str(target)}, "output": {"error": str(exc)[:300]}, "duration_s": round(time.perf_counter() - _t0, 3)},
+        )
         return ForgeResult(False, "", "", "", f"write_failed: {exc}")  # i18n-exempt
+    log_forge(
+        "forge_tool_call",
+        {"tool": "write_module", "input": {"path": str(target)}, "output": {"bytes": len(content)}, "duration_s": round(time.perf_counter() - _t0, 3)},
+    )
 
     # Reuse the EXISTING module-ingestion pipeline verbatim (docs/plugins.md, this module's own
     # docstring): chunk + embed into the vector store, and (since doc_type="module") auto-trigger
@@ -1068,7 +1146,12 @@ async def generate_and_install_module(
     await _emit(progress, "analyzing")
     install_note = ""
     if auto_import:
+        _t0 = time.perf_counter()
         install_note = await doc_tools.upload_document(install_ctx, file_path=str(target), doc_type="module")
+        log_forge(
+            "forge_tool_call",
+            {"tool": "upload_document", "input": {"path": str(target), "doc_type": "module"}, "output": {"summary": install_note[:300]}, "duration_s": round(time.perf_counter() - _t0, 3)},
+        )
         status = await services.store.state_get(ctx.chat_key, "module_init_status")
         installed_fulltext = await services.store.state_get(ctx.chat_key, "module_fulltext")
         pool_view = await services.documents.get_view(
@@ -1431,6 +1514,7 @@ async def _module_media_pass(
         services,
         _build_module_media_messages(services, content, kinds, i18n),
         chat_key=ctx.chat_key,
+        lane="media_shot_list",
     )
     if failure is not None:
         return i18n.t("agent.forge.module_media_none", reason=_option_reason(i18n, "shot_list_failed"))
@@ -1600,6 +1684,7 @@ async def _module_cards_pass(services: Services, ctx: AgentCtx, content: str, mo
         services,
         _build_module_cards_messages(services, content, i18n),
         chat_key=ctx.chat_key,
+        lane="cards_concepts",
     )
     if failure is not None:
         return i18n.t("agent.forge.module_companion_cards_none", reason=_option_reason(i18n, "concepts_failed"))
@@ -1878,6 +1963,53 @@ async def generate_and_install_pack_module(
     extends_base: str = "",
     system: str = "",
 ) -> ForgeResult:
+    """Session wrapper: every LLM call and tool invocation of this module generation lands
+    in a per-run trace (`agent.forge_trace`) — the operator's complete-record requirement."""
+    async with forge_session(
+        Path(services.settings.data_dir),
+        description,
+        {
+            "media": _normalize_option_ids(media, MEDIA_OPTION_IDS),
+            "companion": _normalize_option_ids(companion, COMPANION_OPTION_IDS),
+            "difficulty": difficulty,
+            "levels": levels,
+            "system": system,
+            "extends_base": extends_base,
+            "room": ctx.chat_key,
+            "locale": ctx.locale,
+        },
+    ):
+        result = await _generate_and_install_pack_module_impl(
+            services,
+            ctx,
+            description,
+            media=media,
+            companion=companion,
+            difficulty=difficulty,
+            levels=levels,
+            progress=progress,
+            auto_import=auto_import,
+            extends_base=extends_base,
+            system=system,
+        )
+        set_forge_result(result.ok, result.path, result.error)
+        return result
+
+
+async def _generate_and_install_pack_module_impl(
+    services: Services,
+    ctx: AgentCtx,
+    description: str,
+    *,
+    media: list[str] | None = None,
+    companion: list[str] | None = None,
+    difficulty: str = "",
+    levels: str = "",
+    progress: ProgressCb = None,
+    auto_import: bool = True,
+    extends_base: str = "",
+    system: str = "",
+) -> ForgeResult:
     """Ask `services.llm` to author a complete module as a native world card, wrap it in a
     `.lwpack` content pack, install the pack, and populate the CALLING room through the keeper
     world-import path.
@@ -1922,6 +2054,7 @@ async def generate_and_install_pack_module(
             extends_base=extends_base,
         ),
         chat_key=ctx.chat_key,
+        lane="pack_world_card",
     )
     if failure is not None:
         logger.warning("[pack-forge] world-card authoring failed: %s", failure.error)
@@ -2006,6 +2139,7 @@ async def generate_and_install_pack_module(
     # Assemble a pack source tree under the user module dir.
     data_dir = Path(services.settings.data_dir)
     pack_id = module_id
+    set_forge_pack(pack_id)
     source = user_dir / f"{pack_id}.pack-src"
     card_rel = f"cards/{pack_id}.lorecard.json"
     logger.info("[pack-forge] assembling pack source at %s", source)
@@ -2027,6 +2161,7 @@ async def generate_and_install_pack_module(
     if media_kinds:
         logger.info("[pack-forge] media pass: %s", media_kinds)
         await _emit(progress, "media")
+        _t0 = time.perf_counter()
         try:
             from gateway.module_media import plan_media_jobs
 
@@ -2042,6 +2177,15 @@ async def generate_and_install_pack_module(
             )
         except Exception:  # noqa: BLE001 — media is never load-bearing
             plan_note = _option_reason(i18n, "shot_list_failed")
+        log_forge(
+            "forge_tool_call",
+            {
+                "tool": "media_plan",
+                "input": {"kinds": media_kinds},
+                "output": {"planned": len(planned_jobs), "note": plan_note},
+                "duration_s": round(time.perf_counter() - _t0, 3),
+            },
+        )
         if planned_jobs:
             media_note = i18n.t("agent.forge.module_media_queued", count=len(planned_jobs))
         elif plan_note:
@@ -2127,11 +2271,20 @@ async def generate_and_install_pack_module(
     out_path = user_dir / f"{pack_id}-{_PACK_MODULE_VERSION}.lwpack"
     logger.info("[pack-forge] building .lwpack -> %s", out_path)
     await _emit(progress, "building")
+    _t0 = time.perf_counter()
     try:
         built = build_pack(source, out_path=out_path)
     except Exception as exc:  # noqa: BLE001 — validation failure is a clean rejection
         logger.warning("[pack-forge] build_pack failed: %s", exc)
+        log_forge(
+            "forge_tool_call",
+            {"tool": "build_pack", "input": {"source": str(source)}, "output": {"error": str(exc)[:300]}, "duration_s": round(time.perf_counter() - _t0, 3)},
+        )
         return ForgeResult(False, "", "", "", f"invalid_pack_module: {exc}")
+    log_forge(
+        "forge_tool_call",
+        {"tool": "build_pack", "input": {"source": str(source)}, "output": {"path": str(built.path)}, "duration_s": round(time.perf_counter() - _t0, 3)},
+    )
 
     # Install the pack into `data/packs/` so it appears in the module library and its detail is
     # resolvable — this is REGISTRATION, not a room binding. Room binding is `import_world_card`
@@ -2140,7 +2293,12 @@ async def generate_and_install_pack_module(
 
     logger.info("[pack-forge] installing pack into %s", data_dir)
     await _emit(progress, "installing")
+    _t0 = time.perf_counter()
     install_report = install_pack_here(data_dir, built.path)
+    log_forge(
+        "forge_tool_call",
+        {"tool": "install_pack", "input": {"path": str(built.path)}, "output": {"pack_dir": str(install_report.pack_dir) if install_report.pack_dir else None}, "duration_s": round(time.perf_counter() - _t0, 3)},
+    )
     if planned_jobs and install_report.pack_dir is not None:
         # The async media lane takes over from here: jobs persist in the installed home, the
         # worker renders them in the background, and the detail page surfaces their status.
@@ -2164,7 +2322,12 @@ async def generate_and_install_pack_module(
             )
         install_ctx = replace(ctx, fs=LocalFs(user_dir, extra_bases=(data_dir,)))
         card_host = installed_home / card_rel
+        _t0 = time.perf_counter()
         room_line = await CharcardTools(services).import_world_card(install_ctx, file_path=str(card_host))
+        log_forge(
+            "forge_tool_call",
+            {"tool": "import_world_card", "input": {"card": str(card_host)}, "output": {"summary": room_line[:300]}, "duration_s": round(time.perf_counter() - _t0, 3)},
+        )
         logger.info("[pack-forge] room import done: %s", room_line[:120])
         parts.append(i18n.t("agent.forge.pack_module_room", detail=room_line))
     else:
@@ -2389,7 +2552,7 @@ async def _pack_skill(
     difficulty_note = _difficulty_note(i18n, difficulty, levels)
     if difficulty_note:
         request = f"{request}\n\n{difficulty_note}"
-    content, failure = await _llm_authored_retry(services, _build_messages(services, request), chat_key=ctx.chat_key)
+    content, failure = await _llm_authored_retry(services, _build_messages(services, request), chat_key=ctx.chat_key, lane="companion_skill")
     if failure is not None:
         logger.warning("[pack-forge] skill LLM failed: %s", failure.error)
         return None, i18n.t("agent.forge.module_companion_failed", kind="skill", error=failure.error)
@@ -2436,7 +2599,8 @@ async def _pack_rulepack(
         module=description,
     )
     content, failure = await _llm_authored_retry(
-        services, _build_rulepack_messages(services, request, extends_base=extends_base), chat_key=ctx.chat_key
+        services, _build_rulepack_messages(services, request, extends_base=extends_base), chat_key=ctx.chat_key,
+        lane="companion_rulepack",
     )
     if failure is not None:
         logger.warning("[pack-forge] rulepack LLM failed: %s", failure.error)
