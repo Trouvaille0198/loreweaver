@@ -132,7 +132,7 @@ class OpenAICompatImageGen:
         *,
         client: httpx.AsyncClient | None = None,
         token_provider: TokenProvider | None = None,
-        timeout: float = 120.0,
+        timeout: float = 300.0,
     ) -> None:
         self._settings = settings
         self._client = client
@@ -197,15 +197,32 @@ class OpenAICompatImageGen:
                     json=request_body,
                 )
         except httpx.TimeoutException as exc:
-            raise ImageGenError("imagegen_timeout") from exc
+            raise ImageGenError("imagegen_timeout", f"{type(exc).__name__}: {exc}") from exc
         except httpx.HTTPError as exc:
-            raise ImageGenError("imagegen_http_error") from exc
+            # Connection-level failure (refused / reset / proxy) — no status code,
+            # carry the transport detail so the job shows WHY it failed.
+            raise ImageGenError("imagegen_http_error", f"{type(exc).__name__}: {exc}") from exc
         finally:
             if close_client:
                 await client.aclose()
 
         if response.status_code < 200 or response.status_code >= 300:
-            raise ImageGenError("imagegen_http_error", str(response.status_code))
+            # Surface the provider's own error message (429 rate-limit, 5xx, ...)
+            # instead of a bare status code — the queue stores this verbatim.
+            detail = str(response.status_code)
+            try:
+                body = response.json()
+                if isinstance(body, dict):
+                    message = body.get("error")
+                    if isinstance(message, dict):
+                        message = message.get("message") or ""
+                    if message:
+                        detail = f"HTTP {response.status_code}: {message}"
+            except Exception:  # noqa: BLE001 — non-JSON error bodies stay bare codes
+                text_body = (response.text or "").strip().replace("\n", " ")
+                if text_body:
+                    detail = f"HTTP {response.status_code}: {text_body[:200]}"
+            raise ImageGenError("imagegen_http_error", detail)
 
         try:
             payload = response.json()
@@ -289,15 +306,32 @@ class MiniMaxImageGen:
                 json=request_body,
             )
         except httpx.TimeoutException as exc:
-            raise ImageGenError("imagegen_timeout") from exc
+            raise ImageGenError("imagegen_timeout", f"{type(exc).__name__}: {exc}") from exc
         except httpx.HTTPError as exc:
-            raise ImageGenError("imagegen_http_error") from exc
+            # Connection-level failure (refused / reset / proxy) — no status code,
+            # carry the transport detail so the job shows WHY it failed.
+            raise ImageGenError("imagegen_http_error", f"{type(exc).__name__}: {exc}") from exc
         finally:
             if close_client:
                 await client.aclose()
 
         if response.status_code < 200 or response.status_code >= 300:
-            raise ImageGenError("imagegen_http_error", str(response.status_code))
+            # Surface the provider's own error message (429 rate-limit, 5xx, ...)
+            # instead of a bare status code — the queue stores this verbatim.
+            detail = str(response.status_code)
+            try:
+                body = response.json()
+                if isinstance(body, dict):
+                    message = body.get("error")
+                    if isinstance(message, dict):
+                        message = message.get("message") or ""
+                    if message:
+                        detail = f"HTTP {response.status_code}: {message}"
+            except Exception:  # noqa: BLE001 — non-JSON error bodies stay bare codes
+                text_body = (response.text or "").strip().replace("\n", " ")
+                if text_body:
+                    detail = f"HTTP {response.status_code}: {text_body[:200]}"
+            raise ImageGenError("imagegen_http_error", detail)
         try:
             payload = response.json()
             encoded = payload["data"]["image_base64"][0]
@@ -468,7 +502,20 @@ class QwenImageGen:
                 json=request_body,
             )
             if response.status_code < 200 or response.status_code >= 300:
-                raise ImageGenError("imagegen_http_error", str(response.status_code))
+                detail = str(response.status_code)
+                try:
+                    body = response.json()
+                    if isinstance(body, dict):
+                        message = body.get("message") or body.get("error")
+                        if isinstance(message, dict):
+                            message = message.get("message") or ""
+                        if message:
+                            detail = f"HTTP {response.status_code}: {message}"
+                except Exception:  # noqa: BLE001 — non-JSON bodies stay bare codes
+                    text_body = (response.text or "").strip().replace("\n", " ")
+                    if text_body:
+                        detail = f"HTTP {response.status_code}: {text_body[:200]}"
+                raise ImageGenError("imagegen_http_error", detail)
             try:
                 payload = response.json()
                 content = payload["output"]["choices"][0]["message"]["content"]
@@ -479,9 +526,9 @@ class QwenImageGen:
                 raise ImageGenError("imagegen_bad_response") from exc
             data, declared_mime = await _siliconflow_image_bytes(client, image_url)
         except httpx.TimeoutException as exc:
-            raise ImageGenError("imagegen_timeout") from exc
+            raise ImageGenError("imagegen_timeout", f"{type(exc).__name__}: {exc}") from exc
         except httpx.HTTPError as exc:
-            raise ImageGenError("imagegen_http_error") from exc
+            raise ImageGenError("imagegen_http_error", f"{type(exc).__name__}: {exc}") from exc
         finally:
             if close_client:
                 await client.aclose()

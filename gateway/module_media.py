@@ -59,9 +59,9 @@ _JOBS_FILENAME = "media-jobs.json"
 _STEM_RE = re.compile(r"-(\d+)$")
 # One illustration's total render budget inside the worker (provider client timeouts can be
 # minutes and the retry lane multiplies them): a hung plate fails and the queue continues.
-# 150s covers a normal qwen render (15-90s) plus a couple of retry attempts; a genuinely hung
-# plate gives way in ~2.5 minutes instead of stalling every later job for the client's 300s.
-_JOB_TIMEOUT_SECONDS = 150.0
+# 300s leaves headroom for the slow OpenAI-compatible image-edit endpoints while keeping a
+# genuinely hung plate bounded instead of stalling every later job forever.
+_JOB_TIMEOUT_SECONDS = 300.0
 
 # Pack ids with a live worker. `schedule_pack_media` dedupes on it so a retry button can
 # never start a second render loop for the same pack; the worker discards its id when done.
@@ -204,6 +204,7 @@ async def plan_media_jobs(
             subject_names=subject_names or None,
         ),
         chat_key=chat_key,
+        lane="media_shot_list",
     )
     if failure is not None:
         return [], _option_reason(i18n, "shot_list_failed")
