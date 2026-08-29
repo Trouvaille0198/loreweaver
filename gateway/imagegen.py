@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
 from agent.services import Services
 from gateway.ops import RateLimiter
+from infra.imagegen import ImageGenError
 from infra.media_store import ALLOWED_IMAGE_MIMES, MediaStore, is_image_mime
+
+logger = logging.getLogger(__name__)
 
 _LIMITERS: dict[tuple[int, int], RateLimiter] = {}
 
@@ -60,6 +64,21 @@ def reset_imagegen_limiters() -> None:
 
 def _slug(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9_-]+", "-", str(value).strip().lower()).strip("-_")
+
+
+def imagegen_failure_text(i18n: Any, exc: ImageGenError, *, key_prefix: str, chat_key: str) -> str:
+    """The localized failure line for `exc.code`, plus the provider's own words when it
+    carried any. A relay that wraps its outage in a bare HTTP 200 answers with a body the
+    parsers can only call invalid — the code alone ("无效响应") is then undiagnosable, so
+    the detail rides along on the room message (truncated like the media job queue) and
+    lands in the server log. `key_prefix` is the caller's error-string family
+    (`commands.avatar.error` / `kp_tools.image.generate.error`)."""
+    message = i18n.t(f"{key_prefix}.{exc.code}")
+    detail = str(exc).strip()
+    if not detail or detail == exc.code:
+        return message
+    logger.warning("[imagegen] %s failed in %s: %s", exc.code, chat_key, detail)
+    return i18n.t("commands.imagegen.error_detail", message=message, detail=detail[:300])
 
 def acquire_imagegen_slot(services: Services, chat_key: str) -> bool:
     """Take the room's one-image-in-flight slot; False when a generation is running.
