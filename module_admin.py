@@ -1275,7 +1275,14 @@ class ModuleAdminService:
         async def _plan_and_queue() -> None:
             try:
                 jobs, note = await plan_media_jobs(
-                    self.services, pack_id, home, card, kinds, chat_key, media_i18n
+                    self.services,
+                    pack_id,
+                    home,
+                    card,
+                    kinds,
+                    chat_key,
+                    media_i18n,
+                    force=payload.get("force") is True,
                 )
                 if jobs and append_jobs(home, jobs, room=chat_key):
                     schedule_pack_media(self.services, pack_id)

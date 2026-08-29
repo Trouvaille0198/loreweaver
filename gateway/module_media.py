@@ -57,6 +57,7 @@ logger = logging.getLogger(__name__)
 
 _JOBS_FILENAME = "media-jobs.json"
 _STEM_RE = re.compile(r"-(\d+)$")
+_MEDIA_ASSET_RE = re.compile(r"-(cover|scenes|npcs|clue|pregens|items)-\d+(?:\.[^/]*)?$", re.IGNORECASE)
 # One illustration's total render budget inside the worker (provider client timeouts can be
 # minutes and the retry lane multiplies them): a hung plate fails and the queue continues.
 # 300s leaves headroom for the slow OpenAI-compatible image-edit endpoints while keeping a
@@ -178,11 +179,13 @@ async def plan_media_jobs(
     i18n,
     *,
     content: str | None = None,
+    force: bool = False,
 ) -> tuple[list[dict[str, Any]], str]:
-    """Plan new illustration jobs for an installed pack: one shot-list LLM call, then one
-    pending job per accepted shot. Returns ``(new_jobs, note)`` where ``note`` is empty on
-    success and a localized reason when nothing could be planned. ``home`` supplies the
-    existing jobs (dedupe + per-kind index continuity); ``pack_id`` names the asset stems."""
+    """Plan illustration jobs for an installed pack: one shot-list LLM call, then one pending
+    job per accepted shot. A normal plan skips an already planned (kind, subject) pair; a
+    forced plan deliberately keeps it so a keeper's explicit generate action produces a fresh
+    plate and replaces the previous binding. Returns ``(jobs, note)`` where ``note`` is empty
+    on success. ``home`` supplies existing jobs and per-kind asset index continuity."""
     pregen_names = []
     for p in (card.get("pregens") or []):
         if not isinstance(p, dict) or not p.get("name"):
@@ -214,7 +217,8 @@ async def plan_media_jobs(
         return [], _option_reason(i18n, "no_shots")
     data = load_jobs(home)
     existing = [j for j in data.get("jobs", []) if isinstance(j, dict)]
-    shots = _dedupe_existing(existing, shots)
+    if not force:
+        shots = _dedupe_existing(existing, shots)
     if not shots:
         return [], _option_reason(i18n, "no_shots")
     indexes = _next_kind_indexes(existing)
@@ -468,15 +472,25 @@ def _append_manifest_asset(home: Path, asset_path: str, sha256: str, mime: str, 
     entry: dict[str, Any] = {"path": asset_path, "sha256": sha256, "mime": mime, "size": size}
     if title:
         entry["title"] = title
-    # A re-render of the same plate (same provenance name) REPLACES the manifest entry:
-    # keeping a stale digest would break the content-addressed fetch (bytes re-hashed against
-    # the manifest before serving) exactly like the cover collision this guard prevents.
-    for index, existing in enumerate(assets):
-        if isinstance(existing, dict) and existing.get("path") == asset_path:
-            assets[index] = entry
-            break
-    else:
-        assets.append(entry)
+    # A forced re-render gets a fresh asset stem, so replace the previous entry by its
+    # provenance identity (kind + subject), not just by path. This keeps the gallery and
+    # content-addressed fetch from exposing both the stale and fresh plate.
+    kind_match = _MEDIA_ASSET_RE.search(Path(asset_path).name)
+    asset_kind = kind_match.group(1).casefold() if kind_match else ""
+    if title and asset_kind:
+        retained: list[Any] = []
+        for existing in assets:
+            if not isinstance(existing, dict):
+                retained.append(existing)
+                continue
+            existing_title = str(existing.get("title") or "").strip()
+            existing_match = _MEDIA_ASSET_RE.search(Path(str(existing.get("path") or "")).name)
+            existing_kind = existing_match.group(1).casefold() if existing_match else ""
+            if existing_title == title.strip() and existing_kind == asset_kind:
+                continue
+            retained.append(existing)
+        assets = retained
+    assets.append(entry)
     raw["assets"] = assets
     try:
         atomic_write_private(
