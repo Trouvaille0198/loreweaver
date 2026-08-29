@@ -305,7 +305,12 @@ async def _generate_subject(
     )
     try:
         reference = entry.ref_path.read_bytes() if entry.ref_path is not None else None
-        data, mime = await imagegen.generate(
+        from gateway.imagegen import generate_traced
+
+        data, mime = await generate_traced(
+            services,
+            ctx.chat_key,
+            imagegen,
             full_prompt,
             size=services.settings.imagegen.size,
             reference=reference,

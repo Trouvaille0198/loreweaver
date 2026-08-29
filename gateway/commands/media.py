@@ -16,7 +16,13 @@ from gateway.avatar import AvatarError, set_target_avatar, set_user_avatar
 from gateway.commands.rooms import _is_keeper
 from gateway.commands.types import CommandCtx
 from gateway.hub import Event
-from gateway.imagegen import allow_imagegen_request, gather_image_reference, image_name, imagegen_failure_text
+from gateway.imagegen import (
+    allow_imagegen_request,
+    gather_image_reference,
+    generate_traced,
+    image_name,
+    imagegen_failure_text,
+)
 from gateway.media import media_frame, publish_media
 from gateway.ops import (
     is_media_enabled,
@@ -430,7 +436,10 @@ class MediaCommands:
             if ref_bytes and kind != "portrait":
                 hint = ctx.services.i18n.with_locale(ctx.locale).t("commands.image.reference_hint")
                 prompt = f"{prompt} {hint}".strip()
-            data, mime = await imagegen.generate(
+            data, mime = await generate_traced(
+                ctx.services,
+                ctx.chat_key,
+                imagegen,
                 prompt,
                 size=ctx.services.settings.imagegen.size,
                 reference=ref_bytes,
@@ -746,7 +755,9 @@ class MediaCommands:
                 Event(kind="system", text=ctx.i18n.t("commands.avatar.generating"), data={"level": "info", "spinner": True}),
             )
         try:
-            data, mime = await imagegen.generate(prompt, size=ctx.services.settings.imagegen.size)
+            data, mime = await generate_traced(
+                ctx.services, ctx.chat_key, imagegen, prompt, size=ctx.services.settings.imagegen.size
+            )
             settings = ctx.services.settings.tui
             store = MediaStore(
                 ctx.services.store,

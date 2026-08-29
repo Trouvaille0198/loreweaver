@@ -13,6 +13,7 @@ from gateway.imagegen import (
     acquire_imagegen_slot,
     allow_imagegen_request,
     gather_image_reference,
+    generate_traced,
     image_name,
     imagegen_failure_text,
     release_imagegen_slot,
@@ -169,7 +170,10 @@ class ImageTools:
             if ref_bytes and kind != "portrait":
                 hint = i18n.t("commands.image.reference_hint")
                 prompt = f"{prompt} {hint}".strip()
-            data, mime = await imagegen.generate(
+            data, mime = await generate_traced(
+                self._services,
+                ctx.chat_key,
+                imagegen,
                 prompt,
                 size=self._services.settings.imagegen.size,
                 reference=ref_bytes,
