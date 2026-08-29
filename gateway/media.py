@@ -71,16 +71,27 @@ async def publish_media(
 
 
 # --- Room lifecycle (M23 WS1) -----------------------------------------------
+# Two facets, because the halves of room media die at different scopes. The broadcast
+# history (the index a fresh connection replays the posted pictures from) is narrative
+# session: it goes with the story, so a fresh `.reset` does not resurrect old pictures.
+# The blob files are not: pregen portraits and other room media must survive every
+# reset but a full one, because the characters they illustrate survive too.
 ROOM_FACETS = (
     RoomStateFacet(
         name="room_media",
         owner="gateway.media",
         reset_scope="all",
+        storages=frozenset({STORAGE_MEDIA}),
+    ),
+    RoomStateFacet(
+        name="room_media_history",
+        owner="gateway.media",
+        reset_scope="story",
         # The `media` document type is registered for the frame contract and no document
         # of it is written today; it is claimed here so the type cannot become an orphan
         # the day something does write one.
         doc_types=frozenset({"media"}),
         state_keys=frozenset({"media_history"}),
-        storages=frozenset({STORAGE_DOCUMENTS, STORAGE_ROOM_STATE, STORAGE_MEDIA}),
+        storages=frozenset({STORAGE_DOCUMENTS, STORAGE_ROOM_STATE}),
     ),
 )

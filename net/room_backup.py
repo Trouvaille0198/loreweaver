@@ -1186,8 +1186,10 @@ async def reset_room_state(
       records, KP notes, initiative, clock, recap, relationships and in-play NPCs
       (an AI companion is one of those, and it leaves WHOLE: record, sheet and
       party-roster row, because half a companion is a ghost party member no command
-      can reach). The PLAYERS' characters, the loaded module, world lore and media
-      are KEPT, so the same table replays the same scenario from a clean slate.
+      can reach). The PLAYERS' characters, the loaded module and world lore are KEPT,
+      along with the media blob FILES (pregen portraits, uploads), so the same table
+      replays the same scenario from a clean slate — but the broadcast-media HISTORY
+      goes with the story, so a fresh session does not replay the old pictures.
     - ``"chars"``: the above PLUS the party's characters, so fresh investigators
       face the SAME module.
     - ``"all"``: everything above PLUS the module, world lore and media (KV rows,
