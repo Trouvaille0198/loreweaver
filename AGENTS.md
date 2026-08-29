@@ -7,6 +7,8 @@
 
 ## 硬性规则
 
+- 始终用“长官”来称呼我
+- 发现bug时，千万不要做兜底处理而忽视了bug，而是要把bug完全修复
 - 禁止运行 pytest、test、lint、typecheck（用户明确要求，最高优先级）；验证与部署
   只跑 `docker compose build` / `docker compose up`，不用测试套件验收改动。
 - 解释行为时使用人话，不要让用户去理解内部方法名或变量名；对用户说话一律按

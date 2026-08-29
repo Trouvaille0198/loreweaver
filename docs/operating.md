@@ -336,8 +336,11 @@ This will permanently clear EVERYTHING — characters, the module, lore, media a
 ```
 
 - `.reset` — story and progress, including the pictures posted in the chat. Characters, module, lore and media files stay.
-- `.reset chars` — also rolls new characters. The module stays.
-- `.reset all` — erases everything.
+- `.reset chars` — also rolls new characters. The module stays. Pregens (including room-born ones) stay too, ready to be re-claimed.
+- `.reset all` — erases everything. Pregens are only cleared here; module-born ones come back when you re-import the module.
+
+See "Where pregens come from and how they are cleaned" in `modules.md` for how to tell the two
+kinds apart and remove a stray room-born pregen.
 
 Each needs `.reset confirm` within 120 seconds. **No backup is taken** — take one first if you might
 want it. Clients receive a state frame marked `reset`, which also clears their local chat scrollback,

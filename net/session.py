@@ -54,6 +54,10 @@ from net.room_backup import room_rows, room_vector_points
 
 logger = logging.getLogger(__name__)
 
+# v2.9 adds `spells` (localized known-spell display names) and `race_info`
+# (pack-resolved race data: localized name/traits, speed, darkvision) on the
+# character state frame — the character page can show what a character knows
+# and is, without a command round-trip.
 # v2.8 generalizes narrative `mentions` beyond NPCs — items and discovered clues
 # join in (`item://`, `clue://` links), and every mention names its `kind`.
 # v2.4 adds `character.skills` — the sheet's trained skills on the state frame, so a
@@ -67,7 +71,7 @@ logger = logging.getLogger(__name__)
 # `panel_intent` client frame, and pack-asset resolution on the media byte channel.
 # v1.7 added declarative hook-emitted `ui` frames (core.hooks emitUI); v1.6 added
 # player-visible module variables on the state frame.
-_PROTOCOL_VERSION = "2.8"
+_PROTOCOL_VERSION = "2.9"
 # Public alias for out-of-band consumers (the `.lwpack` engine-minimum check in app.py).
 PROTOCOL_VERSION = _PROTOCOL_VERSION
 _SERVER_BANNER = "loreweaver/1"

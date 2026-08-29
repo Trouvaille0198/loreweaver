@@ -434,6 +434,13 @@ class RuntimeCommands:
             action = _action_slot(action_id, slot, action)
         manager = CombatManager(ctx.services.store, ctx.chat_key)
         state = await manager.get()
+        if kind == "cast" and (state is None or state.phase != "active" or state.current is None):
+            # Out-of-combat cast lane: no active combat, so the combat-action
+            # machinery below has nothing to hang on. Utility/self spells still
+            # settle for real — known-spell check, slot pool spend, persisted
+            # sheet — instead of the AI narrating a free cast. Spells that need
+            # a target's defenses (attack rolls, save-ruled damage) refuse.
+            return await self._cast_out_of_combat(ctx, pack, spell, action, targets)
         if state is None or state.phase != "active" or state.current is None:
             return ctx.fail(ctx.i18n.t("commands.combat.empty"))
         actor_id = state.current
@@ -622,6 +629,11 @@ class RuntimeCommands:
                         "start_turn": claimed.turn_index,
                         "duration": duration,
                         "visibility": "public",
+                        # Human-readable display label (the spell's localized name
+                        # when the action came from the catalog) — every surface
+                        # (web chips, AI list, battle report) shows "火球术", not
+                        # the raw action id.
+                        "label": spell.display_name(ctx.locale) if spell is not None else "",
                     }
                 )
                 actor_updates["conditions"] = conditions
@@ -716,6 +728,50 @@ class RuntimeCommands:
             return None, None, None, [], "bad_slot"
         return spell, action, (str(slot_level) if slot_level is not None else None), targets, ""
 
+    async def _cast_out_of_combat(self, ctx: CommandCtx, pack: Any, spell: Any, action: Any, targets: list[str]) -> str:
+        """Settle a `.cast` OUTSIDE combat for real.
+
+        Only utility/self spells (no attack roll, no save ruling, no targets) fit
+        here: the caster's known-spell list is enforced, the slot pool is genuinely
+        spent and the sheet persisted — the same engine contract a combat cast
+        keeps, minus the combat machinery. Attack/save spells and named targets
+        refuse: without a combat state there are no defenses to resolve against,
+        and "half damage to nobody" would be a fake settlement.
+        """
+        if action is None or spell is None:
+            return ctx.fail(ctx.i18n.t("commands.combat.empty"))
+        if spell.attack or spell.save or targets:
+            return ctx.fail(ctx.i18n.t("commands.cast.out_of_combat_combat_required", name=spell.display_name(ctx.locale)))
+        character = await ctx.services.characters.get_character(ctx.user_id, ctx.chat_key)
+        if not has_character(character):
+            return ctx.fail(ctx.i18n.t("commands.spell.requires_sheet"))
+        if spell.id not in {str(value) for value in (character.known_spells or [])}:
+            return ctx.fail(ctx.i18n.t("commands.spell.not_known", name=spell.display_name(ctx.locale)))
+        pool_id = ""
+        if action.resource_costs:
+            cost = action.resource_costs[0]
+            pool_id = str(cost.pool)
+            amount = cost.amount
+            if isinstance(amount, Mapping):
+                amount = amount.get("value", 1)
+            ledger = ResourceLedger(character, pack)
+            try:
+                ledger.spend(pool_id, int(amount))
+            except ResourceError:
+                return ctx.fail(ctx.i18n.t("commands.spell.no_slots", pool=pool_id))
+            await ctx.services.characters.save_character(ctx.user_id, ctx.chat_key, character)
+        remaining = ""
+        if pool_id:
+            value = resource_values(character, pack).get(pool_id)
+            if value is not None:
+                remaining = f"{value.current}/{value.maximum}"
+        return ctx.i18n.t(
+            "commands.cast.out_of_combat",
+            name=spell.display_name(ctx.locale),
+            pool=pool_id or "—",
+            remaining=remaining or "—",
+        )
+
     def _spell_dc(self, sheet: Any, pack: Any, spell: Any) -> int:
         """A spell's save DC: 8 + proficiency bonus + the casting ability modifier."""
         from core.sheets import sheet_value
@@ -766,6 +822,45 @@ class RuntimeCommands:
             spell = catalog.get(name)
             if spell is None:
                 return ctx.fail(ctx.i18n.t("commands.spell.unknown", name=name))
+            # Learning gate (engine-side, deterministic): only a class with a
+            # spell-slot table can learn, and only up to the ring it can already
+            # cast. Without this, "the fighter learns fireball" was accepted sheet
+            # data the cast lane would happily spend. Cross-class LIST membership
+            # is not checked (the pack ships no per-class lists) — the slot table
+            # and ring ceiling are the two facts the engine owns.
+            character_class = str(getattr(character, "character_class", "") or "").strip()
+            normalized_class = pack.normalize_class(character_class)
+            runtime = getattr(pack, "runtime_spec", None)
+            slot_class = (getattr(runtime, "spell_slot_class", None) or {}).get(normalized_class, "") if runtime else ""
+            # "none" is the pack's explicit non-caster mark; "" means the class is
+            # unknown to the table — both refuse.
+            if not slot_class or slot_class == "none":
+                return ctx.fail(
+                    ctx.i18n.t("commands.spell.not_caster", name=spell.display_name(ctx.locale), cls=character_class)
+                )
+            if spell.level > 0:
+                slot_pools = {
+                    pool_id: value
+                    for pool_id, value in resource_values(character, pack).items()
+                    if pool_id.startswith("spell_slot_")
+                }
+                highest_ring = max(
+                    (
+                        int(pool_id.rsplit("_", 1)[1])
+                        for pool_id, value in slot_pools.items()
+                        if value.maximum and value.maximum > 0 and pool_id.rsplit("_", 1)[1].isdigit()
+                    ),
+                    default=0,
+                )
+                if spell.level > highest_ring:
+                    return ctx.fail(
+                        ctx.i18n.t(
+                            "commands.spell.level_too_high",
+                            name=spell.display_name(ctx.locale),
+                            level=spell.level,
+                            ring=highest_ring,
+                        )
+                    )
             if spell.id not in known:
                 character.known_spells = known + [spell.id]
                 await ctx.services.characters.save_character(ctx.user_id, ctx.chat_key, character)

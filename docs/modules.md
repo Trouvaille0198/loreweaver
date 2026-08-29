@@ -313,6 +313,23 @@ vectors, and module-owned skill and UI switches. Manually enabled general skills
 material, player characters, and campaign records remain. Back up an important campaign first; a
 failed import leaves the room in its pre-import state.
 
+### Where pregens come from and how they are cleaned
+
+Every pregen in the pool carries a provenance mark; the "pregens" card shows ALL characters the
+room currently holds, not just what the loaded module brought:
+
+- **Module-born** (source points at the pack): copied into the room at import. A module swap
+  cleans them with the old module; re-importing the module restores the missing ones (existing
+  ones are not duplicated).
+- **Room-born** (created by `.pc gen` or the AI keeper): this table's own asset. A module swap
+  deliberately KEEPS them, and `.reset` / `.reset chars` do not touch them either — only
+  `.reset all`, which wipes the whole room, removes them.
+
+So room-born characters generated for a previous adventure stay in the pregen list after the
+module changes. Remove them with `.pc delete <name>` — the command accepts only **room-born,
+unclaimed** characters; module-born pregens cannot be deleted, only replaced by a module swap
+or re-import.
+
 ---
 
 ## 6. How players play well

@@ -74,6 +74,7 @@ async def build_sheet_from_persona(
 
     _bias_sheet(manager, sheet, pack, concept, creation=creation)
     _apply_persona_text(sheet, card, concept, pack)
+    _apply_race_data(sheet, pack)
     _fill_initial_spells(sheet, pack)
     return sheet
 
@@ -178,23 +179,13 @@ def _identity_fields_text(renderer: Any, pack: RulePack) -> str:
     names = [name for name, default in spec.fields.items() if default == ""]
     if not names:
         return ""
-    return renderer("charcard.concept_identity_fields", fields=", ".join(names))
-
-
-def _identity_fields_text(renderer: Any, pack: RulePack) -> str:
-    """The identity-fields contract for the concept prompt, generated FROM the pack's
-    own sheet spec — a system that declares `race`/`alignment`/anything else gets it
-    advertised automatically; one that declares none stays unadvertised. Identity
-    fields are the sheet's non-numeric slots (default value is the empty string):
-    occupation/class, race, alignment, … Numeric ones (level, proficiency) are
-    derived or defaulted by the engine, never authored by the model."""
-    spec = pack.sheet_spec
-    if spec is None or not spec.fields:
-        return ""
-    names = [name for name, default in spec.fields.items() if default == ""]
-    if not names:
-        return ""
-    return renderer("charcard.concept_identity_fields", fields=", ".join(names))
+    text = renderer("charcard.concept_identity_fields", fields=", ".join(names))
+    # When the pack declares a race table, the model must pick one of THOSE names —
+    # a race the pack cannot resolve carries no mechanical data and no display facts.
+    if pack.races and "race" in names:
+        options = sorted({entry.display_name(loc) for entry in pack.races.values() for loc in ("zh", "en")})
+        text += " " + renderer("charcard.concept_race_options", races=", ".join(options))
+    return text
 
 
 def _skill_rules_text(renderer: Any, pack: RulePack) -> str:
@@ -543,6 +534,42 @@ def _list_text(value: Any) -> list[str]:
     if isinstance(value, str):
         return [part.strip() for part in value.split(",") if part.strip()]
     return []
+
+
+def _apply_race_data(sheet: CharacterSheet, pack: RulePack) -> None:
+    """Apply the pack's race data to a freshly built sheet.
+
+    The sheet's race field is free text the concept model wrote; the engine
+    resolves it through the pack's ``races:`` table (aliases, zh/en names,
+    parenthetical glosses stripped) and, when it matches, adds the race's
+    ability bonuses to the BASE ability scores once — every derived stat
+    (AC, HP, skills) then recomputes through the normal refresh lane. This is
+    the race's only mechanical footprint; speed/darkvision/traits stay pack
+    display data resolved at read time. Unknown or empty race names are a
+    silent no-op, so homebrew and non-D&D systems are untouched.
+    """
+    race = pack.resolve_race(str(getattr(sheet, "race", "") or ""))
+    if race is None or not race.bonuses:
+        return
+    spec = pack.sheet_spec
+    if spec is None:
+        return
+    changed = False
+    for attr_name, bonus in race.bonuses.items():
+        canonical = pack.resolve_skill(str(attr_name)) or str(attr_name)
+        attr_key = spec.attr_keys.get(canonical)
+        if not attr_key:
+            continue  # not an ability score on this sheet — display-only key
+        try:
+            current = int(sheet_value(sheet, pack, canonical))
+        except (TypeError, ValueError):
+            continue
+        set_sheet_value(sheet, pack, canonical, current + int(bonus))
+        changed = True
+    if changed:
+        # Re-derive vitals from the boosted constitution (a fresh sheet has
+        # nothing to preserve — same semantics as the creation refresh above).
+        refresh_sheet(sheet, pack, initialize_vitals=True)
 
 
 def _fill_initial_spells(sheet: CharacterSheet, pack: RulePack) -> None:

@@ -13,8 +13,9 @@
 // plus every chronicle record, player-projected — the structured lane behind
 // "previously on…" catch-up browsers. 2.8 generalizes `mentions` beyond NPCs:
 // items and discovered clues join in (`item://`, `clue://` links), and every
-// mention names its `kind`.
-export const PROTOCOL_VERSION = "2.8" as const
+// mention names its `kind`. 2.9 adds `spells` (localized known-spell display
+// names) and `race_info` (pack-resolved race data) on the character state frame.
+export const PROTOCOL_VERSION = "2.9" as const
 
 export const FrameType = {
   Join: "join",
@@ -835,6 +836,22 @@ export interface CharacterState {
   /** The relationship tracks THIS character holds toward each named entity —
    * non-default values only. Additive; absent when the server predates it. */
   relationships?: RelationshipEntry[]
+  /** v2.9 additive: the character's known spells, localized display names in
+   * viewer order (the sheet's `known_spells` ids resolved server-side). Absent
+   * when the server predates it or the character knows none. */
+  spells?: string[]
+  /** v2.9 additive: the pack-resolved race data behind the sheet's free-text
+   * race field — localized name/traits, speed and darkvision. Absent when the
+   * server predates it, the pack declares no races, or the name is unknown. */
+  race_info?: CharacterRaceInfo
+}
+
+export interface CharacterRaceInfo {
+  id: string
+  name: string
+  speed: number
+  darkvision: number
+  traits: string
 }
 
 export interface CharacterMemoryState {

@@ -7,7 +7,7 @@ This is the open, versioned wire protocol between a loreweaver server (started v
 (deterministic core + AI Keeper) is unaffected by transport; the transport-neutral
 session logic is `net.session.SessionCore`, and this document is the language-agnostic seam.
 
-Frames are JSON objects, each shaped `{"type": ...}`. Protocol version: `"2.8"`. The same
+Frames are JSON objects, each shaped `{"type": ...}`. Protocol version: `"2.9"`. The same
 frames + `join` handshake ride the transport; only the carrier + its framing differ:
 
 - **Iroh** (the transport `--serve` starts) — peer-to-peer QUIC. The server
@@ -37,6 +37,14 @@ a panel template block carrying `visible_when` and cannot evaluate that conditio
 it does not implement the field, or does not implement that corner of the grammar, or the
 evaluation errors — MUST NOT render the block. Ignoring the gate draws content the author
 hid, so the undecidable case fails CLOSED, exactly as an unresolved `$var` does.
+
+**2.9 (additive)** adds two optional fields on the character state frame
+(`CharacterState`): `spells` — the character's known spells as localized
+display names (the sheet's `known_spells` ids resolved server-side) — and
+`race_info` — the pack-resolved race data behind the sheet's free-text race
+field (`id`, localized `name` and `traits`, `speed`, `darkvision`). The
+character page shows what a character knows and is without a command
+round-trip. A pre-2.9 client ignores both fields.
 
 **2.8 (additive)** generalizes narrative `mentions` beyond NPCs: items and
 discovered clues join in. The server annotates `[name](item://<id>)` and
@@ -147,7 +155,7 @@ connections receive `error too_many_connections` before `join` is read.
 ## Server → Client
 
 - `welcome` — sent once, on a successful `join`:
-  `{type:"welcome", protocol:"2.8", features:["media","audio", "imagegen"?, "demo"?, "update"?], room:string, you:{id:string,name:string,role:"player"|"keeper"}, locale:string, server:string, version?:string}`
+  `{type:"welcome", protocol:"2.9", features:["media","audio", "imagegen"?, "demo"?, "update"?], room:string, you:{id:string,name:string,role:"player"|"keeper"}, locale:string, server:string, version?:string}`
   `version` is the server's own release version (compare it to the client's to detect a mismatch). The `"update"` feature appears only for a keeper on a server whose operator configured a self-update command, and gates the `admin_update_server` control.
   `demo` means the server is using its offline sample Keeper, vector support is
   enabled, and this specific Keeper room was empty when the server checked it.
@@ -272,7 +280,7 @@ connections receive `error too_many_connections` before `join` is read.
   simply ignore it:
   `{type:"panel_event", panel:string, payload:any}`
 - `state` — a panel snapshot, sent on `join` and after every turn:
-  `{type:"state", room_system?:string, character?:{name,system,resources:[Resource],attributes:{},skills?:{},secondary_attributes?:{},fields?:{},equipment?:[],background?:string,notes?:string,status_effects:[],avatar?:{hash,mime,size,name?}}, characters?:[CharacterState], party:[{name,online:boolean,active:boolean,initiative?:int,resources?:[Resource],ai?:boolean,avatar?:{hash,mime,size,name?},system?:string,attributes?:{},skills?:{},secondary_attributes?:{},fields?:{},equipment?:[],background?:string,status_effects?:string[]}], scene?:{name,focus?}, clock?:{time,round?}, initiative:[{name,value:int,current:boolean}], online:int, usage?:{context_tokens:int,context_window:int,input_tokens:int,output_tokens:int,cache_hit_tokens:int,cache_miss_tokens:int}, variables?:[{id:string,label:string,kind:"number"|"bool"|"text"|"enum",value:number|boolean|string,min?:int,max?:int,hidden?:boolean}], pregens?:[{name:string,claimed_by:string}], systems?:[{id:string,make_char?:string}], reset?:boolean}`
+  `{type:"state", room_system?:string, character?:{name,system,resources:[Resource],attributes:{},skills?:{},secondary_attributes?:{},fields?:{},equipment?:[],background?:string,notes?:string,status_effects:[],avatar?:{hash,mime,size,name?},spells?:[string],race_info?:{id,name,speed,darkvision,traits}}, characters?:[CharacterState], party:[{name,online:boolean,active:boolean,initiative?:int,resources?:[Resource],ai?:boolean,avatar?:{hash,mime,size,name?},system?:string,attributes?:{},skills?:{},secondary_attributes?:{},fields?:{},equipment?:[],background?:string,status_effects?:string[]}], scene?:{name,focus?}, clock?:{time,round?}, initiative:[{name,value:int,current:boolean}], online:int, usage?:{context_tokens:int,context_window:int,input_tokens:int,output_tokens:int,cache_hit_tokens:int,cache_miss_tokens:int}, variables?:[{id:string,label:string,kind:"number"|"bool"|"text"|"enum",value:number|boolean|string,min?:int,max?:int,hidden?:boolean}], pregens?:[{name:string,claimed_by:string}], systems?:[{id:string,make_char?:string}], reset?:boolean}`
   `Resource = {id:string, label:string, value:number, max?:number}` — the rule
   system's vital meters (HP, sanity, mana, …) as generic data: a client renders
   the list as meters without knowing any system's field names. Entries arrive in

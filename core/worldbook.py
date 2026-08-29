@@ -911,6 +911,14 @@ def _normalize_import_entry(raw: dict[str, Any], *, source: str, index: int, is_
             "group": raw.get("group", "") or "",
             "group_weight": raw.get("groupWeight", raw.get("group_weight", 100)) or 100,
             "position": position,
+            # Explicit alternate names are identity data for NPC/item mention
+            # binding, not trigger keys. Preserve them through import so a
+            # module's short character names resolve to the same NPC record.
+            "aliases": [
+                str(alias).strip()
+                for alias in (raw.get("aliases") or extensions.get("aliases") or [])
+                if str(alias).strip()
+            ],
             # The illustration asset filename forge binds onto the entry it
             # depicts (scene/NPC/clue portraits); the keeper's lore view and
             # the NPC import chain resolve it to the media blob.

@@ -255,7 +255,7 @@ def _parse_pregens(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
         blurb = _first_sentence(_text(item.get("background") or item.get("notes")).strip()) or _text(
             item.get("concept") or item.get("blurb")
         ).strip()
-        blurb = blurb[:200]
+        blurb = blurb[:600]
         occupation = _text(item.get("occupation")).strip()[:60]
         # `character_class` / `race` are the system's canonical identity ids (e.g.
         # "cleric" / "human") for level-based packs; the world importer writes them
@@ -265,13 +265,13 @@ def _parse_pregens(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
         race = _text(item.get("race")).strip()[:60]
         # `background` is the forge's persona paragraph (history/personality/voice/
         # secret); hand-authored packs may use the legacy `notes` name instead.
-        notes = _text(item.get("background") or item.get("notes")).strip()[:400]
+        notes = _text(item.get("background") or item.get("notes")).strip()[:2000]
         if not notes:
             # A card that spells its persona only as the legacy one-liner
             # (`concept`/`blurb`) still deserves a readable sheet background —
             # the detail dialog shows the full persona paragraph, never a
             # separate blurb field, so fold the one-liner in as the fallback.
-            notes = _text(item.get("concept") or item.get("blurb")).strip()[:400]
+            notes = _text(item.get("concept") or item.get("blurb")).strip()[:2000]
         skills: dict[str, int] = {}
         skills_raw = item.get("skills")
         if isinstance(skills_raw, dict):
@@ -297,7 +297,7 @@ def _parse_pregens(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
         # `appearance` is the character's concrete look (build, hair, clothes, marks) —
         # the field the illustration lane folds into a portrait prompt. Optional: a
         # pregen without one still gets a portrait from its persona text.
-        appearance = _text(item.get("appearance")).strip()[:400]
+        appearance = _text(item.get("appearance")).strip()[:1000]
         out.append({"name": name, "blurb": blurb, "occupation": occupation, "character_class": character_class, "race": race, "notes": notes, "skills": skills, "aliases": tuple(aliases), "avatar": avatar, "appearance": appearance})
     return tuple(out)
 
@@ -405,9 +405,9 @@ def _parse_items(raw: Any, warnings: list[str]) -> tuple[dict[str, Any], ...]:
                 "kind": _text(item.get("kind")).strip()[:40],
                 "slot": _text(item.get("slot")).strip()[:40],
                 "scope": scope,
-                "description": _text(item.get("description")).strip()[:500],
+                "description": _text(item.get("description")).strip()[:2000],
                 "lore": _text(item.get("lore")).strip()[:2000],
-                "effect": _text(item.get("effect")).strip()[:500],
+                "effect": _text(item.get("effect")).strip()[:1500],
                 "origin": origin,
                 "original_holder": original_holder,
                 "quantity": quantity,
