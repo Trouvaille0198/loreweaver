@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from typing import Any
 
 from agent.services import Services
@@ -79,6 +80,84 @@ def imagegen_failure_text(i18n: Any, exc: ImageGenError, *, key_prefix: str, cha
         return message
     logger.warning("[imagegen] %s failed in %s: %s", exc.code, chat_key, detail)
     return i18n.t("commands.imagegen.error_detail", message=message, detail=detail[:300])
+
+
+async def _trace_imagegen(services: Services, chat_key: str, payload: dict[str, Any]) -> None:
+    """Write one `tool: "imagegen"` row into the room's trace, stamped with the active
+    module like every other row. Best-effort: the trace must never cost the call."""
+    try:
+        from agent.tool_trace import active_module_id, trace_event
+
+        module = await active_module_id(services, chat_key)
+        trace_event("imagegen", payload, chat_key=chat_key, module=module)
+    except Exception:  # noqa: BLE001 — see module docstring of agent.tool_trace
+        logger.debug("imagegen trace write failed", exc_info=True)
+
+
+async def _imagegen_profile(services: Services, chat_key: str) -> str:
+    """The room's selected image profile id ("" when the global generator is in play) —
+    the first question any image failure begs is WHICH config was used."""
+    try:
+        selection = await services.room_model_selection(chat_key)
+        return str(selection.get("imagegen") or "")
+    except Exception:  # noqa: BLE001 — best-effort, like the row itself
+        return ""
+
+
+async def generate_traced(
+    services: Services,
+    chat_key: str,
+    imagegen: Any,
+    prompt: str,
+    *,
+    size: str,
+    reference: bytes | None = None,
+    reference_mime: str = "",
+) -> tuple[bytes, str]:
+    """One imagegen call whose outcome lands in the room's tool trace as `tool: "imagegen"`.
+
+    The provider HTTP call is neither a model call nor an AI tool call, so before this row
+    a failed generation left the JSONL blind between the prompt-expansion row and the
+    room's error line — the 2026-08-29 kuaipao outage read as unexplained silence, and the
+    relay-side console showed nothing either (an invalid token dies at the gateway, before
+    any channel). The detail rides in the row because the room message already carries it;
+    these strings are status + provider message, never the credential itself.
+    `reference_bytes` tells prompt-only (0) from image-to-image (>0), the other half of
+    the endpoint question."""
+    started = time.monotonic()
+    common: dict[str, Any] = {
+        "profile": await _imagegen_profile(services, chat_key),
+        "size": size,
+        "reference_bytes": len(reference or b""),
+        "prompt": str(prompt)[:400],
+    }
+    try:
+        data, mime = await imagegen.generate(
+            prompt, size=size, reference=reference, reference_mime=reference_mime
+        )
+    except ImageGenError as exc:
+        await _trace_imagegen(
+            services,
+            chat_key,
+            {**common, "outcome": "error", "ms": round((time.monotonic() - started) * 1000, 1),
+             "code": exc.code, "detail": str(exc)[:300]},
+        )
+        raise
+    except Exception as exc:  # noqa: BLE001 — trace, then re-raise unchanged
+        await _trace_imagegen(
+            services,
+            chat_key,
+            {**common, "outcome": "error", "ms": round((time.monotonic() - started) * 1000, 1),
+             "code": type(exc).__name__, "detail": str(exc)[:300]},
+        )
+        raise
+    await _trace_imagegen(
+        services,
+        chat_key,
+        {**common, "outcome": "ok", "ms": round((time.monotonic() - started) * 1000, 1),
+         "mime": mime, "bytes": len(data)},
+    )
+    return data, mime
 
 def acquire_imagegen_slot(services: Services, chat_key: str) -> bool:
     """Take the room's one-image-in-flight slot; False when a generation is running.
