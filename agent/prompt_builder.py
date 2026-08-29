@@ -102,6 +102,7 @@ from core.prompt_sections import (
     inject_game_state_prompt,
     inject_interaction_style_prompt,
     inject_item_catalog_prompt,
+    inject_mention_registry_prompt,
     inject_system_expertise_prompt,
     inject_trpg_system_prompt,
 )
@@ -281,6 +282,7 @@ async def build_system_prompt_parts(
             ctx, services.characters, i18n, default_system=room_rulepack.system
         ),
         await inject_interaction_style_prompt(ctx, i18n),
+        await inject_mention_registry_prompt(ctx, services.documents, i18n),
     ]
     # The room's AI reply-length mode (the `ai_length` store flag, managed by
     # `gateway.ops`): "concise"/"brief" fold a brevity directive into the style

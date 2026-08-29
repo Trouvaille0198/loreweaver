@@ -1348,10 +1348,9 @@ def _bind_worldbook_images(card_text: dict[str, Any], media_index: list[dict[str
     """Stamp generated npc/scene/item illustrations onto their matching worldbook entries.
 
     Mirrors the pregen-portrait binding (match shot.subject to the entry's canonical name and
-    write the asset filename onto the entry). Without it the scene/NPC/item images stayed
-    orphans — generated and stored, but never attached to the worldbook entry they depict. The
-    ``image`` field rides the card and survives import into the room's lore documents (see
-    `core.worldbook.LoreEntry.image`). Returns how many entries were stamped."""
+    write the asset filename onto the entry). A fresh render intentionally replaces an existing
+    ``image`` binding for the same subject, so the card always points at the latest plate.
+    Returns how many entries were stamped."""
     bound = 0
     shots_by_kind: dict[str, list[dict[str, str]]] = {}
     for shot in media_index:
@@ -1363,7 +1362,7 @@ def _bind_worldbook_images(card_text: dict[str, Any], media_index: list[dict[str
             continue
         category = str(entry.get("category") or "lore").strip().casefold()
         kind = _WORLDBOOK_CATEGORY_TO_MEDIA_KIND.get(category)
-        if not kind or entry.get("image"):
+        if not kind:
             continue
         keys = {str(k).strip().casefold() for k in (entry.get("keys") or []) if str(k).strip()}
         for shot in shots_by_kind.get(kind, []):
@@ -1610,11 +1609,12 @@ async def _module_media_pass(
 
 
 async def _append_module_media_index(services: Services, chat_key: str, entries: list[dict[str, str]]) -> None:
-    """Append shot→image provenance to the room's `module_media_index` state.
+    """Upsert shot→image provenance in the room's `module_media_index` state.
 
     Each entry names the illustrated kind + subject and the stored image's hash/name, so
-    the runtime can fetch a subject's reference image for `.image` consistency. Best-effort
-    and never fatal: an unreadable index just means the next append starts fresh.
+    the runtime can fetch the subject's latest reference image for `.image` consistency. A
+    regenerated subject replaces its older index row instead of leaving a stale reference.
+    Best-effort and never fatal: an unreadable index just means the next append starts fresh.
     """
     raw = await services.store.state_get(chat_key, MODULE_MEDIA_INDEX_KEY)
     existing: list[dict[str, str]] = []
@@ -1625,7 +1625,20 @@ async def _append_module_media_index(services: Services, chat_key: str, entries:
                 existing = [e for e in value if isinstance(e, dict)]
         except (json.JSONDecodeError, TypeError):
             pass
-    merged = existing + entries
+    updates = {
+        (str(entry.get("kind") or "").strip().casefold(), str(entry.get("subject") or "").strip().casefold()): entry
+        for entry in entries
+        if str(entry.get("kind") or "").strip() and str(entry.get("subject") or "").strip()
+    }
+    merged = [
+        entry
+        for entry in existing
+        if (
+            str(entry.get("kind") or "").strip().casefold(),
+            str(entry.get("subject") or "").strip().casefold(),
+        ) not in updates
+    ]
+    merged.extend(updates.values())
     try:
         await services.store.state_set(chat_key, MODULE_MEDIA_INDEX_KEY, json.dumps(merged))
     except Exception:  # noqa: BLE001 — index persistence must never break a forge

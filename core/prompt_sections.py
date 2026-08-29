@@ -177,6 +177,54 @@ async def inject_item_catalog_prompt(ctx: Any, documents: DocumentStore, i18n: I
     return i18n.t("prompt.item_catalog_header", names=", ".join(names))
 
 
+async def inject_mention_registry_prompt(
+    ctx: Any, documents: DocumentStore, i18n: I18n
+) -> str:
+    """List every currently linkable entity and its authored short names.
+
+    The mark instruction is only actionable when the model can see which names
+    have cards. This registry is derived from the same player-visible records
+    used by the mention annotator, so it cannot teach the Keeper a secret entity.
+    """
+    try:
+        entries: list[str] = []
+        seen: set[str] = set()
+
+        def add(name: Any, aliases: Any = None) -> None:
+            canonical = str(name or "").strip()
+            if not canonical or canonical.casefold() in seen:
+                return
+            seen.add(canonical.casefold())
+            short_names = [
+                str(alias).strip()
+                for alias in (aliases or [])
+                if str(alias).strip() and str(alias).casefold() != canonical.casefold()
+            ]
+            entries.append(
+                f"{canonical}（别名：{'、'.join(short_names)}）"
+                if short_names
+                else canonical
+            )
+
+        for _doc, view in await documents.list_views(ctx.chat_key, "npc", PLAYER_VIEWER):
+            add(view.get("name"), view.get("aliases"))
+        for _doc, view in await documents.list_views(ctx.chat_key, "item", PLAYER_VIEWER):
+            add(view.get("name"), view.get("aliases"))
+        for _doc, view in await documents.list_views(ctx.chat_key, "item_catalog", PLAYER_VIEWER):
+            for item in view.get("items") or []:
+                if isinstance(item, dict):
+                    add(item.get("name"), item.get("aliases"))
+        clue_view = await documents.get_view(ctx.chat_key, "clue_log", "clue_log", PLAYER_VIEWER)
+        for clue in (clue_view or {}).get("clues") or []:
+            if isinstance(clue, dict):
+                add(clue.get("title"))
+        if not entries:
+            return ""
+        return i18n.t("prompt.mention_registry_header", names="、".join(entries))
+    except Exception:
+        return ""
+
+
 async def inject_game_state_prompt(ctx: Any, character_manager: Any, store: Store, i18n: I18n) -> str:
     """Minimal "battle status" panel: scene, clock, party roster, NPCs, clues, world changes, initiative.
 

@@ -161,7 +161,7 @@ def _project_lore(doc: Document, viewer: Viewer) -> dict[str, Any] | None:
     return None if doc.data.get("secret") else dict(doc.data)
 
 
-_NPC_PUBLIC_FIELDS = ("name", "public_description", "location", "status", "avatar", "public_memory")
+_NPC_PUBLIC_FIELDS = ("name", "public_description", "location", "status", "avatar", "public_memory", "aliases")
 
 
 def _project_npc(doc: Document, viewer: Viewer) -> dict[str, Any] | None:
