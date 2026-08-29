@@ -454,8 +454,8 @@ class ModuleTools(_KnowledgeToolsBase):
                     body = i18n.t("kp_tools.know.pool.missing", pool=pool_label)
                 else:
                     background = str(pool.get("background", ""))
-                    if len(background) > 200:
-                        background = background[:200] + "..."
+                    if len(background) > 2000:
+                        background = background[:2000] + "..."
                     lines = [
                         i18n.t("kp_tools.know.inspect.header", pool=pool_label),
                         f"summary: {pool.get('summary', '')}",
@@ -687,7 +687,7 @@ class ModuleTools(_KnowledgeToolsBase):
                         i18n.t("kp_tools.know.search.results_header", query=query),
                     ]
                     for index, result in enumerate(results, 1):
-                        text = result["text"][:200]
+                        text = result["text"][:2000]
                         flagged = any(re.search(pattern, text, re.IGNORECASE) for pattern in _KEEPER_SENSITIVE_PATTERNS)
                         warning = f" {i18n.t('kp_tools.know.search.sensitive_flag')}" if flagged else ""
                         lines.append(
@@ -957,8 +957,8 @@ class ModuleTools(_KnowledgeToolsBase):
             for entry in clues:
                 title = str(entry.get("title") or "?")
                 content = str(entry.get("content") or "").strip()
-                if len(content) > 140:
-                    content = content[:140] + "…"
+                if len(content) > 1000:
+                    content = content[:1000] + "…"
                 lines.append(f" - {title}" + (f": {content}" if content else ""))
             return "\n".join(lines)
         except Exception as exc:

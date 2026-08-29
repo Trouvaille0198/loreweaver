@@ -114,7 +114,7 @@ from core.worldbook import inject_world_lore_prompt
 
 # How much of the room's conversation seeds the retrieval context (`_recent_transcript`).
 _RECENT_CONTEXT_MESSAGES = 6
-_RECENT_CONTEXT_MAX_CHARS = 2000
+_RECENT_CONTEXT_MAX_CHARS = 12000
 
 
 @dataclass(frozen=True)
@@ -168,7 +168,7 @@ async def _character_memory_lines(services, chat_key: str) -> list[str]:
             continue
         latest = str(entries[-1]["text"]).strip()
         if latest:
-            lines.append(f"- {str(doc.id)}: {latest[:200]}")
+            lines.append(f"- {str(doc.id)}: {latest[:1500]}")
     return lines
 
 

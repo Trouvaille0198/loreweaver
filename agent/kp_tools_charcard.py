@@ -241,7 +241,7 @@ async def _module_summary(services: Services, chat_key: str) -> str:
         view = await services.documents.get_view(chat_key, "module_pool", MODULE_POOL_ID, PLAYER_VIEWER)
         summary = view.get("summary") if isinstance(view, dict) else ""
         if summary:
-            return str(summary)[:400]
+            return str(summary)[:2000]
     except Exception:
         pass
 
@@ -282,11 +282,11 @@ async def _module_full_context(services: Services, chat_key: str) -> str:
             title = str(data.get("title") or "").strip()
             content = str(data.get("content") or "").strip()
             if content:
-                parts.append(f"{title}: {content[:500]}" if title else content[:500])
+                parts.append(f"{title}: {content[:2000]}" if title else content[:2000])
     except Exception:
         pass
     joined = "\n\n".join(part for part in parts if part.strip())
-    return joined[:6000]
+    return joined[:24000]
 
 
 
@@ -906,6 +906,11 @@ class CharcardTools:
                 await sync_pack_media_to_room(
                     self._services, ctx.chat_key, home, imported_pack_manifest
                 )
+            from agent.kp_tools_npc import ensure_public_module_npcs
+
+            await ensure_public_module_npcs(
+                self._services, ctx.chat_key, source=source_id
+            )
             return "\n".join([result, *extra_lines])
         except CardImportRefused as exc:
             if transaction is not None:

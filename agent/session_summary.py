@@ -49,7 +49,7 @@ _SUMMARY_RECORD_TAIL = 8
 # How many trailing conversation messages may be sampled.
 _MAX_HISTORY_MESSAGES = 24
 # Hard cap on the whole assembled prompt body — a condensation, not an archive.
-_MAX_INPUT_CHARS = 8000
+_MAX_INPUT_CHARS = 40000
 
 
 async def render_summary(services: Any, chat_key: str, i18n: I18n) -> str | None:

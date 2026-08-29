@@ -54,5 +54,6 @@
   "charcard.tools.brief.label.alt_opening": "Alternate opening {index}",
   "charcard.tools.world.specs_line": "Typed variables: {count} tracker(s) defined from the native bundle.",
   "charcard.tools.world.system_pinned": "Room system pinned to {system} — the module's pack ships it, so the cast and new characters are built on it (name a system on import to override).",
-  "charcard.concept_identity_fields": "ALWAYS fill the identity fields ({fields} — return them under these exact keys); infer them from the persona, background, name and occupation; when nothing is implied, give the most sensible default (class closest to the described job, race defaulting to human); never leave them empty and never invent key names, "
+  "charcard.concept_identity_fields": "ALWAYS fill the identity fields ({fields} — return them under these exact keys); infer them from the persona, background, name and occupation; when nothing is implied, give the most sensible default (class closest to the described job, race defaulting to human); never leave them empty and never invent key names, ",
+  "charcard.concept_race_options": "The race field MUST be exactly one of: {races}."
 }

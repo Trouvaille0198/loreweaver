@@ -306,6 +306,33 @@ async def _character_payload(
     fields = sheet.field_values()
     if fields:
         payload["fields"] = fields
+    # v2.9 additive: the character's known spells, resolved to localized display
+    # names server-side (the wire carries ids nowhere — the player sees names).
+    # Race data rides resolved, too: the sheet stores free text, the pack's race
+    # table turns it into display facts (localized name/traits, speed, darkvision).
+    known_spell_ids = [str(value) for value in (getattr(sheet, "known_spells", None) or [])]
+    if known_spell_ids and pack is not None:
+        catalog = getattr(pack, "spells", None)
+        if catalog is not None:
+            spell_names = []
+            for spell_id in known_spell_ids:
+                spell = catalog.get(spell_id)
+                if spell is not None:
+                    spell_names.append(spell.display_name(locale or "en"))
+            if spell_names:
+                payload["spells"] = spell_names
+    race_text = str(getattr(sheet, "race", "") or "").strip()
+    if race_text and pack is not None:
+        race_entry = pack.resolve_race(race_text)
+        if race_entry is not None:
+            base_locale = str(locale or "en").replace("_", "-").split("-")[0].casefold()
+            payload["race_info"] = {
+                "id": race_entry.id,
+                "name": race_entry.display_name(locale or "en"),
+                "speed": race_entry.speed,
+                "darkvision": race_entry.darkvision,
+                "traits": race_entry.traits.get(base_locale) or race_entry.traits.get("en") or "",
+            }
     # The module source of a claimed pregen (which scenario this character came
     # from), read off the roster document — only pregen characters carry one.
     try:

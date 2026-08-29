@@ -40,7 +40,9 @@ from agent.npc import NpcRecord
 from agent.npc_actor import voice_npc
 from agent.services import Services
 from agent.tools import tool
-from core.documents import KEEPER_VIEWER, MODULE_POOL_ID
+from core.documents import KEEPER_VIEWER, MODULE_POOL_ID, PLAYER_VIEWER
+from core.worldbook import LORE_DOC_TYPE
+from infra.media_store import MediaStore
 from infra.i18n import I18n
 
 # `update_npc`'s allowed field names: plain string/optional-string/bool fields only -- `knowledge`
@@ -89,6 +91,122 @@ def _coerce_field_value(field: str, value: str) -> Any:
     if field == "major":
         return value.strip().lower() in _TRUTHY_STRINGS
     return value
+
+
+async def module_npc_public_fields(
+    services: Services, chat_key: str, name: str
+) -> dict[str, Any]:
+    """Return authored public fields for an exact module NPC identity.
+
+    NPC lore is the module's canonical public character definition.  When a
+    module NPC is materialized as an actor, copy those fields into the NPC
+    document at creation time so every later projection is complete on its
+    own.  Only PLAYER-view lore participates; secret entries are structurally
+    unavailable here.
+    """
+    wanted = name.strip().casefold()
+    if not wanted:
+        return {}
+    for _doc, view in await services.documents.list_views(
+        chat_key, LORE_DOC_TYPE, PLAYER_VIEWER
+    ):
+        if str(view.get("category") or "").strip().casefold() != "npc":
+            continue
+        if str(view.get("title") or "").strip().casefold() != wanted:
+            continue
+        image = str(view.get("image") or "").strip()
+        avatar = ""
+        if image:
+            store = MediaStore(
+                services.store,
+                services.settings.data_dir,
+                max_file_bytes=services.settings.tui.media_max_file_bytes,
+                room_quota_bytes=services.settings.tui.media_room_quota_bytes,
+            )
+            record = await store.get_record_by_name(chat_key, image)
+            if record is None:
+                raise RuntimeError(
+                    f"module NPC portrait is not registered: {name} -> {image}"
+                )
+            avatar = record.hash
+        return {
+            "public_description": str(view.get("content") or "").strip(),
+            "avatar": avatar,
+            "aliases": [
+                str(alias).strip()
+                for alias in (view.get("aliases") or [])
+                if str(alias).strip()
+            ],
+        }
+    return {}
+
+
+async def complete_module_npc_public_fields(
+    services: Services,
+    chat_key: str,
+    record: NpcRecord,
+    fields: dict[str, Any] | None = None,
+) -> NpcRecord:
+    """Persist missing authored public fields on an existing module NPC."""
+    if fields is None:
+        fields = await module_npc_public_fields(services, chat_key, record.name)
+    updates = {
+        key: value
+        for key, value in fields.items()
+        if value and not getattr(record, key)
+    }
+    if not updates:
+        return record
+    return (
+        await npc_records.update_npc(
+            services.documents, chat_key, record.id, **updates
+        )
+        or record
+    )
+
+
+async def ensure_public_module_npcs(
+    services: Services, chat_key: str, *, source: str | None = None
+) -> list[str]:
+    """Materialize every public NPC lore entry as a room NPC document.
+
+    Public module NPCs are tracked entities from the moment the module enters
+    the room, so authored names can be highlighted before the first dialogue
+    call. Existing keeper NPC records are enriched in place; player companions
+    are never rewritten.
+    """
+    created: list[str] = []
+    for _doc, view in await services.documents.list_views(
+        chat_key, LORE_DOC_TYPE, PLAYER_VIEWER
+    ):
+        if str(view.get("category") or "").strip().casefold() != "npc":
+            continue
+        name = str(view.get("title") or "").strip()
+        if not name:
+            continue
+        fields = await module_npc_public_fields(services, chat_key, name)
+        existing = await npc_records.find_npc_by_name(
+            services.documents, chat_key, name
+        )
+        if existing is not None:
+            if existing.role == npc_records.COMPANION_ROLE:
+                continue
+            await complete_module_npc_public_fields(
+                services, chat_key, existing, fields
+            )
+            continue
+        await npc_records.create_npc(
+            services.documents,
+            chat_key,
+            name,
+            persona=str(fields.get("public_description") or ""),
+            public_description=str(fields.get("public_description") or ""),
+            avatar=str(fields.get("avatar") or ""),
+            aliases=fields.get("aliases") or None,
+            source=source,
+        )
+        created.append(name)
+    return created
 
 
 def _render_npc_detail(i18n: I18n, record: NpcRecord) -> str:
@@ -176,17 +294,26 @@ class NpcTools:
         """
         i18n = self._i18n(ctx)
         try:
+            module_fields = await module_npc_public_fields(
+                self._services, ctx.chat_key, name
+            )
             npc = await npc_records.create_npc(
                 self._services.documents,
                 ctx.chat_key,
                 name,
                 persona=persona,
-                public_description=description,
+                public_description=description
+                or str(module_fields.get("public_description") or ""),
                 secret_agenda=secret_agenda,
                 knowledge=_split_knowledge(knowledge),
                 disposition=disposition,
                 location=location,
                 major=major,
+                avatar=str(module_fields.get("avatar") or ""),
+                aliases=module_fields.get("aliases") or None,
+            )
+            npc = await complete_module_npc_public_fields(
+                self._services, ctx.chat_key, npc, module_fields
             )
             return i18n.t("npc.tools.create.done", name=npc.name, id=npc.id)
         except npc_records.PlayerNameReservedError as exc:
@@ -213,8 +340,21 @@ class NpcTools:
         # at all (iron rule #3). Facts they learn later arrive through `npc_learns`.
         i18n = self._i18n(ctx)
         try:
+            module_fields = await module_npc_public_fields(
+                self._services, ctx.chat_key, name
+            )
             npc = await npc_records.create_npc(
-                self._services.documents, ctx.chat_key, name, persona=one_line, major=True
+                self._services.documents,
+                ctx.chat_key,
+                name,
+                persona=one_line,
+                public_description=str(module_fields.get("public_description") or ""),
+                avatar=str(module_fields.get("avatar") or ""),
+                aliases=module_fields.get("aliases") or None,
+                major=True,
+            )
+            npc = await complete_module_npc_public_fields(
+                self._services, ctx.chat_key, npc, module_fields
             )
             return i18n.t("npc.tools.create.done", name=npc.name, id=npc.id)
         except npc_records.PlayerNameReservedError as exc:

@@ -110,16 +110,16 @@ _MIN_EVIDENCE_CHARS = 4
 # Hard ceiling on one auto-written chronicle record. Records land in a document the
 # fold consumes and the prompt tail renders, both of which are already capped — a
 # record is a LINE of campaign history, not a retelling of the turn.
-_MAX_CHRONICLE_CHARS = 400
+_MAX_CHRONICLE_CHARS = 1600
 # Per-turn character-memory budget: how many PCs one pass may write, and how many
 # characters one line may carry. The document itself caps the entry count.
 MAX_MEMORIES = 2
-_MAX_MEMORY_CHARS = 300
+_MAX_MEMORY_CHARS = 1200
 # The boundary watch's input budget: how many scoped NPCs one pass shows, and how many
 # characters of each one's fact list. Rooms with no knowledge records pay nothing —
 # the prompt stays byte-identical (see `_npc_watch_section`).
 _NPC_WATCH_MAX = 8
-_NPC_WATCH_FACTS_CHARS = 300
+_NPC_WATCH_FACTS_CHARS = 1200
 
 # Appended to the prompt ONLY when the room has scoped NPCs (double braces survive the
 # outer `.format`). The instruction mirrors the fuzzy semantics deliberately: the list

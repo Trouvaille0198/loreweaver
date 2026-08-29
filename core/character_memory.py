@@ -38,7 +38,7 @@ CHARACTER_MEMORY_DOC_TYPE = "character_memory"
 
 # One auto-written line is capped like the chronicle record — a line of one
 # character's story, not a retelling of the turn.
-_MAX_ENTRY_CHARS = 300
+_MAX_ENTRY_CHARS = 1500
 # Defensive ceiling on ONE document's raw lines: the original entries are NEVER
 # dropped by settlement (the fold only ADDS a summary), so this cap exists purely
 # to keep a single JSON document from growing without bound. A career that passes
@@ -46,8 +46,8 @@ _MAX_ENTRY_CHARS = 300
 MAX_ENTRIES = 2_000
 # The folded life-summary budget. It grows by settlement, never by per-turn
 # writes, so a long career compresses instead of unboundedly expanding.
-_MAX_SUMMARY_CHARS = 4_000
-_MAX_KEEPER_CHARS = 2_000
+_MAX_SUMMARY_CHARS = 16_000
+_MAX_KEEPER_CHARS = 8_000
 
 _MEMORY_PLAYER_FIELDS = ("entries", "summary")
 

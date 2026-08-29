@@ -576,3 +576,73 @@ sheet:
     护甲等级: 护甲等级
     熟练加值: 熟练加值
     被动感知: 被动感知
+# Race data (SRD 5.1): the only MECHANICAL facts are `bonuses`, applied to the
+# sheet's base ability scores ONCE at character creation (so every derived stat —
+# AC, HP, skills — recomputes through the normal lanes). `speed`/`darkvision`/
+# `traits` are display facts resolved from the race name at read time; they are
+# never stored on the sheet, so an edited race field never leaves stale text.
+races:
+  human:
+    name: {en: Human, zh: 人类}
+    aliases: [人类, 人類, human, humans]
+    bonuses: {力量: 1, 敏捷: 1, 体质: 1, 智力: 1, 感知: 1, 魅力: 1}
+    speed: 30
+    darkvision: 0
+    traits: {en: "Versatile +1 to all six ability scores; exceptional adaptability.", zh: "宽适应性：六项属性各+1；极强的适应力与野心。"}
+  elf:
+    name: {en: Elf, zh: 精灵}
+    aliases: [精灵, 精靈, elf, elves]
+    bonuses: {敏捷: 2}
+    speed: 30
+    darkvision: 60
+    traits: {en: "Darkvision 60 ft; Keen Senses (Perception); Fey Ancestry (advantage vs charm, no magic sleep); Trance.", zh: "黑视60尺；敏锐感官（察觉熟练）；先祖传承（魅惑豁免优势、免疫魔法睡眠）；出神（4小时冥想代替睡眠）。"}
+  dwarf:
+    name: {en: Dwarf, zh: 矮人}
+    aliases: [矮人, dwarf, dwarves]
+    bonuses: {体质: 2}
+    speed: 25
+    darkvision: 60
+    traits: {en: "Darkvision 60 ft; Dwarven Resilience (poison save advantage & resistance); Dwarven Combat Training; stonecunning; 25 ft speed.", zh: "黑视60尺；矮人韧性（毒素豁免优势与毒素抗性）；矮人战斗训练；熟悉石艺；速度25尺。"}
+  halfling:
+    name: {en: Halfling, zh: 半身人}
+    aliases: [半身人, halfling, halflings]
+    bonuses: {敏捷: 2}
+    speed: 25
+    darkvision: 0
+    traits: {en: "Lucky (reroll natural 1s); Brave; Halfling Nimbleness; Naturally Stealthy; 25 ft speed.", zh: "幸运（攻击/豁免/检定掷出1可重骰）；勇敢（恐惧豁免优势）；半身人灵巧；自然隐匿；速度25尺。"}
+  gnome:
+    name: {en: Gnome, zh: 侏儒}
+    aliases: [侏儒, gnome, gnomes]
+    bonuses: {智力: 2}
+    speed: 25
+    darkvision: 60
+    traits: {en: "Darkvision 60 ft; Gnome Cunning (advantage on INT/WIS/CHA saves vs magic); artisan languages; 25 ft speed.", zh: "黑视60尺；侏儒狡诈（智力/感知/魅力的魔法豁免优势）；通晓工匠语；速度25尺。"}
+  half-elf:
+    name: {en: Half-Elf, zh: 半精灵}
+    aliases: [半精灵, half-elf, half-elves, halfelf]
+    bonuses: {魅力: 2}
+    speed: 30
+    darkvision: 60
+    traits: {en: "Darkvision 60 ft; Fey Ancestry; versatile (2 extra skills).", zh: "黑视60尺；先祖传承（魅惑豁免优势、免疫魔法睡眠）；多才多艺（额外两项技能熟练）。"}
+  half-orc:
+    name: {en: Half-Orc, zh: 半兽人}
+    aliases: [半兽人, half-orc, half-orcs, halforc]
+    bonuses: {力量: 2, 体质: 1}
+    speed: 30
+    darkvision: 60
+    traits: {en: "Darkvision 60 ft; Menacing (Intimidation); Relentless Endurance (drop to 1 HP instead of 0, 1/long rest); Savage Attacks.", zh: "黑视60尺；威吓熟练；不屈坚毅（生命归零时改为剩1点，每次长休一次）；凶蛮攻击（近战重击额外骰）。"}
+  tiefling:
+    name: {en: Tiefling, zh: 提夫林}
+    aliases: [提夫林, tiefling, tieflings]
+    bonuses: {魅力: 2, 智力: 1}
+    speed: 30
+    darkvision: 60
+    traits: {en: "Darkvision 60 ft; Hellish Resistance (fire); Infernal Legacy (innate Thaumaturgy).", zh: "黑视60尺；地狱抗性（火焰伤害抗性）；地狱传承（先天奇术法术）。"}
+  dragonborn:
+    name: {en: Dragonborn, zh: 龙裔}
+    aliases: [龙裔, dragonborn]
+    bonuses: {力量: 2, 魅力: 1}
+    speed: 30
+    darkvision: 0
+    traits: {en: "Breath Weapon (by draconic ancestry); Damage Resistance matching the ancestry.", zh: "龙息武器（按龙血谱系吐息）；与谱系对应的伤害抗性。"}
+

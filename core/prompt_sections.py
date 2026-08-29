@@ -83,8 +83,8 @@ def summarize_knowledge_item(item: Any) -> str:
     detail = str(summary).strip()
     if extras:
         detail = f"{detail} ({'；'.join(extras)})" if detail else "；".join(extras)
-    if len(detail) > 180:
-        detail = detail[:180] + "..."
+    if len(detail) > 2000:
+        detail = detail[:2000] + "..."
     return f"- {title}: {detail}" if detail else f"- {title}"
 
 
@@ -250,11 +250,12 @@ async def inject_game_state_prompt(ctx: Any, character_manager: Any, store: Stor
                     )
                     # A claimed pregen's persona paragraph (the module's `background`)
                     # keeps the keeper aligned with who the player IS, not just their
-                    # meters — truncated, the roster line stays one line.
+                    # meters. The cap is a purely defensive ceiling against runaway
+                    # cards — normal backgrounds (up to ~2000 chars) pass in full.
                     persona = str(member.get("background") or "").strip()
                     if persona:
                         lines.append(
-                            i18n.t("prompt.game_state.roster_background", background=persona[:80])
+                            i18n.t("prompt.game_state.roster_background", background=persona[:2000])
                         )
                     lines.append(
                         i18n.t(
@@ -274,14 +275,14 @@ async def inject_game_state_prompt(ctx: Any, character_manager: Any, store: Stor
                         held = [it for it in held if not it.get("archived")]
                     if isinstance(held, list) and held:
                         shown = []
-                        for it in held[:4]:
+                        for it in held[:12]:
                             label = str(it.get("name") or it.get("template_id") or "?")
                             try:
                                 qty = int(it.get("quantity"))
                             except (TypeError, ValueError):
                                 qty = 0
                             shown.append(f"{label}×{qty}" if qty > 1 else label)
-                        if len(held) > 4:
+                        if len(held) > 12:
                             shown.append("…")
                         lines.append(i18n.t("prompt.game_state.roster_items", items=", ".join(shown)))
                 # These investigators are CLAIMED and in play: the roster is who the
@@ -345,7 +346,7 @@ async def inject_game_state_prompt(ctx: Any, character_manager: Any, store: Stor
                 lines.append("")
                 lines.append(i18n.t("prompt.game_state.clues_header"))
                 for c in clues[-5:]:
-                    desc = c.get("description", "")[:40]
+                    desc = c.get("description", "")[:800]
                     lines.append(
                         i18n.t("prompt.game_state.clue_line", name=c.get("name", "?"), description=desc)
                     )
@@ -496,8 +497,8 @@ async def inject_document_context_prompt(
                     if category in ("summary", "background"):
                         if items:
                             text = str(items)
-                            if len(text) > 300:
-                                text = text[:300] + "..."
+                            if len(text) > 4000:
+                                text = text[:4000] + "..."
                             prompt_parts.append(f"### {category}\n{text}")
                     elif items:
                         prompt_parts.append(f"### {category}")
@@ -515,8 +516,8 @@ async def inject_document_context_prompt(
                     if category in ("summary", "background"):
                         if items:
                             text = str(items)
-                            if len(text) > 300:
-                                text = text[:300] + "..."
+                            if len(text) > 4000:
+                                text = text[:4000] + "..."
                             prompt_parts.append(f"### {category}\n{text}")
                     elif items:
                         prompt_parts.append(f"### {category}")

@@ -35,6 +35,8 @@ from __future__ import annotations
 
 import json
 
+from collections.abc import Mapping
+
 from agent.clue_log import find_worldbook_clue as _find_clue
 from agent.clue_log import reveal_clue as _log_clue
 from agent.tool_trace import active_module_id
@@ -298,6 +300,37 @@ class CharacterTools:
             lines.append(
                 i18n.t("kp_tools.character.sheet.equipment_line", equipment=", ".join(character.equipment))
             )
+        # Race data (pack-resolved): the sheet's race field is free text; when the
+        # pack's race table knows it, the AI sees the same display facts the player
+        # sees — darkvision/speed/traits — instead of guessing from the name.
+        race_text = str(getattr(character, "race", "") or "").strip()
+        race_entry = pack.resolve_race(race_text) if pack is not None else None
+        if race_entry is not None:
+            lines.append(
+                i18n.t(
+                    "kp_tools.character.sheet.race_line",
+                    race=race_entry.display_name(ctx.locale),
+                    facts=race_entry.traits.get(
+                        str(ctx.locale or "en").replace("_", "-").split("-")[0].casefold()
+                    )
+                    or race_entry.traits.get("en")
+                    or "",
+                )
+            )
+        # Known spells, resolved to display names — the AI reads the same list the
+        # cast lane enforces, so narration matches what `.cast` will accept.
+        known_spell_ids = [str(value) for value in (character.known_spells or [])]
+        catalog = getattr(pack, "spells", None) if pack is not None else None
+        if known_spell_ids and catalog is not None:
+            spell_names = []
+            for spell_id in known_spell_ids:
+                spell = catalog.get(spell_id)
+                if spell is not None:
+                    spell_names.append(spell.display_name(ctx.locale))
+            if spell_names:
+                lines.append(
+                    i18n.t("kp_tools.character.sheet.spells_line", spells=", ".join(spell_names))
+                )
         if character.background:
             lines.append("")
             lines.append(i18n.t("kp_tools.character.sheet.background_line", background=character.background))
@@ -1518,6 +1551,82 @@ class InitiativeTools:
         self.services = services
         self._command_router = command_router
 
+    @tool(read_only=True, needs="spells")
+    async def lookup_spell(self, ctx: AgentCtx, *, spell: str) -> str:
+        """Look up one spell's DETERMINISTIC mechanics in the room's spell catalog.
+
+        Returns the spell's exact level, casting time, range, components, duration,
+        concentration flag, save/attack resolution, damage and higher-level scaling —
+        the engine's own data, never from memory. Call this BEFORE narrating a cast
+        when you are not certain of a spell's facts: an invented range, component or
+        scaling is a rules lie the engine will contradict. `spell` accepts the id or
+        the localized display name ("火球术", "Magic Missile").
+        """
+        i18n = self.services.i18n.with_locale(ctx.locale)
+        try:
+            pack = await self.services.room_rulepack(ctx)
+        except Exception:
+            pack = None
+        catalog = getattr(pack, "spells", None)
+        if catalog is None:
+            return i18n.t("kp_tools.spell_lookup.no_catalog")
+        found = catalog.get(str(spell or ""))
+        if found is None:
+            return i18n.t("kp_tools.spell_lookup.unknown", name=str(spell or ""))
+        parts = [
+            i18n.t(
+                "kp_tools.spell_lookup.header",
+                name=found.display_name(ctx.locale),
+                level=i18n.t("kp_tools.spell_lookup.cantrip") if found.level == 0 else str(found.level),
+                school=str(found.school or "—"),
+            )
+        ]
+        facts = [
+            i18n.t("kp_tools.spell_lookup.casting_time", value=str(found.casting_time or "—")),
+            i18n.t("kp_tools.spell_lookup.range", value=str(found.range or "—")),
+            i18n.t(
+                "kp_tools.spell_lookup.components",
+                value=", ".join(found.components) if found.components else "—",
+            ),
+            i18n.t("kp_tools.spell_lookup.duration", value=str(found.duration or "—")),
+        ]
+        if found.concentration:
+            facts.append(i18n.t("kp_tools.spell_lookup.concentration"))
+        if found.attack:
+            facts.append(i18n.t("kp_tools.spell_lookup.attack"))
+        if found.save:
+            ability = str(found.save.get("ability") or "—")
+            success = str(found.save.get("success") or "none")
+            facts.append(
+                i18n.t(
+                    "kp_tools.spell_lookup.save",
+                    ability=ability,
+                    success=i18n.t("kp_tools.spell_lookup.save_half") if success == "half" else (
+                        i18n.t("kp_tools.spell_lookup.save_none")
+                    ),
+                )
+            )
+        lines = [i18n.t("kp_tools.spell_lookup.facts", facts="; ".join(facts))]
+        if found.damage:
+            rendered = " + ".join(f"{component.roll} {component.type}".strip() for component in found.damage)
+            lines.append(i18n.t("kp_tools.spell_lookup.damage", damage=rendered))
+        scaling = found.scaling or {}
+        if isinstance(scaling, Mapping) and scaling:
+            add_text = " + ".join(
+                f"{component.get('roll', '')} {component.get('type', '')}".strip()
+                for component in (scaling.get("add") or [])
+                if isinstance(component, Mapping)
+            )
+            every = scaling.get("every", 1)
+            lines.append(i18n.t("kp_tools.spell_lookup.scaling", every=str(every), add=add_text or "—"))
+        description = found.description
+        if isinstance(description, Mapping):
+            base = str(ctx.locale or "en").replace("_", "-").split("-")[0].casefold()
+            text = description.get(base) or description.get("en") or ""
+            if text:
+                lines.append(str(text))
+        return "\n".join(parts + lines)
+
     @tool(read_only=False, needs="spells")
     async def cast_spell(
         self, ctx: AgentCtx, *, spell: str, target: str = "", slot_level: int = 0
@@ -1530,8 +1639,13 @@ class InitiativeTools:
         narrates the outcome. `slot_level` casts at a higher level (scaling
         damage, consuming that slot pool); omit it to cast at the spell's own
         level. `target` names one combatant; omit it only when the spell needs
-        no target (a buff or a no-target effect). Requires an active combat and
-        the caster's turn, exactly like `.cast`."""
+        no target (a buff or a no-target effect).
+
+        IN ACTIVE COMBAT this requires the caster's turn, exactly like `.cast`.
+        OUTSIDE combat, no-target utility/self spells still settle for real
+        (known-spell check, slot spend) through the out-of-combat cast lane —
+        use it for ritual-style and utility casting instead of narrating a free
+        cast; attack and save spells refuse there and need a real combat."""
         i18n = self.services.i18n.with_locale(ctx.locale)
         if self._command_router is None:
             return i18n.t("kp_tools.cast.unavailable")
@@ -1704,6 +1818,22 @@ class InitiativeTools:
                         initiative=combatant.get("initiative", 0),
                     )
                 )
+                # Public conditions ride the list too — WHO IS CONCENTRATING ON WHAT
+                # is table knowledge the AI needs to narrate breaks and counters.
+                public_conditions = [
+                    str(condition.get("label") or condition.get("id") or "")
+                    for condition in (combatant.get("conditions") or [])
+                    if isinstance(condition, Mapping) and condition.get("visibility", "public") == "public"
+                ]
+                public_conditions = [text for text in public_conditions if text]
+                if public_conditions:
+                    lines.append(
+                        i18n.t(
+                            "kp_tools.initiative.conditions",
+                            name=str(combatant.get("name") or combatant_id),
+                            conditions=", ".join(public_conditions),
+                        )
+                    )
             return "\n".join(lines)
         if action == "clear":
             updated = end_combat(state) if state.phase in {"pending", "active"} else state

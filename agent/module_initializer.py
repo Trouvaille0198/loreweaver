@@ -486,7 +486,7 @@ class ModuleInitializer:
                 {
                     "name": f"场景{i + 1}",
                     "focus": "探索",
-                    "description": para[:200],
+                    "description": para[:1200],
                     "keeper_notes": "",
                     "npcs_present": [],
                     "clues": [],
@@ -506,7 +506,7 @@ class ModuleInitializer:
                 npcs.append(
                     {
                         "name": name,
-                        "description": self._clean_markdown(body)[:800],
+                        "description": self._clean_markdown(body)[:3000],
                         "secret": "",
                         "role": "",
                     }
@@ -551,14 +551,14 @@ class ModuleInitializer:
                 truths = [
                     {
                         "name": self._clean_markdown(heading),
-                        "description": self._clean_markdown(body)[:2000],
+                        "description": self._clean_markdown(body)[:6000],
                         "revealed_by": "",
                     }
                     for heading, body in subsections
                     if self._clean_markdown(body)
                 ]
             else:
-                truths = [{"name": "模组真相", "description": self._clean_markdown(truth_section)[:2000], "revealed_by": ""}]
+                truths = [{"name": "模组真相", "description": self._clean_markdown(truth_section)[:6000], "revealed_by": ""}]
 
         timeline = []
         for entry in self._markdown_list_entries(timeline_section):
@@ -572,14 +572,14 @@ class ModuleInitializer:
                 {
                     "name": self._clean_markdown(heading),
                     "type": "",
-                    "description": self._clean_markdown(body)[:1000],
+                    "description": self._clean_markdown(body)[:3000],
                     "location": "",
                 }
                 for heading, body in threat_blocks
                 if self._clean_markdown(body)
             ]
         elif threat_section:
-            threats = [{"name": "模组威胁", "type": "", "description": self._clean_markdown(threat_section)[:1000], "location": ""}]
+            threats = [{"name": "模组威胁", "type": "", "description": self._clean_markdown(threat_section)[:3000], "location": ""}]
 
         return {
             "scenes": scenes,
@@ -587,10 +587,10 @@ class ModuleInitializer:
             "clues": clues,
             "items": items,
             "timeline": timeline,
-            "background": text[:500] if len(text) > 500 else text,
+            "background": text[:4000] if len(text) > 4000 else text,
             "threats": threats,
             "truths": truths,
-            "summary": text[:100] if len(text) > 100 else text,
+            "summary": text[:600] if len(text) > 600 else text,
         }
 
     @staticmethod

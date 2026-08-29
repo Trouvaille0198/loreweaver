@@ -330,6 +330,7 @@ class ModuleAdminService:
                         "content": str(entry.get("content") or ""),
                         "keys": keys,
                         "secret": bool(entry.get("secret", False)),
+                        "category": category,
                         # The entry's bound illustration (NPC portraits etc.) —
                         # rendered beside the entry, not in the material gallery.
                         "image": str(entry.get("image") or ""),
@@ -382,6 +383,7 @@ class ModuleAdminService:
                         "lore": str(it.get("lore") or ""),
                         "origin": str(it.get("origin") or ""),
                         "original_holder": str(it.get("original_holder") or ""),
+                        "plot_role": str(it.get("plot_role") or ""),
                         "quantity": it.get("quantity", 1) if isinstance(it.get("quantity"), int) else 1,
                         "bonus": dict(it.get("bonus") or {}),
                     }

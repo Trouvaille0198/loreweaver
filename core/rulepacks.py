@@ -299,6 +299,25 @@ class CommandBinding:
 
 
 @dataclass(frozen=True)
+class RaceEntry:
+    """One playable race's pack data. Only ``bonuses`` are mechanical — they ride
+    the character-creation lane onto the base ability scores. The rest are display
+    facts resolved from the sheet's race name at read time, never stored."""
+
+    id: str
+    name: Mapping[str, str]
+    aliases: tuple[str, ...]
+    bonuses: Mapping[str, int]
+    speed: int
+    darkvision: int
+    traits: Mapping[str, str]
+
+    def display_name(self, locale: str) -> str:
+        base = str(locale or "").replace("_", "-").split("-")[0].casefold()
+        return self.name.get(base) or self.name.get("en") or self.id
+
+
+@dataclass(frozen=True)
 class RulePack:
     """Loaded command rule-pack with flattened alias resolution."""
 
@@ -330,6 +349,9 @@ class RulePack:
     # The pack's spell catalog (loaded from `runtime.spells_file`, a sibling
     # YAML in the pack's own directory). None when the pack declares none.
     spells: Any = None
+    # Playable races (`races:` block): creation-time ability bonuses plus display
+    # facts (speed/darkvision/traits) resolvable from the sheet's race field.
+    races: dict[str, RaceEntry] = field(default_factory=dict)
     # The pack's genre/tone guidance for AI authoring lanes (`agent.forge`),
     # keyed by locale (``{"en": …, "zh": …}``). Declared in the pack YAML as
     # ``genre:``; the module forge injects it into authoring prompts so a
@@ -365,6 +387,26 @@ class RulePack:
     def resolve_skill(self, name: str) -> str | None:
         """Resolve a player-entered skill/attribute name to this pack's canonical key."""
         return self.alias_to_canonical.get(_normalize_alias(name))
+
+    def resolve_race(self, name: str) -> RaceEntry | None:
+        """Resolve the sheet's free-text race field ("半精灵", "Half-Elf", a parenthetical
+        gloss, …) to the pack's race data. Unknown names pass through as None so custom
+        or homebrew races simply carry no mechanical data."""
+        text = str(name or "").strip()
+        if not text or not self.races:
+            return None
+        key = _normalize_alias(text)
+        for open_c, close_c in (("(", ")"), ("（", "）")):
+            if close_c in key:
+                cut = key.find(open_c)
+                if cut > 0:
+                    key = key[:cut].rstrip()
+        for entry in self.races.values():
+            if key in {_normalize_alias(entry.id)} | {_normalize_alias(alias) for alias in entry.aliases}:
+                return entry
+            if key in {_normalize_alias(str(value)) for value in entry.name.values()}:
+                return entry
+        return None
 
     def display_name(self, name: str, locale: str) -> str:
         """Localized display name for a canonical key; falls back to the key itself.
@@ -564,11 +606,55 @@ def _build_rulepack(
         turn_checks=_parse_turn_checks_section(pack_id, data.get("turn_checks")),
         runtime_spec=runtime_spec,
         spells=_load_pack_spells(pack_id, runtime_spec, script_loader),
+        races=_parse_races_section(pack_id, data.get("races")),
         genre=genre,
     )
 
 
 _TURN_CHECK_KEYS = {"id", "when", "condition", "instruction", "max_rounds", "enabled"}
+
+
+def _parse_races_section(pack_id: str, raw: Any) -> dict[str, RaceEntry]:
+    """Shape-validate a pack's ``races:`` table. Bonuses are the mechanical facts and
+    must be ``<attr key>: <int>``; speed/darkvision ints; traits/name/aliases locale or
+    name mappings. A race with no bonuses is fine (display-only data)."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise ValueError(f"rulepack '{pack_id}': 'races' must be a mapping of race entries")
+    races: dict[str, RaceEntry] = {}
+    for race_id, raw_entry in raw.items():
+        if not isinstance(raw_entry, Mapping):
+            raise ValueError(f"rulepack '{pack_id}': race {race_id!r} must be a mapping")
+        bonuses_raw = raw_entry.get("bonuses") or {}
+        if not isinstance(bonuses_raw, Mapping):
+            raise ValueError(f"rulepack '{pack_id}': race {race_id!r} 'bonuses' must be a mapping")
+        bonuses: dict[str, int] = {}
+        for attr, bonus in bonuses_raw.items():
+            if isinstance(bonus, bool) or not isinstance(bonus, int):
+                raise ValueError(f"rulepack '{pack_id}': race {race_id!r} bonus {attr!r} must be an integer")
+            bonuses[str(attr)] = int(bonus)
+        name_raw = raw_entry.get("name")
+        if not isinstance(name_raw, Mapping) or not any(str(v).strip() for v in name_raw.values()):
+            raise ValueError(f"rulepack '{pack_id}': race {race_id!r} needs a locale 'name' mapping")
+        traits_raw = raw_entry.get("traits") or {}
+        if not isinstance(traits_raw, Mapping):
+            raise ValueError(f"rulepack '{pack_id}': race {race_id!r} 'traits' must be a locale mapping")
+        speed = raw_entry.get("speed", 30)
+        darkvision = raw_entry.get("darkvision", 0)
+        for label, value in (("speed", speed), ("darkvision", darkvision)):
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ValueError(f"rulepack '{pack_id}': race {race_id!r} {label!r} must be a non-negative integer")
+        races[str(race_id)] = RaceEntry(
+            id=str(race_id),
+            name={str(k): str(v).strip() for k, v in name_raw.items() if str(v).strip()},
+            aliases=tuple(str(alias) for alias in (raw_entry.get("aliases") or [])),
+            bonuses=bonuses,
+            speed=int(speed),
+            darkvision=int(darkvision),
+            traits={str(k): str(v).strip() for k, v in traits_raw.items() if str(v).strip()},
+        )
+    return races
 
 
 def _parse_turn_checks_section(pack_id: str, raw: Any) -> tuple[dict[str, Any], ...]:
