@@ -330,7 +330,7 @@
   "commands.reset.failed": "战役重置中途失败；本房间以外的数据未受影响。再次发送 `.reset confirm` 清理剩余部分。",
   "commands.reset.scope.all": "全部——角色、模组、设定、媒体与剧情",
   "commands.reset.scope.chars": "剧情与队伍的角色（保留模组与设定）",
-  "commands.reset.scope.story": "剧情与进度（保留角色、模组、设定与媒体）",
+  "commands.reset.scope.story": "剧情与进度，聊天里的配图一并清掉（保留角色、模组、设定与媒体文件）",
   "commands.reset.usage": "用法：`.reset`（只清剧情，保留角色+模组） · `.reset chars`（换新角色，保留模组） · `.reset all`（全部清空），然后在 {seconds} 秒内 `.reset confirm`。",
   "commands.roll.hidden": "暗骰：{result}",
   "commands.roll.invalid": "无效的骰子表达式：{expr}",

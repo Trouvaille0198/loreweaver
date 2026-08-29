@@ -250,16 +250,16 @@ TRPG_SCRIBE__REASONING_EFFORT=low
 
 ```console
 $ .reset
-This will permanently clear the story and progress only (keeping your characters, the module, lore
-and media). Room settings (language, house rules) and connections survive. Send `.reset confirm`
-within 120s to proceed.
+This will permanently clear the story and progress, including the pictures posted in the chat
+(keeping your characters, the module, lore and media files). Room settings (language, house rules)
+and connections survive. Send `.reset confirm` within 120s to proceed.
 
 $ .reset all
 This will permanently clear EVERYTHING — characters, the module, lore, media and story. Room settings
 (language, house rules) and connections survive. Send `.reset confirm` within 120s to proceed.
 ```
 
-- `.reset`——只清故事和进度。角色、模组、设定、媒体都留着。
+- `.reset`——清故事、进度和聊天里发过的配图。角色、模组、设定、媒体文件都留着。
 - `.reset chars`——顺便重掷角色，模组留着。
 - `.reset all`——全部抹掉。
 

@@ -60,7 +60,6 @@ GOLDEN_ALL_KEYS = frozenset(
         "module_init_status",
         "world_import",
         "room_hooks",
-        "media_history",
         "audio_library",
         "audio_state",
         "forge_module_last",
@@ -84,32 +83,74 @@ GOLDEN_SURVIVING_KEYS = frozenset(
     }
 )
 
-# The one place this file is NOT a copy of the pre-M23 tables. These three survived every
-# reset before M23 only because no cleanup list had ever named them; the WS1 write-surface
-# scan surfaced them, and the owner ruled on 2026-08-14 that all three go with the story.
-# Kept as their own set so the golden tables above stay an honest record of what was.
-POST_M23_STORY_KEYS = frozenset({"scribe_whispers", "director_images", "director_pregen"})
+# The one place this file is NOT a copy of the pre-M23 tables. The first three survived
+# every reset before M23 only because no cleanup list had ever named them; the WS1
+# write-surface scan surfaced them, and the owner ruled on 2026-08-14 that all three go
+# with the story. `media_history` joined them on 2026-08-29: the broadcast-media index
+# is narrative session (a fresh story must not replay the old pictures), while the blob
+# files it points at stay with the `room_media` facet at `all` — pregen portraits must
+# outlive the story their characters do. The last four are facets that landed after the
+# tables were written without ever syncing back (found by diffing the registry against
+# the tables on 2026-08-29).
+POST_M23_STORY_KEYS = frozenset(
+    {
+        "scribe_whispers",
+        "director_images",
+        "director_pregen",
+        "media_history",
+        "combat_state",
+        "hook_injections",
+        "module_share",
+        "settle_pending",
+    }
+)
 
 # Same honest-record split on the document-type side: no pre-M23 cleanup list named the
-# registered `media` document type, so `.reset all` spared it. The M23 media facet claims
-# the type at reset_scope="all", so a full reset now wipes it — a post-M23 behaviour
-# increment, pinned explicitly rather than folded into the golden tables.
-POST_M23_ALL_DOC_TYPES = frozenset({"media"})
+# registered `media` document type, so `.reset` spared it. The M23 media facet claims the
+# type, and since 2026-08-29 at reset_scope="story" (the frame contract rides with the
+# broadcast-media index) — so every scope now wipes it — a post-M23 behaviour increment,
+# pinned explicitly rather than folded into the golden tables.
+POST_M23_STORY_DOC_TYPES = frozenset({"media"})
+# `action_result:` is the combat facet's story-slice of the prefix space (a battle's dice
+# log goes with the story it belongs to).
+POST_M23_STORY_PREFIXES = frozenset({"action_result:"})
+# Everything below was added to the registry after the tables were written and never
+# synced back — found by diffing the registry against the tables on 2026-08-29. All-scope
+# module-content families (items, encounters, statblocks, the module brief and its import
+# bookkeeping) and the media/index keys that ride with them.
+POST_M23_ALL_DOC_TYPES = frozenset(
+    {"clue_log", "encounter", "item", "item_catalog", "module_brief", "statblock"}
+)
+POST_M23_ALL_KEYS = frozenset(
+    {
+        "active_module",
+        "dev_mount",
+        "generation_progress",
+        "module_import_name",
+        "module_import_status",
+        "module_media_index",
+        "module_source",
+        "pregen_media_jobs",
+        "room_system",
+        "worldbook_active_source",
+    }
+)
+POST_M23_ALL_PREFIXES = frozenset({"generation_progress:"})
 GOLDEN_SURVIVING_DOC_TYPES = frozenset({"table_habits"})
 
 
 def _golden_targets(scope: str) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
-    doc_types = set(GOLDEN_STORY_DOC_TYPES)
+    doc_types = set(GOLDEN_STORY_DOC_TYPES) | POST_M23_STORY_DOC_TYPES
     keys = set(GOLDEN_STORY_KEYS) | set(POST_M23_STORY_KEYS)
-    prefixes = set(GOLDEN_STORY_PREFIXES)
+    prefixes = set(GOLDEN_STORY_PREFIXES) | set(POST_M23_STORY_PREFIXES)
     if scope in ("chars", "all"):
         doc_types |= GOLDEN_CHARS_DOC_TYPES
         keys |= GOLDEN_CHARS_KEYS
         prefixes |= GOLDEN_CHARS_PREFIXES
     if scope == "all":
         doc_types |= GOLDEN_ALL_DOC_TYPES | POST_M23_ALL_DOC_TYPES
-        keys |= GOLDEN_ALL_KEYS
-        prefixes |= GOLDEN_ALL_PREFIXES
+        keys |= GOLDEN_ALL_KEYS | POST_M23_ALL_KEYS
+        prefixes |= GOLDEN_ALL_PREFIXES | POST_M23_ALL_PREFIXES
     return frozenset(doc_types), frozenset(keys), frozenset(prefixes)
 
 
@@ -126,6 +167,7 @@ async def _populate(services, chat_key: str) -> None:
         GOLDEN_STORY_DOC_TYPES
         | GOLDEN_CHARS_DOC_TYPES
         | GOLDEN_ALL_DOC_TYPES
+        | POST_M23_STORY_DOC_TYPES
         | POST_M23_ALL_DOC_TYPES
         | GOLDEN_SURVIVING_DOC_TYPES
     )
@@ -146,11 +188,18 @@ async def _populate(services, chat_key: str) -> None:
         | POST_M23_STORY_KEYS
         | GOLDEN_CHARS_KEYS
         | GOLDEN_ALL_KEYS
+        | POST_M23_ALL_KEYS
         | GOLDEN_SURVIVING_KEYS
     )
     for key in sorted(every_key):
         await services.store.state_set(chat_key, key, "x")
-    every_prefix = GOLDEN_STORY_PREFIXES | GOLDEN_CHARS_PREFIXES | GOLDEN_ALL_PREFIXES
+    every_prefix = (
+        GOLDEN_STORY_PREFIXES
+        | GOLDEN_CHARS_PREFIXES
+        | GOLDEN_ALL_PREFIXES
+        | POST_M23_STORY_PREFIXES
+        | POST_M23_ALL_PREFIXES
+    )
     for prefix in sorted(every_prefix):
         await services.store.state_set(chat_key, f"{prefix}sample", "x")
 
@@ -181,17 +230,25 @@ async def test_reset_wipes_exactly_what_the_pre_registry_tables_wiped(tmp_path, 
         | POST_M23_STORY_KEYS
         | GOLDEN_CHARS_KEYS
         | GOLDEN_ALL_KEYS
+        | POST_M23_ALL_KEYS
         | GOLDEN_SURVIVING_KEYS
     )
     for key in sorted(all_keys - wiped_keys):
         assert key in surviving_rows, f"`.reset {scope}` wiped {key!r}, which used to survive"
-    all_prefixes = GOLDEN_STORY_PREFIXES | GOLDEN_CHARS_PREFIXES | GOLDEN_ALL_PREFIXES
+    all_prefixes = (
+        GOLDEN_STORY_PREFIXES
+        | GOLDEN_CHARS_PREFIXES
+        | GOLDEN_ALL_PREFIXES
+        | POST_M23_STORY_PREFIXES
+        | POST_M23_ALL_PREFIXES
+    )
     for prefix in sorted(all_prefixes - wiped_prefixes):
         assert f"{prefix}sample" in surviving_rows, f"`.reset {scope}` wiped {prefix}*, which used to survive"
     all_types = (
         GOLDEN_STORY_DOC_TYPES
         | GOLDEN_CHARS_DOC_TYPES
         | GOLDEN_ALL_DOC_TYPES
+        | POST_M23_STORY_DOC_TYPES
         | POST_M23_ALL_DOC_TYPES
         | GOLDEN_SURVIVING_DOC_TYPES
     )

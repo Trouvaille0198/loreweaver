@@ -330,7 +330,7 @@
   "commands.reset.failed": "Campaign reset failed partway; nothing outside this room was touched. Send `.reset confirm` again to clear the rest.",
   "commands.reset.scope.all": "EVERYTHING — characters, the module, lore, media and story",
   "commands.reset.scope.chars": "the story and the party's characters (keeping the module and lore)",
-  "commands.reset.scope.story": "the story and progress only (keeping your characters, the module, lore and media)",
+  "commands.reset.scope.story": "the story and progress, including the pictures posted in the chat (keeping your characters, the module, lore and media files)",
   "commands.reset.usage": "Usage: `.reset` (story only, keeps characters + module) · `.reset chars` (new characters, keeps module) · `.reset all` (erase everything), then `.reset confirm` within {seconds}s.",
   "commands.roll.hidden": "Hidden roll: {result}",
   "commands.roll.invalid": "Invalid dice expression: {expr}",

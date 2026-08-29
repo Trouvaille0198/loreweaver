@@ -326,16 +326,16 @@ settings (language, house rules, enabled skills), so nobody has to be re-invited
 
 ```console
 $ .reset
-This will permanently clear the story and progress only (keeping your characters, the module, lore
-and media). Room settings (language, house rules) and connections survive. Send `.reset confirm`
-within 120s to proceed.
+This will permanently clear the story and progress, including the pictures posted in the chat
+(keeping your characters, the module, lore and media files). Room settings (language, house rules)
+and connections survive. Send `.reset confirm` within 120s to proceed.
 
 $ .reset all
 This will permanently clear EVERYTHING — characters, the module, lore, media and story. Room settings
 (language, house rules) and connections survive. Send `.reset confirm` within 120s to proceed.
 ```
 
-- `.reset` — story and progress only. Characters, module, lore and media stay.
+- `.reset` — story and progress, including the pictures posted in the chat. Characters, module, lore and media files stay.
 - `.reset chars` — also rolls new characters. The module stays.
 - `.reset all` — erases everything.
 
