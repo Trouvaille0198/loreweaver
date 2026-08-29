@@ -16,7 +16,7 @@ from gateway.avatar import AvatarError, set_target_avatar, set_user_avatar
 from gateway.commands.rooms import _is_keeper
 from gateway.commands.types import CommandCtx
 from gateway.hub import Event
-from gateway.imagegen import allow_imagegen_request, gather_image_reference, image_name
+from gateway.imagegen import allow_imagegen_request, gather_image_reference, image_name, imagegen_failure_text
 from gateway.media import media_frame, publish_media
 from gateway.ops import (
     is_media_enabled,
@@ -465,7 +465,7 @@ class MediaCommands:
                     ),
                 )
         except ImageGenError as exc:
-            await self._image_notify(ctx, ctx.i18n.t(f"commands.avatar.error.{exc.code}"))
+            await self._image_notify(ctx, imagegen_failure_text(ctx.i18n, exc, key_prefix="commands.avatar.error", chat_key=ctx.chat_key))
         except Exception as exc:
             await self._image_notify(ctx, ctx.i18n.t("commands.image.failed", error=str(exc)))
 
@@ -773,7 +773,7 @@ class MediaCommands:
         except AvatarError as exc:
             return ctx.i18n.t(f"commands.avatar.error.{exc.code}")
         except ImageGenError as exc:
-            return ctx.i18n.t(f"commands.avatar.error.{exc.code}")
+            return imagegen_failure_text(ctx.i18n, exc, key_prefix="commands.avatar.error", chat_key=ctx.chat_key)
         except Exception as exc:
             return ctx.i18n.t("commands.avatar.failed", error=str(exc))
 

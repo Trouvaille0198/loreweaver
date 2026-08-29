@@ -14,6 +14,7 @@ from gateway.imagegen import (
     allow_imagegen_request,
     gather_image_reference,
     image_name,
+    imagegen_failure_text,
     release_imagegen_slot,
 )
 from gateway.media import media_frame, publish_media
@@ -201,7 +202,7 @@ class ImageTools:
                 ),
             )
         except ImageGenError as exc:
-            await self._image_notify(ctx, i18n.t(f"kp_tools.image.generate.error.{exc.code}"))
+            await self._image_notify(ctx, imagegen_failure_text(i18n, exc, key_prefix="kp_tools.image.generate.error", chat_key=ctx.chat_key))
         except Exception as exc:
             await self._image_notify(ctx, i18n.t("kp_tools.image.generate.failed", error=str(exc)))
         finally:

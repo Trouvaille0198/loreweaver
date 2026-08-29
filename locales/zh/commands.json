@@ -43,6 +43,7 @@
   "commands.image.failed": "图片生成失败：{error}",
   "commands.image.generated": "已发送图片到房间（{kind}）：{file}（{hash}）。",
   "commands.image.generating": "正在生成图片…",
+  "commands.imagegen.error_detail": "{message}（{detail}）",
   "commands.image.no_recent_text": "没有最近的守秘人叙述可用于生图。请先推进一回合，或用 `.image <描述>`。",
   "commands.image.usage": "用法：.image [scene|portrait|clue|combat] <描述>",
   "commands.image.reference_hint": "参考图仅作为风格与氛围参考：保留其中的环境、光线、氛围和构图，但不要将图中的人物或人脸提取为主体或加以再现。",

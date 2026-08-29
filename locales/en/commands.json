@@ -43,6 +43,7 @@
   "commands.image.failed": "Image generation failed: {error}",
   "commands.image.generated": "Image sent to the room ({kind}): {file} ({hash}).",
   "commands.image.generating": "Generating image...",
+  "commands.imagegen.error_detail": "{message} ({detail})",
   "commands.image.no_recent_text": "No recent Keeper narration to depict. Run a turn first, or use `.image <description>`.",
   "commands.image.usage": "Usage: .image [scene|portrait|clue|combat] <description>",
   "commands.image.reference_hint": "The reference image is only a style/atmosphere guide: keep its environment, lighting, mood and composition, but do NOT extract or reproduce any person or face from it as the subject.",
