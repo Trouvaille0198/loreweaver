@@ -64,10 +64,11 @@ structured data for catch-up browsers instead of a trimmed text reply. A
 pre-2.7 client never sends the request and ignores the reply.
 
 **2.6 (additive)** adds optional `mentions` on `narrative` frames: the server
-annotates NPC names in `text` as `[name](npc://<id>)` markdown links and attaches
-each mentioned NPC's PLAYER-visible card (`name`, `public_description`, `location`,
-`status`, `avatar`, `public_memory`) — never keeper-side knowledge. A pre-2.6
-client ignores the unknown field and renders the link as plain text.
+annotates tracked entity names in `text` as typed markdown links and attaches each
+mentioned entity's PLAYER-visible card. NPC cards include public identity and state
+(`name`, `aliases`, `pronouns`, `public_description`, `location`, `status`, `avatar`,
+`public_memory`, and non-default `relationships`) — never keeper-side knowledge.
+A pre-2.6 client ignores the unknown field and renders the link as plain text.
 
 **2.5 (additive)** adds `options` on `admin_generate`: for `kind:"module"`, the keeper's
 per-generation opt-ins for extra content — `media` (module illustrations from a closed
@@ -182,7 +183,7 @@ connections receive `error too_many_connections` before `join` is read.
   `{type:"audio_control", id:string, action:"play"|"stop"|"pause"|"resume"|"volume", layer:"bgm"|"ambience"|"sfx", hash?:string, mime?:string, name?:string, title?:string, loop?:boolean, volume?:number, fade_ms?:int, position_ms?:int, server_ts?:number}`
 - `audio_state` — best-effort persisted BGM/ambience state, replayed on join:
   `{type:"audio_state", layers:[{layer:"bgm"|"ambience"|"sfx", hash?:string, mime?:string, name?:string, title?:string, playing:boolean, volume?:number, loop?:boolean, started_at?:number}]}`
-  `{type:"narrative", id:string, speaker:"kp"|"player"|"system"|"npc", name?:string, text:string, format:"markdown"|"plain", mentions?:[{id:string, kind?:"npc"|"item"|"clue", name:string, card?:{name?:string, public_description?:string, location?:string, status?:string, avatar?:string, public_memory?:string[], kind?:string, slot?:string, quantity?:number, equipped_slot?:string, description?:string, effect?:string, content?:string, found_turn?:number}}]}`
+  `{type:"narrative", id:string, speaker:"kp"|"player"|"system"|"npc", name?:string, text:string, format:"markdown"|"plain", mentions?:[{id:string, kind?:"npc"|"item"|"clue", name:string, card?:{name?:string, public_description?:string, location?:string, status?:string, avatar?:string, public_memory?:string[], aliases?:string[], pronouns?:string, relationships?:{target:string, tracks:{track:string, value:number}[]}[], kind?:string, slot?:string, quantity?:number, equipped_slot?:string, description?:string, effect?:string, content?:string, found_turn?:number}}]}`
   `{type:"narrative", id:string, speaker:"kp"|"player"|"system"|"npc", name?:string, text:string, format:"markdown"|"plain"}`
   For `speaker:"npc"`, `name` carries the NPC name. A `narrative` frame always
   carries the full, final text. When its `id` matches a draft bubble the client

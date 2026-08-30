@@ -35,6 +35,10 @@ from net.tui_server import (
 _INDEX = "index.html"
 _MODULE_DOWNLOAD_PREFIX = "/__module-download/"
 _MODULE_DOWNLOAD_TOKEN = re.compile(r"^[A-Za-z0-9_-]{40,}$")
+# Browser .lwpack uploads ride ONE admin frame as base64 (module_pack_upload, same
+# 64 MB cap as the source bundle lane): raw × 4/3 plus JSON overhead must fit the
+# websocket message limit, so the web server raises its cap past the media sizes.
+_PACK_UPLOAD_FRAME_BYTES = 96 * 1024 * 1024
 
 
 class WebServer(TuiServer):
@@ -51,7 +55,11 @@ class WebServer(TuiServer):
         if self._server is None:
             ssl_context = _build_ssl_context(self.services.settings)
             tui = self.services.settings.tui
-            max_size = max(tui.media_max_file_bytes, tui.audio_max_file_bytes) + _WS_MEDIA_HEADER_SLACK
+            max_size = max(
+                tui.media_max_file_bytes,
+                tui.audio_max_file_bytes,
+                _PACK_UPLOAD_FRAME_BYTES,
+            ) + _WS_MEDIA_HEADER_SLACK
             self._server = await websockets.serve(
                 self.handle,
                 self.host,

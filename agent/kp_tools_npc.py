@@ -96,7 +96,7 @@ def _coerce_field_value(field: str, value: str) -> Any:
 async def module_npc_public_fields(
     services: Services, chat_key: str, name: str
 ) -> dict[str, Any]:
-    """Return authored public fields for an exact module NPC identity.
+    """Return authored public fields for a module NPC name or explicit alias.
 
     NPC lore is the module's canonical public character definition.  When a
     module NPC is materialized as an actor, copy those fields into the NPC
@@ -112,7 +112,13 @@ async def module_npc_public_fields(
     ):
         if str(view.get("category") or "").strip().casefold() != "npc":
             continue
-        if str(view.get("title") or "").strip().casefold() != wanted:
+        title = str(view.get("title") or "").strip()
+        aliases = [
+            str(alias).strip()
+            for alias in (view.get("aliases") or [])
+            if str(alias).strip()
+        ]
+        if title.casefold() != wanted and wanted not in {alias.casefold() for alias in aliases}:
             continue
         image = str(view.get("image") or "").strip()
         avatar = ""
@@ -139,6 +145,83 @@ async def module_npc_public_fields(
             ],
         }
     return {}
+
+
+async def _module_npc_roster(services: Services, chat_key: str) -> list[dict[str, Any]]:
+    """Read the player-visible module NPC roster with identity and public clues.
+
+    The roster is deliberately built from the player projection: it can guide
+    identity reuse without exposing secret lore to the model or to a duplicate
+    check.
+    """
+    roster: list[dict[str, Any]] = []
+    for _doc, view in await services.documents.list_views(
+        chat_key, LORE_DOC_TYPE, PLAYER_VIEWER
+    ):
+        if str(view.get("category") or "").strip().casefold() != "npc":
+            continue
+        title = str(view.get("title") or "").strip()
+        if not title:
+            continue
+        roster.append(
+            {
+                "title": title,
+                "aliases": [
+                    str(alias).strip()
+                    for alias in (view.get("aliases") or [])
+                    if str(alias).strip()
+                ],
+                "keys": [
+                    str(key).strip()
+                    for key in (view.get("keys") or [])
+                    if str(key).strip()
+                ],
+                "description": str(view.get("content") or "").strip(),
+            }
+        )
+    return roster
+
+
+def _compact_text(value: str) -> str:
+    """Keep CJK/word characters for deterministic duplicate comparison."""
+    return "".join(char.casefold() for char in value if char.isalnum())
+
+
+def _bigrams(value: str) -> set[str]:
+    return {value[index : index + 2] for index in range(max(0, len(value) - 1))}
+
+
+def _module_duplicate_candidate(one_line: str, roster: list[dict[str, Any]]) -> str | None:
+    """Find a likely authored NPC duplicate without guessing on weak evidence.
+
+    A candidate needs both an authored identity clue (a key/alias) and substantial
+    phrase overlap with the public description. That catches a renamed copy such
+    as the child described as ``皮普`` while leaving ordinary new townsfolk free
+    to use ``sketch_npc``.
+    """
+    probe = _compact_text(one_line)
+    if len(probe) < 8:
+        return None
+    probe_grams = _bigrams(probe)
+    best: tuple[float, str] | None = None
+    for entry in roster:
+        identity_terms = [entry["title"], *entry["aliases"], *entry["keys"]]
+        key_hits = {
+            _compact_text(term)
+            for term in identity_terms
+            if len(_compact_text(term)) >= 2 and _compact_text(term) in probe
+        }
+        if not key_hits:
+            continue
+        description = _compact_text(entry["description"])
+        shared = len(probe_grams & _bigrams(description))
+        coverage = shared / max(1, len(probe_grams))
+        score = coverage + min(shared, 18) / 100
+        if shared < 6 or coverage < 0.18:
+            continue
+        if best is None or score > best[0]:
+            best = (score, entry["title"])
+    return best[1] if best else None
 
 
 async def complete_module_npc_public_fields(
@@ -340,6 +423,19 @@ class NpcTools:
         # at all (iron rule #3). Facts they learn later arrive through `npc_learns`.
         i18n = self._i18n(ctx)
         try:
+            existing = await npc_records.find_npc_by_name_or_alias(
+                self._services.documents, ctx.chat_key, name
+            )
+            if existing is None:
+                candidate = _module_duplicate_candidate(
+                    one_line, await _module_npc_roster(self._services, ctx.chat_key)
+                )
+                if candidate is not None and candidate.casefold() != name.strip().casefold():
+                    return i18n.t(
+                        "npc.tools.create.module_duplicate",
+                        requested=name.strip(),
+                        existing=candidate,
+                    )
             module_fields = await module_npc_public_fields(
                 self._services, ctx.chat_key, name
             )
@@ -750,7 +846,9 @@ class NpcTools:
         never quote raw to players).
 
         Returns:
-            A roster with each NPC's name/location/disposition/major flag.
+            A roster with each NPC's identity, aliases, public description, source,
+            location/disposition/major flag so authored module NPCs can be reused
+            instead of re-created under a new name.
         """
         i18n = self._i18n(ctx)
         try:
@@ -759,8 +857,16 @@ class NpcTools:
             if not records:
                 return f"{banner}\n\n{i18n.t('npc.tools.list.empty')}"
 
+            module_roster = await _module_npc_roster(self._services, ctx.chat_key)
+            module_by_name: dict[str, dict[str, Any]] = {}
+            for entry in module_roster:
+                for identity in [entry["title"], *entry["aliases"]]:
+                    module_by_name[identity.casefold()] = entry
             lines = [i18n.t("npc.tools.list.header", count=len(records))]
             for record in records:
+                authored = module_by_name.get(record.name.strip().casefold())
+                aliases = authored["aliases"] if authored else record.aliases
+                description = authored["description"] if authored else record.public_description
                 lines.append(
                     i18n.t(
                         "npc.tools.list.item",
@@ -769,6 +875,9 @@ class NpcTools:
                         location=record.location or i18n.t("common.unknown"),
                         disposition=record.disposition,
                         major=i18n.t("common.yes") if record.major else i18n.t("common.no"),
+                        origin=i18n.t("npc.tools.list.origin.module" if authored else "npc.tools.list.origin.improvised"),
+                        aliases=", ".join(aliases) or i18n.t("common.none"),
+                        description=description[:240] or i18n.t("common.none"),
                     )
                 )
             return f"{banner}\n\n" + "\n".join(lines)

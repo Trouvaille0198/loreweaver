@@ -298,6 +298,27 @@ async def find_npc_by_name(documents: Any, chat_key: str, name: str) -> NpcRecor
     return None
 
 
+async def find_npc_by_name_or_alias(documents: Any, chat_key: str, name: str) -> NpcRecord | None:
+    """Return the room NPC whose canonical name or explicit alias matches ``name``.
+
+    Aliases are identity spellings, not new NPC names. Creation paths use this
+    resolver before minting an id so a model cannot create a second record by
+    switching from a module NPC's canonical name to one of its documented short
+    forms.
+    """
+    wanted = name.strip().casefold()
+    if not wanted:
+        return None
+    pairs = await _load_all(documents, chat_key)
+    for _npc_id, record in pairs:
+        if record.name.strip().casefold() == wanted:
+            return record
+    for _npc_id, record in pairs:
+        if any(alias.strip().casefold() == wanted for alias in record.aliases or []):
+            return record
+    return None
+
+
 async def player_character_names(documents: Any, chat_key: str) -> set[str]:
     """The names this room has given to PLAYER characters, casefolded: every character
     sheet not owned by an AI companion (the sheet name IS the identity — see
@@ -369,7 +390,9 @@ async def create_npc(
     ids = [npc_id for npc_id, _record in pairs]
     wanted = name.strip().lower()
     for _npc_id, existing in pairs:
-        if existing.name.strip().lower() == wanted:
+        if existing.name.strip().lower() == wanted or any(
+            alias.strip().lower() == wanted for alias in existing.aliases or []
+        ):
             return existing
     npc_id = _mint_slug_id(ids, name)
 

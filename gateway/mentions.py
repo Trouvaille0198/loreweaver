@@ -52,7 +52,17 @@ _ITEM_DOC_TYPE = "item"
 _CATALOG_DOC_TYPE = "item_catalog"
 _CLUE_DOC_TYPE = "clue_log"
 
-_NPC_CARD_FIELDS = ("name", "public_description", "location", "status", "avatar", "public_memory", "relationships")
+_NPC_CARD_FIELDS = (
+    "name",
+    "public_description",
+    "location",
+    "status",
+    "avatar",
+    "public_memory",
+    "aliases",
+    "pronouns",
+    "relationships",
+)
 _ITEM_CARD_FIELDS = ("name", "kind", "slot", "description", "effect", "quantity", "equipped_slot")
 _CLUE_CARD_FIELDS = ("title", "content", "found_turn")
 
