@@ -124,6 +124,7 @@ _ADMIN_REQUESTS: frozenset[str] = frozenset(
         "admin_import_presets",
         "admin_get_room_settings",
         "admin_set_room_settings",
+        "admin_npc_detail",
         "admin_list_rules",
         "admin_generate",
         "admin_update_server",
@@ -295,6 +296,8 @@ async def _dispatch_admin_frame(
     kind = frame.get("type")
     if kind == "admin_get_room_settings":
         return await _room_settings_frame(services, caller_room)
+    if kind == "admin_npc_detail":
+        return await _npc_detail_frame(services, caller_room, frame, i18n)
     if kind == "admin_set_room_settings":
         return await _set_room_settings(services, caller_room, frame, i18n)
     if kind == "admin_get_room_config":
@@ -569,6 +572,30 @@ async def _set_room_settings(services: Services, caller_room: str, frame: dict[s
             return _error("bad_request", i18n)
         await set_ai_length(services.store, chat_key, mode)
     return await _room_settings_frame(services, caller_room)
+
+
+async def _npc_detail_frame(
+    services: Services, room: str, frame: dict[str, Any], i18n: I18n
+) -> dict[str, Any]:
+    """One NPC's FULL keeper projection (persona, private knowledge, secret agenda) for
+    the mention card's keeper-only section. The broadcast mention card carries the
+    PLAYER-visible subset for everyone at the table; this frame is the per-requester
+    channel that lets a keeper's client read the rest without ever shipping it to a
+    player — the keeper gate above is the whole security story. Addressed by the NPC's
+    document id (the same id the mention link carries)."""
+    npc_id = str(frame.get("npc") or "").strip()
+    if not npc_id:
+        return {**_error("bad_request", i18n), "npc": npc_id}
+    from agent.npc import NPC_DOC_TYPE
+
+    doc = await services.documents.get(chat_key_for_room(room), NPC_DOC_TYPE, npc_id)
+    if doc is None:
+        return {**_error("not_found", i18n), "npc": npc_id}
+    return {
+        "type": "admin_npc_record",
+        "room": room,
+        "npc": {"id": doc.id, **dict(doc.data)},
+    }
 
 
 async def _room_config_frame(services: Services, room: str) -> dict[str, Any]:

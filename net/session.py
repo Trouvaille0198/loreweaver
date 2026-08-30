@@ -54,6 +54,10 @@ from net.room_backup import room_rows, room_vector_points
 
 logger = logging.getLogger(__name__)
 
+# v2.10 adds the keeper-gated `admin_npc_detail` request and its `admin_npc_record`
+# reply — the full keeper projection of one NPC record (persona, private knowledge,
+# secret agenda) so the mention card's keeper-only section can fetch it per requester;
+# the broadcast mention card stays the PLAYER-visible subset for everyone.
 # v2.9 adds `spells` (localized known-spell display names) and `race_info`
 # (pack-resolved race data: localized name/traits, speed, darkvision) on the
 # character state frame — the character page can show what a character knows
@@ -71,7 +75,7 @@ logger = logging.getLogger(__name__)
 # `panel_intent` client frame, and pack-asset resolution on the media byte channel.
 # v1.7 added declarative hook-emitted `ui` frames (core.hooks emitUI); v1.6 added
 # player-visible module variables on the state frame.
-_PROTOCOL_VERSION = "2.9"
+_PROTOCOL_VERSION = "2.10"
 # Public alias for out-of-band consumers (the `.lwpack` engine-minimum check in app.py).
 PROTOCOL_VERSION = _PROTOCOL_VERSION
 _SERVER_BANNER = "loreweaver/1"

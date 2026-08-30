@@ -15,7 +15,11 @@
 // items and discovered clues join in (`item://`, `clue://` links), and every
 // mention names its `kind`. 2.9 adds `spells` (localized known-spell display
 // names) and `race_info` (pack-resolved race data) on the character state frame.
-export const PROTOCOL_VERSION = "2.9" as const
+// 2.10 adds the keeper-gated `admin_npc_detail` request and its `admin_npc_record`
+// reply — the full keeper projection of one NPC record (persona, private knowledge,
+// secret agenda) for the mention card's keeper-only section; the broadcast mention
+// card itself stays the PLAYER-visible subset for everyone.
+export const PROTOCOL_VERSION = "2.10" as const
 
 export const FrameType = {
   Join: "join",
@@ -84,6 +88,8 @@ export const FrameType = {
   AdminKeys: "admin_keys",
   AdminRoomOp: "admin_room_op",
   AdminRoomConfig: "admin_room_config",
+  AdminNpcDetail: "admin_npc_detail",
+  AdminNpcRecord: "admin_npc_record",
   AdminError: "admin_error",
   // v1.1 additive: Layer B.4a plugin-management (KP skills, rule systems, self-extension forge).
   AdminListSkills: "admin_list_skills",
@@ -1187,6 +1193,16 @@ export interface AdminGetRoomConfigFrame {
   type: typeof FrameType.AdminGetRoomConfig
 }
 
+/** Keeper-gated (protocol 2.10): request ONE NPC's full keeper projection by its
+ * document id — the same id the mention link carries. The broadcast mention card
+ * stays the PLAYER-visible subset; this frame is the per-requester channel a
+ * keeper's client reads the rest through. The server answers from the ADMIN
+ * CONNECTION'S OWN room; a player-role connection is refused at the gate. */
+export interface AdminNpcDetailFrame {
+  type: typeof FrameType.AdminNpcDetail
+  npc: string
+}
+
 export interface AdminSetRoomModelFrame {
   type: typeof FrameType.AdminSetRoomModel
   main?: string
@@ -1424,6 +1440,39 @@ export interface AdminRoomConfigFrame {
   stored: RoomModelStored
 }
 
+/** The FULL keeper projection of one NPC record (protocol 2.10) — everything
+ * `_project_npc` hands a keeper, including the fields the broadcast mention
+ * card strips: `persona`, `style`, `secret_agenda`, the private `knowledge`
+ * ledger, `disposition`, `role`, mechanics references. Field-complete for the
+ * known record shape; unknown keys may appear (pass them through untouched). */
+export interface AdminNpcRecordData {
+  id: string
+  name: string
+  persona?: string
+  style?: string
+  public_description?: string
+  secret_agenda?: string
+  knowledge?: string[]
+  public_memory?: string[]
+  disposition?: string
+  location?: string
+  status?: string
+  role?: string
+  major?: boolean
+  aliases?: string[]
+  pronouns?: string
+  avatar?: string // media-blob content hash
+  stat_char?: string | null
+  mechanics_ref?: string | null
+  [key: string]: unknown
+}
+
+export interface AdminNpcRecordFrame {
+  type: typeof FrameType.AdminNpcRecord
+  room: string
+  npc: AdminNpcRecordData
+}
+
 // The live model catalog for `provider` (empty when the provider is a native SDK,
 // the key is missing/invalid, or /models is unreachable — client falls back to free-text).
 export interface AdminModelsFrame {
@@ -1594,6 +1643,7 @@ export type ClientFrame =
   | AdminDeleteLLMFrame
   | AdminSetEmbeddingFrame
   | AdminGetRoomConfigFrame
+  | AdminNpcDetailFrame
   | AdminSetRoomModelFrame
   | AdminSetLLMLaneFrame
   | AdminSetImagegenFrame
@@ -1641,6 +1691,7 @@ export type ServerFrame =
   | AdminConfigFrame
   | AdminLLMExportFrame
   | AdminRoomConfigFrame
+  | AdminNpcRecordFrame
   | AdminModelsFrame
   | AdminKeysFrame
   | AdminRoomOpFrame
