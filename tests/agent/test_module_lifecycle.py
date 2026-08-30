@@ -155,3 +155,66 @@ def test_text_identity_uses_source_path_not_display_name(tmp_path):
     left = identity_for_text(tmp_path / "left" / "same.md", name="Same Module")
     right = identity_for_text(tmp_path / "right" / "same.md", name="Same Module")
     assert left["source_id"] != right["source_id"]
+
+
+async def test_purge_removes_old_module_media_blobs_but_keeps_uploads(tmp_path):
+    services = _services(tmp_path)
+    room = "media-switch-room"
+    old = {
+        "schema": 1,
+        "kind": "world_card",
+        "source_id": "pack:oldpack@0.1.0:cards/old.lorecard.json",
+        "name": "Old",
+        "source": "cards/old.lorecard.json",
+        "pack_id": "oldpack",
+        "lore_sources": ["pack:oldpack@0.1.0:cards/old.lorecard.json"],
+    }
+    await publish_active_module(services, room, old)
+
+    import hashlib
+
+    from infra.media_store import ALLOWED_IMAGE_MIMES, MediaStore, PendingUpload
+
+    media = MediaStore(services.store, services.settings.data_dir, allowed_mimes=ALLOWED_IMAGE_MIMES)
+    art = b"\x89PNG\r\n\x1a\n" + b"module-art"
+    art_digest = hashlib.sha256(art).hexdigest()
+    await media.commit_bytes(
+        PendingUpload("u1", room, "image/png", len(art), "module-oldpack-npcs-1.png", "u", art_digest),
+        art,
+    )
+    upload = b"\x89PNG\r\n\x1a\n" + b"upload"
+    upload_digest = hashlib.sha256(upload).hexdigest()
+    await media.commit_bytes(
+        PendingUpload("u2", room, "image/png", len(upload), "portrait.png", "u", upload_digest),
+        upload,
+    )
+
+    await purge_active_module(services, room)
+
+    remaining = [record.name for record in await media.list_room_records(room)]
+    assert remaining == ["portrait.png"]
+    assert not media._path(room, art_digest).exists()
+    assert media._path(room, upload_digest).exists()
+
+
+async def test_purge_without_pack_id_leaves_media_untouched(tmp_path):
+    services = _services(tmp_path)
+    room = "text-module-room"
+    old = identity_for_text(tmp_path / "old.md", name="old.md")
+    await publish_active_module(services, room, old)
+
+    import hashlib
+
+    from infra.media_store import ALLOWED_IMAGE_MIMES, MediaStore, PendingUpload
+
+    media = MediaStore(services.store, services.settings.data_dir, allowed_mimes=ALLOWED_IMAGE_MIMES)
+    art = b"\x89PNG\r\n\x1a\n" + b"kept"
+    art_digest = hashlib.sha256(art).hexdigest()
+    await media.commit_bytes(
+        PendingUpload("u1", room, "image/png", len(art), "module-any-npcs-1.png", "u", art_digest),
+        art,
+    )
+
+    await purge_active_module(services, room)
+
+    assert [record.name for record in await media.list_room_records(room)] == ["module-any-npcs-1.png"]

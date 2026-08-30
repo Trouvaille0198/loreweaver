@@ -392,3 +392,190 @@ async def test_delete_room_removes_index_and_unshared_blobs(tmp_path):
     assert await store.delete_room("room-a") == 1
     assert await store.list_room_records("room-a") == []
     assert not store._path("room-a", digest).exists()
+
+
+async def test_delete_by_name_prefix_removes_only_matching_entries(tmp_path):
+    store = MediaStore(Store(), tmp_path)
+    module_a = _png_bytes(b"mod-a")
+    module_b = _png_bytes(b"mod-b")
+    upload = _png_bytes(b"upload")
+    for name, data in (
+        ("module-sword-coast-keepsakes-npcs-1.png", module_a),
+        ("module-sword-coast-keepsakes-scenes-2.png", module_b),
+        ("portrait-generated.png", upload),
+    ):
+        digest = hashlib.sha256(data).hexdigest()
+        await store.commit_bytes(
+            PendingUpload("u1", "room-a", "image/png", len(data), name, "u", digest),
+            data,
+        )
+
+    deleted = await store.delete_by_name_prefix("room-a", "module-sword-coast-keepsakes-")
+
+    assert deleted == 2
+    remaining = await store.list_room_records("room-a")
+    assert [r.name for r in remaining] == ["portrait-generated.png"]
+    assert not store._path("room-a", hashlib.sha256(module_a).hexdigest()).exists()
+    assert not store._path("room-a", hashlib.sha256(module_b).hexdigest()).exists()
+    assert store._path("room-a", hashlib.sha256(upload).hexdigest()).exists()
+
+
+async def test_delete_by_name_prefix_preserves_shared_blob_of_other_room(tmp_path):
+    store = MediaStore(Store(), tmp_path)
+    data = _png_bytes(b"shared-art")
+    digest = hashlib.sha256(data).hexdigest()
+    first_room = "room/a"
+    colliding_room = "room a"
+    await store.commit_bytes(
+        PendingUpload("u1", first_room, "image/png", len(data), "module-x-npcs-1.png", "u", digest),
+        data,
+    )
+    await store.commit_bytes(
+        PendingUpload("u2", colliding_room, "image/png", len(data), "module-x-npcs-1.png", "u", digest),
+        data,
+    )
+
+    deleted = await store.delete_by_name_prefix(first_room, "module-x-")
+
+    assert deleted == 1
+    # The colliding room's sanitized directory still indexes the same hash, so
+    # the shared blob file must survive.
+    assert store._path(first_room, digest).exists()
+    assert await store.get_record(colliding_room, digest) is not None
+
+
+async def test_delete_by_name_prefix_restores_staged_blobs_when_commit_fails(tmp_path):
+    backing = Store()
+    store = MediaStore(backing, tmp_path)
+    data = _png_bytes(b"keep-prefix")
+    digest = hashlib.sha256(data).hexdigest()
+    await store.commit_bytes(
+        PendingUpload("u1", "room-a", "image/png", len(data), "module-x-npcs-1.png", "u", digest),
+        data,
+    )
+
+    with patch.object(backing, "_commit", side_effect=OSError("disk full")):
+        with pytest.raises(OSError, match="disk full"):
+            await store.delete_by_name_prefix("room-a", "module-x-")
+
+    assert await store.get_record("room-a", digest) is not None
+    _, loaded = await store.read_bytes("room-a", digest)
+    assert loaded == data
+
+
+async def test_delete_by_name_prefix_no_match_returns_zero(tmp_path):
+    store = MediaStore(Store(), tmp_path)
+    data = _png_bytes(b"plain")
+    digest = hashlib.sha256(data).hexdigest()
+    await store.commit_bytes(
+        PendingUpload("u1", "room-a", "image/png", len(data), "scene.png", "u", digest),
+        data,
+    )
+
+    assert await store.delete_by_name_prefix("room-a", "module-nothing-") == 0
+    assert len(await store.list_room_records("room-a")) == 1
+
+
+async def test_delete_generated_images_removes_image_kinds_only(tmp_path):
+    store = MediaStore(Store(), tmp_path)
+    blobs = {
+        "scene-mist-at-dawn.png": b"\x89PNG\r\n\x1a\n" + b"s1",
+        "portrait-generated.png": b"\x89PNG\r\n\x1a\n" + b"s2",
+        "clue-gold-brooch.png": b"\x89PNG\r\n\x1a\n" + b"s3",
+        "combat-round-3.png": b"\x89PNG\r\n\x1a\n" + b"s4",
+        "avatar-marina.png": b"\x89PNG\r\n\x1a\n" + b"av",
+        "pregen-old-tinker.png": b"\x89PNG\r\n\x1a\n" + b"pg",
+        "module-sword-coast-keepsakes-npcs-1.png": b"\x89PNG\r\n\x1a\n" + b"mo",
+        "portrait.jpg": b"\x89PNG\r\n\x1a\n" + b"up",
+    }
+    for name, data in blobs.items():
+        digest = hashlib.sha256(data).hexdigest()
+        await store.commit_bytes(
+            PendingUpload("u1", "room-a", "image/png", len(data), name, "u", digest), data
+        )
+
+    deleted = await store.delete_generated_images("room-a")
+
+    assert deleted == 4
+    remaining = sorted(r.name for r in await store.list_room_records("room-a"))
+    assert remaining == [
+        "avatar-marina.png",
+        "module-sword-coast-keepsakes-npcs-1.png",
+        "portrait.jpg",
+        "pregen-old-tinker.png",
+    ]
+    for name, data in blobs.items():
+        digest = hashlib.sha256(data).hexdigest()
+        exists = store._path("room-a", digest).exists()
+        assert exists == (name not in {"scene-mist-at-dawn.png", "portrait-generated.png", "clue-gold-brooch.png", "combat-round-3.png"})
+
+
+async def test_delete_generated_images_preserves_shared_blob_of_other_room(tmp_path):
+    store = MediaStore(Store(), tmp_path)
+    data = b"\x89PNG\r\n\x1a\n" + b"shared-scene"
+    digest = hashlib.sha256(data).hexdigest()
+    first_room = "room/a"
+    colliding_room = "room a"
+    await store.commit_bytes(
+        PendingUpload("u1", first_room, "image/png", len(data), "scene-shared.png", "u", digest), data
+    )
+    await store.commit_bytes(
+        PendingUpload("u2", colliding_room, "image/png", len(data), "scene-shared.png", "u", digest), data
+    )
+
+    await store.delete_generated_images(first_room)
+
+    assert store._path(first_room, digest).exists()
+    assert await store.get_record(colliding_room, digest) is not None
+
+
+async def test_dedupe_by_name_prefix_keeps_newest_per_name(tmp_path):
+    store = MediaStore(Store(), tmp_path)
+    versions = {
+        "oldest": b"\x89PNG\r\n\x1a\n" + b"oldest",
+        "middle": b"\x89PNG\r\n\x1a\n" + b"middle",
+        "newest": b"\x89PNG\r\n\x1a\n" + b"newest",
+    }
+    digests = {}
+    for key, data in versions.items():
+        digest = hashlib.sha256(data).hexdigest()
+        digests[key] = digest
+        # SAME name — the re-import / re-generation stacking case.
+        await store.commit_bytes(
+            PendingUpload("u1", "room-a", "image/png", len(data), "module-pack-npcs-1.png", "u", digest), data
+        )
+    # Distinct timestamps: bump created_at directly so the newest is deterministic.
+    backing = store._store
+    async with backing._lock:
+        conn = backing._ensure_conn()
+        conn.execute("UPDATE media_index SET created_at = 100 WHERE hash = ?", (digests["oldest"],))
+        conn.execute("UPDATE media_index SET created_at = 200 WHERE hash = ?", (digests["middle"],))
+        conn.execute("UPDATE media_index SET created_at = 300 WHERE hash = ?", (digests["newest"],))
+        backing._commit(conn)
+    # An unrelated same-prefix name must survive untouched.
+    other = b"\x89PNG\r\n\x1a\n" + b"other"
+    other_digest = hashlib.sha256(other).hexdigest()
+    await store.commit_bytes(
+        PendingUpload("u2", "room-a", "image/png", len(other), "module-pack-scene-2.png", "u", other_digest), other
+    )
+
+    deleted = await store.dedupe_by_name_prefix("room-a", "module-pack-")
+
+    assert deleted == 2
+    remaining = sorted(r.name for r in await store.list_room_records("room-a"))
+    assert remaining == ["module-pack-npcs-1.png", "module-pack-scene-2.png"]
+    assert not store._path("room-a", digests["oldest"]).exists()
+    assert not store._path("room-a", digests["middle"]).exists()
+    assert store._path("room-a", digests["newest"]).exists()
+
+
+async def test_dedupe_by_name_prefix_no_duplicates_returns_zero(tmp_path):
+    store = MediaStore(Store(), tmp_path)
+    data = b"\x89PNG\r\n\x1a\n" + b"single"
+    digest = hashlib.sha256(data).hexdigest()
+    await store.commit_bytes(
+        PendingUpload("u1", "room-a", "image/png", len(data), "module-pack-scene-1.png", "u", digest), data
+    )
+
+    assert await store.dedupe_by_name_prefix("room-a", "module-pack-") == 0
+    assert len(await store.list_room_records("room-a")) == 1

@@ -402,3 +402,65 @@ async def test_the_export_manifest_carries_every_section_a_facet_storage_names(t
 
     for section in EXPORT_SECTIONS.values():
         assert section in snapshot, f"the export manifest lost its {section!r} section"
+
+
+async def test_reset_story_drops_generated_art_but_keeps_module_uploads_and_avatars(tmp_path):
+    services = _services(str(tmp_path))
+    chat_key = chat_key_for_room("media-town")
+
+    import hashlib
+
+    from infra.media_store import ALLOWED_IMAGE_MIMES, MediaStore, PendingUpload
+
+    store = MediaStore(services.store, services.settings.data_dir, allowed_mimes=ALLOWED_IMAGE_MIMES)
+    blobs = {
+        "scene-mist-at-dawn.png": b"\x89PNG\r\n\x1a\n" + b"scene",
+        "portrait-generated.png": b"\x89PNG\r\n\x1a\n" + b"portrait",
+        "avatar-marina.png": b"\x89PNG\r\n\x1a\n" + b"avatar",
+        "module-sword-coast-keepsakes-npcs-1.png": b"\x89PNG\r\n\x1a\n" + b"module",
+        "party-upload.jpg": b"\x89PNG\r\n\x1a\n" + b"upload",
+    }
+    for name, data in blobs.items():
+        digest = hashlib.sha256(data).hexdigest()
+        await store.commit_bytes(
+            PendingUpload("u1", chat_key, "image/png", len(data), name, "u", digest), data
+        )
+
+    result = await reset_room_state(services, chat_key, scope="story")
+
+    assert result["media_files"] == 2
+    remaining = sorted(r.name for r in await store.list_room_records(chat_key))
+    assert remaining == [
+        "avatar-marina.png",
+        "module-sword-coast-keepsakes-npcs-1.png",
+        "party-upload.jpg",
+    ]
+    for name, data in blobs.items():
+        digest = hashlib.sha256(data).hexdigest()
+        exists = store._path(chat_key, digest).exists()
+        assert exists == (name in {"avatar-marina.png", "module-sword-coast-keepsakes-npcs-1.png", "party-upload.jpg"})
+
+
+async def test_reset_all_still_clears_every_blob(tmp_path):
+    services = _services(str(tmp_path))
+    chat_key = chat_key_for_room("wipe-town")
+
+    import hashlib
+
+    from infra.media_store import ALLOWED_IMAGE_MIMES, MediaStore, PendingUpload
+
+    store = MediaStore(services.store, services.settings.data_dir, allowed_mimes=ALLOWED_IMAGE_MIMES)
+    for name, data in (
+        ("scene-x.png", b"\x89PNG\r\n\x1a\n" + b"s"),
+        ("module-pack-npcs-1.png", b"\x89PNG\r\n\x1a\n" + b"m"),
+        ("avatar-y.png", b"\x89PNG\r\n\x1a\n" + b"a"),
+    ):
+        digest = hashlib.sha256(data).hexdigest()
+        await store.commit_bytes(
+            PendingUpload("u1", chat_key, "image/png", len(data), name, "u", digest), data
+        )
+
+    result = await reset_room_state(services, chat_key, scope="all")
+
+    assert result["media_files"] == 3
+    assert await store.list_room_records(chat_key) == []
