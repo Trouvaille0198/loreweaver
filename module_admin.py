@@ -50,6 +50,7 @@ _CUSTOM_KINDS = frozenset(
         "module_pack_export",
         "module_delete",
         "module_bundle_upload",
+        "module_pack_upload",
         "module_import",
         "module_media_generate",
         "pregen_avatar",
@@ -140,6 +141,8 @@ class ModuleAdminService:
             return await self._delete(caller_room, root, payload)
         if kind == "module_bundle_upload":
             return await self._bundle_upload(root, payload)
+        if kind == "module_pack_upload":
+            return await self._pack_upload(root, payload)
         if kind == "module_import":
             requested_locale = str(payload.get("locale") or "").replace("_", "-").split("-", 1)[0].casefold()
             import_i18n = i18n.with_locale(requested_locale) if requested_locale in {"en", "zh"} else i18n
@@ -1116,6 +1119,40 @@ class ModuleAdminService:
             output_name,
             {"name": output_name, "files": len(sections)},
         )
+
+    async def _pack_upload(self, root: Path, payload: dict[str, Any]) -> dict[str, Any]:
+        """Land an uploaded `.lwpack` on the server's disk — the file half of a pack install.
+
+        The web module screen has no server filesystem, so the browser carries the whole
+        archive here (base64 in one admin frame, `_MAX_BUNDLE_BYTES` cap). This only
+        STORES the bytes under ``data_dir/modules/`` and hands back the path: the actual
+        install runs through the keeper's ordinary `.pack install <path>` command, so
+        verification, extraction, room switching and the trust card stay ONE code path
+        instead of a second one drifting beside it."""
+        name = str(payload.get("name") or "").strip()
+        path = Path(name)
+        if (
+            not name
+            or path.name != name
+            or path.suffix.casefold() != ".lwpack"
+            or any(ord(char) < 32 for char in name)
+        ):
+            raise ValueError("invalid pack filename")
+        encoded = payload.get("archive")
+        if not isinstance(encoded, str):
+            raise ValueError("empty pack archive")
+        raw = base64.b64decode(encoded, validate=True)
+        if len(raw) > _MAX_BUNDLE_BYTES:
+            raise ValueError("module pack too large")
+        root.mkdir(parents=True, exist_ok=True)
+        target = root / name
+        if target.is_symlink():
+            raise ValueError("symlink module source")
+        # Write-then-rename: a module listing that races the upload never sees a torn file.
+        tmp = target.with_suffix(target.suffix + ".part")
+        tmp.write_bytes(raw)
+        tmp.replace(target)
+        return _module_reply("module_pack_upload", True, name, {"path": str(target), "bytes": len(raw)})
 
     async def _import(self, caller_room: str, root: Path, payload: dict[str, Any], i18n: Any) -> dict[str, Any]:
         raw_name = str(payload.get("name") or "").strip()
