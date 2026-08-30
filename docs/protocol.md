@@ -651,6 +651,12 @@ Client → server:
   `{type:"admin_enable_skill", id:string, on:boolean, locale?:string}`
 - `admin_list_rules` — list every discoverable rule system (Layer A):
   `{type:"admin_list_rules"}`
+- `admin_npc_detail` — request ONE NPC's full keeper projection (protocol 2.10):
+  persona, speech style, private `knowledge` ledger and `secret_agenda` — everything
+  the broadcast mention card strips for players. Addressed by the NPC's document id
+  (the same id the mention link carries), read from the CALLER'S OWN room; the reply
+  arrives as `admin_npc_record`:
+  `{type:"admin_npc_detail", npc:string}`
 - `admin_generate` — author + install a brand-new skill/rule system/module from a
   natural-language description via the matching `agent.forge` self-extension
   engine (Layer B.3); a `kind:"module"` generation installs into the CALLER's own
@@ -726,6 +732,15 @@ Server → client:
 - `admin_rules` — every discoverable rule system, `built_in` marking a shipped
   system (`coc7`/`dnd5e`) vs a generated/user-installed one:
   `{type:"admin_rules", systems:[{id:string, built_in:boolean}]}`
+- `admin_npc_record` — the reply to `admin_npc_detail` (protocol 2.10): the FULL
+  keeper projection of one NPC record from the caller's own room, field-complete
+  for the known shape (`id`, `name`, `persona`, `style`, `public_description`,
+  `secret_agenda`, `knowledge[]`, `public_memory[]`, `disposition`, `location`,
+  `status`, `role`, `major`, `aliases[]`, `pronouns`, `avatar`, mechanics
+  references); unknown keys pass through. A player-role connection never gets
+  this far (the keeper gate answers `admin_error{code:"forbidden"}` first), and
+  an unknown id answers `admin_error{code:"not_found"}`:
+  `{type:"admin_npc_record", room:string, npc:{...}}`
 - `admin_generated` — the forge engine's outcome; `id`/`name` are empty and
   `error` carries an (untranslated) authoring or file-install diagnostic when
   `ok` is `false`. For `kind:"module"`/`"pack"`, `detail` carries the per-room
