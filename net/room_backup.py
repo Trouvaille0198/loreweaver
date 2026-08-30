@@ -1256,6 +1256,11 @@ async def reset_room_state(
     if STORAGE_MEDIA in storages:
         # Uploaded blobs only a full reset clears.
         deleted_media = await _media_store(services).delete_room(chat_key)
+    else:
+        # .image-generated handouts (scene/portrait/clue/combat) belong to the
+        # narrative session: a fresh story must not keep the old pictures, while
+        # module art, pregen portraits and player uploads stay for the replay.
+        deleted_media = await _media_store(services).delete_generated_images(chat_key)
     return {
         "chat_key": chat_key,
         "scope": scope,

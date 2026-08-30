@@ -35,6 +35,9 @@ ALLOWED_DOCUMENT_MIMES = frozenset(
 ALLOWED_CHAT_ATTACHMENT_MIMES = ALLOWED_MEDIA_MIMES | ALLOWED_DOCUMENT_MIMES
 DEFAULT_MAX_FILE_BYTES = 8 * 1024 * 1024
 DEFAULT_ROOM_QUOTA_BYTES = 512 * 1024 * 1024
+# .image-generated handouts (`image_name` kinds) belong to the narrative session:
+# a reset below "all" drops them while module art, pregen portraits and uploads stay.
+GENERATED_IMAGE_PREFIXES = ("scene-", "portrait-", "clue-", "combat-")
 # TODO: EXIF stripping is intentionally out of scope for media P1; blobs stay opaque.
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 
@@ -394,6 +397,127 @@ class MediaStore:
         else:
             _fsync_directory(room_dir.parent)
         return len(records)
+
+    async def _delete_matching(
+        self, room: str, where_sql: str, params: tuple[Any, ...]
+    ) -> int:
+        """Shared recoverable delete for a ``WHERE room = ? AND <where_sql>``
+        selection: blobs move to a private staging directory while the SQLite
+        transaction is held, a failure rolls every move back (so live index rows
+        never point at files an ordinary failed call removed), and a blob is
+        left in place when another room's sanitized directory still indexes the
+        same content hash.
+        """
+        await self._ensure_schema()
+        records: list[MediaRecord] = []
+        moved: list[tuple[Path, Path]] = []
+        staging_dir: Path | None = None
+        async with self._store._lock:
+            conn = self._store._ensure_conn()
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                rows = conn.execute(
+                    f"""
+                    SELECT hash, room, mime, size, name, uploader, created_at
+                    FROM media_index
+                    WHERE room = ? AND {where_sql}
+                    ORDER BY hash
+                    """,
+                    (room, *params),
+                ).fetchall()
+                records = [_row_to_record(row) for row in rows]
+                if not records:
+                    conn.rollback()
+                    return 0
+
+                # Sanitized directory names can collide. Preserve a shared
+                # content-addressed file if another exact room resolves to it.
+                other_rows = conn.execute(
+                    "SELECT room, hash FROM media_index WHERE room != ?",
+                    (room,),
+                ).fetchall()
+                protected = {
+                    str(hash_value)
+                    for other_room, hash_value in other_rows
+                    if _safe_room(str(other_room)) == _safe_room(room)
+                }
+
+                for record in records:
+                    source = self._path(room, record.hash)
+                    if record.hash in protected or not source.exists():
+                        continue
+                    if staging_dir is None:
+                        staging_root = ensure_private_directory(self._base / ".delete-staging")
+                        staging_dir = Path(tempfile.mkdtemp(prefix="room-", dir=staging_root))
+                        ensure_private_directory(staging_dir)
+                    staged = staging_dir / record.hash
+                    os.replace(source, staged)
+                    moved.append((source, staged))
+
+                if staging_dir is not None:
+                    _fsync_directory(staging_dir)
+                    _fsync_directory(self._base / _safe_room(room))
+                conn.execute(
+                    f"DELETE FROM media_index WHERE room = ? AND {where_sql}",
+                    (room, *params),
+                )
+                self._store._commit(conn)
+            except Exception:
+                if conn.in_transaction:
+                    conn.rollback()
+                _restore_staged_blobs(moved)
+                _discard_staging(staging_dir)
+                raise
+
+        _discard_staging(staging_dir)
+        return len(records)
+
+    async def delete_by_name_prefix(self, room: str, name_prefix: str) -> int:
+        """Delete ``room``'s index entries (and their blobs) whose name starts
+        with ``name_prefix`` — module art leaving with a module switch, where
+        the pack keeps its own copy of the pictures.
+        """
+        return await self._delete_matching(room, "name LIKE ?", (name_prefix + "%",))
+
+    async def delete_generated_images(self, room: str) -> int:
+        """Delete ``room``'s `.image`-generated handouts (``scene-``/``portrait-``/
+        ``clue-``/``combat-`` names) — narrative-session art that a reset below
+        "all" drops, while module art, pregen portraits and uploads stay.
+        """
+        clauses = " OR ".join("name LIKE ?" for _ in GENERATED_IMAGE_PREFIXES)
+        params = tuple(f"{prefix}%" for prefix in GENERATED_IMAGE_PREFIXES)
+        return await self._delete_matching(room, f"({clauses})", params)
+
+    async def dedupe_by_name_prefix(self, room: str, name_prefix: str) -> int:
+        """Drop duplicate NAMES under ``name_prefix``, keeping the newest record
+        per name — a re-imported or re-generated picture leaves only its latest
+        version instead of stacking every intermediate one. Only the newest
+        record's blob survives; older hashes move out under the same recoverable
+        contract as the other deletes. The keep-set is read under the store lock
+        before the delete transaction, so a concurrent same-name upload in that
+        window could be preserved — acceptable for a manual cleanup lever.
+        """
+        await self._ensure_schema()
+        async with self._store._lock:
+            conn = self._store._ensure_conn()
+            rows = conn.execute(
+                "SELECT hash, name, created_at FROM media_index "
+                "WHERE room = ? AND name LIKE ? ORDER BY created_at, hash",
+                (room, name_prefix + "%"),
+            ).fetchall()
+        if not rows:
+            return 0
+        newest: dict[str, tuple[str, float]] = {}
+        for hash_value, name, created_at in rows:
+            current = newest.get(name)
+            if current is None or created_at > current[1]:
+                newest[name] = (hash_value, created_at)
+        keep = {hash_value for hash_value, _ in newest.values()}
+        drop = [str(hash_value) for hash_value, _, _ in rows if hash_value not in keep]
+        if not drop:
+            return 0
+        placeholders = ",".join("?" for _ in drop)
+        return await self._delete_matching(room, f"hash IN ({placeholders})", tuple(drop))
 
     async def _insert_record(self, record: MediaRecord, *, conn: Any | None = None) -> None:
         if conn is not None:

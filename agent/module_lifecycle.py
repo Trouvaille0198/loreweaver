@@ -11,10 +11,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
 from infra.room_facets import STORAGE_ROOM_STATE, RoomStateFacet
+
+logger = logging.getLogger(__name__)
 
 ACTIVE_MODULE_KEY = "active_module"
 ACTIVE_MODULE_SCHEMA = 1
@@ -325,6 +328,29 @@ async def purge_active_module(services: Any, chat_key: str) -> dict[str, Any] | 
         "game_clock",
     ):
         await services.store.state_delete(chat_key, key)
+
+    # The outgoing module's illustration blobs leave with it — the pack keeps
+    # its own copy, and every re-import or re-generation would otherwise stack
+    # another version under this room's media quota. Only `module-<pack-id>-`
+    # named entries are touched: player uploads and other rooms' shared blobs
+    # stay. Cleanup is best-effort — a media failure must never block a switch.
+    old_pack_id = str(previous.get("pack_id") or "") if previous else ""
+    if old_pack_id:
+        try:
+            from infra.media_store import ALLOWED_IMAGE_MIMES, MediaStore
+
+            media = MediaStore(
+                services.store,
+                services.settings.data_dir,
+                max_file_bytes=services.settings.tui.media_max_file_bytes,
+                room_quota_bytes=services.settings.tui.media_room_quota_bytes,
+                allowed_mimes=ALLOWED_IMAGE_MIMES,
+            )
+            deleted = await media.delete_by_name_prefix(chat_key, f"module-{old_pack_id}-")
+            if deleted:
+                logger.info("purged %d media blobs of module %s from %s", deleted, old_pack_id, chat_key)
+        except Exception:  # noqa: BLE001 — media cleanup is best-effort on a switch
+            logger.warning("media cleanup failed during module purge for %s", chat_key, exc_info=True)
     return previous
 
 
