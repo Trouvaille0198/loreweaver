@@ -305,9 +305,21 @@ class SheetCommands:
         args = ctx.args.strip()
         if not args or args.casefold() == "show":
             return _render_sheet(ctx, character, pack)
-        if args.casefold() in {"clr", "clear", "del", "delete"}:
-            await ctx.services.characters.delete_character(ctx.user_id, ctx.chat_key, character.name)
-            return ctx.i18n.t("commands.sheet.deleted", name=character.name)
+        # Bare `.st delete` deletes the ACTIVE sheet (the TUI's original form);
+        # `.st delete <name>` deletes a NAMED owned sheet — the character library's
+        # delete button for a sheet that is not in use needs exactly that, and
+        # `.st retire <name>` already set the named-subcommand precedent.
+        delete_words = {"clr", "clear", "del", "delete", "删除", "刪除"}
+        delete_first = args.casefold().split(None, 1)
+        if delete_first[0].casefold() in delete_words:
+            name = delete_first[1].strip() if len(delete_first) > 1 else character.name
+            if name and name.casefold() != character.name.casefold():
+                sheets = await ctx.services.characters.list_character_sheets(ctx.user_id, ctx.chat_key)
+                if not any(sheet.name.casefold() == name.casefold() for sheet in sheets):
+                    return ctx.fail(ctx.i18n.t("commands.characters.not_found", name=name))
+            if await ctx.services.characters.delete_character(ctx.user_id, ctx.chat_key, name):
+                return ctx.i18n.t("commands.sheet.deleted", name=name)
+            return ctx.fail(ctx.i18n.t("commands.sheet.delete_failed", name=name))
         retire_word = args.casefold().split(None, 1)[0] if args else ""
         if retire_word in {"retire", "ret", "退队", "退役"}:
             # Step a character out of this scenario's party — the sheet survives,

@@ -141,6 +141,12 @@ class Event:
         return cls(kind="media", data=dict(frame))
 
     @classmethod
+    def media_hidden(cls, media_id: str) -> Event:
+        """A broadcast handout was retired from the room's media history; every
+        client drops the line from its log."""
+        return cls(kind="media_hidden", data={"type": "media_hidden", "id": media_id})
+
+    @classmethod
     def audio(cls, frame: dict[str, Any]) -> Event:
         """An audio library/control/state frame. Bytes are fetched separately on demand."""
         return cls(kind="audio", data=dict(frame))

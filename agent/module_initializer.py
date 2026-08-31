@@ -89,7 +89,7 @@ async def _emit(progress: ProgressCb, stage: str, detail: str = "") -> None:
 # carry, per the M1 spec's data shape: scenes/npcs/clues/timeline/background/
 # threats/truths/opening_facts/summary.
 _LIST_FIELDS = ("scenes", "npcs", "clues", "items", "timeline", "threats", "truths", "opening_facts")
-_STR_FIELDS = ("background", "summary")
+_STR_FIELDS = ("background", "summary", "visual_world")
 
 # Cheap safety cap on how much module text gets sent to the LLM in one prompt
 # (~1 token/CJK-char, generous margin for the framing text + a large-context
@@ -177,7 +177,8 @@ _ANALYSIS_JSON_SCHEMA = """{
         "a fact the investigators already know at the start of the module",
         "another opening fact"
     ],
-    "summary": "a one-sentence summary of the module (under 30 words)"
+    "summary": "a one-sentence summary of the module (under 30 words)",
+    "visual_world": "player-safe visual world anchor: the named rule system/world, era, region, culture, peoples and visual direction that should govern illustrations; never include secrets or plot twists"
 }"""
 
 
@@ -464,12 +465,13 @@ class ModuleInitializer:
         truncated = full_text[:_MAX_ANALYSIS_CHARS]
         requested = str(locale or self.i18n.locale).replace("_", "-").split("-", 1)[0].casefold()
         prompt_i18n = self.i18n.with_locale(requested) if requested in {"en", "zh"} else self.i18n
-        return prompt_i18n.t(
+        prompt = prompt_i18n.t(
             "module.analysis_prompt",
             doc_name=doc_name or prompt_i18n.t("module.default_document_name"),
             full_text=truncated,
             schema=_ANALYSIS_JSON_SCHEMA + _ANALYSIS_ITEMS_GUIDANCE,
         )
+        return f"{prompt}\n\n{prompt_i18n.t('module.visual_world_instruction')}"
 
     def _fallback_full_analysis(self, text: str) -> dict:
         """Build a useful local analysis when the LLM response is unusable.
@@ -590,6 +592,7 @@ class ModuleInitializer:
             "background": text[:4000] if len(text) > 4000 else text,
             "threats": threats,
             "truths": truths,
+            "visual_world": "",
             "summary": text[:600] if len(text) > 600 else text,
         }
 
@@ -676,6 +679,7 @@ class ModuleInitializer:
         scene's identity so the room has an opening focus; every descriptive or
         revelatory element is admitted explicitly through `unlock_for_player`.
         """
+        visual_world = str(analysis.get("visual_world") or "").strip()[:1200]
         keeper_pool: dict[str, Any] = {
             "scenes": [],
             "npcs": [],
@@ -684,6 +688,7 @@ class ModuleInitializer:
             "timeline": [],
             "background": analysis.get("background", ""),
             "summary": analysis.get("summary", ""),
+            "visual_world": visual_world,
         }
         player_pool: dict[str, Any] = {
             "scenes": [],
@@ -691,6 +696,9 @@ class ModuleInitializer:
             "clues": [],
             "background": "",
             "summary": "",
+            # This field is explicitly authored as player-safe metadata. It is
+            # not a projection of the keeper's background or timeline.
+            "visual_world": visual_world,
         }
 
         # Scenes are keeper-only until play exposes them.  The first scene's

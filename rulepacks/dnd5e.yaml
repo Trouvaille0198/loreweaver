@@ -201,12 +201,32 @@ runtime:
         initial: 0
         max: null
         display: {label: {en: Temporary HP, zh: 临时生命值}}
+      hit_die_d6:
+        role: recovery_die
+        initial: 0
+        max: 0
+        die: 1d6
+        group: hit_dice
+        display: {label: {en: Hit Dice, zh: 生命骰}}
+      hit_die_d8:
+        role: recovery_die
+        initial: 0
+        max: 0
+        die: 1d8
+        group: hit_dice
+        display: {label: {en: Hit Dice, zh: 生命骰}}
       hit_die_d10:
         role: recovery_die
-        initial: 1
-        max: {ref: 等级}
+        initial: 0
+        max: 0
         die: 1d10
-        reset: long
+        group: hit_dice
+        display: {label: {en: Hit Dice, zh: 生命骰}}
+      hit_die_d12:
+        role: recovery_die
+        initial: 0
+        max: 0
+        die: 1d12
         group: hit_dice
         display: {label: {en: Hit Dice, zh: 生命骰}}
       spell_slot_1:
@@ -335,7 +355,7 @@ runtime:
   rests:
     short:
       duration: 3600
-      recovery_dice: hit_die_d10
+      recovery_dice: [hit_die_d6, hit_die_d8, hit_die_d10, hit_die_d12]
       reset: [short]
     long:
       duration: 28800
@@ -435,8 +455,299 @@ runtime:
   advancement:
     modes: [milestone, xp]
     level_field: level
-    xp_thresholds: [0, 300, 900, 2700, 6500, 14000, 23000, 34000, 48000, 64000, 85000]
-    tracks: {}
+    level_cap: 20
+    xp_thresholds: [0, 300, 900, 2700, 6500, 14000, 23000, 34000, 48000, 64000, 85000, 100000, 120000, 140000, 165000, 195000, 225000, 265000, 305000, 355000]
+    hit_dice: {barbarian: 1d12, bard: 1d8, cleric: 1d8, druid: 1d8, fighter: 1d10, monk: 1d8, paladin: 1d10, ranger: 1d10, rogue: 1d8, sorcerer: 1d6, warlock: 1d8, wizard: 1d6}
+    multiclass_prerequisites:
+      barbarian: {力量: 13}
+      bard: {魅力: 13}
+      cleric: {感知: 13}
+      druid: {感知: 13}
+      fighter: {力量: 13}
+      monk: {敏捷: 13, 感知: 13}
+      paladin: {力量: 13, 魅力: 13}
+      ranger: {敏捷: 13, 感知: 13}
+      rogue: {敏捷: 13}
+      sorcerer: {魅力: 13}
+      warlock: {魅力: 13}
+      wizard: {智力: 13}
+    tracks:
+      barbarian:
+        hit_die: 1d12
+        levels:
+          1: {features: [rage, unarmored_defense]}
+          2: {features: [reckless_attack, danger_sense]}
+          3: {features: [primal_path], choices: [subclass]}
+          4: {features: [ability_score_improvement], choices: [asi]}
+          5: {features: [extra_attack, fast_movement]}
+          6: {features: [primal_path_feature]}
+          7: {features: [feral_instinct]}
+          8: {features: [ability_score_improvement], choices: [asi]}
+          9: {features: [brutal_critical_1_die]}
+          10: {features: [primal_path_feature]}
+          11: {features: [relentless_rage]}
+          12: {features: [ability_score_improvement], choices: [asi]}
+          13: {features: [brutal_critical_2_dice]}
+          14: {features: [primal_path_feature]}
+          15: {features: [persistent_rage]}
+          16: {features: [ability_score_improvement], choices: [asi]}
+          17: {features: [brutal_critical_3_dice]}
+          18: {features: [indomitable_might]}
+          19: {features: [ability_score_improvement], choices: [asi]}
+          20: {features: [primal_champion]}
+      bard:
+        hit_die: 1d8
+        levels:
+          1: {features: [spellcasting, bardic_inspiration_d6]}
+          2: {features: [jack_of_all_trades, song_of_rest_d6]}
+          3: {features: [bard_college, expertise], choices: [subclass]}
+          4: {features: [ability_score_improvement], choices: [asi]}
+          5: {features: [bardic_inspiration_d8, font_of_inspiration]}
+          6: {features: [countercharm, bard_college_feature]}
+          7: {features: []}
+          8: {features: [ability_score_improvement], choices: [asi]}
+          9: {features: [song_of_rest_d8]}
+          10: {features: [bardic_inspiration_d10, expertise, magical_secrets]}
+          11: {features: []}
+          12: {features: [ability_score_improvement], choices: [asi]}
+          13: {features: [song_of_rest_d10]}
+          14: {features: [magical_secrets, bard_college_feature]}
+          15: {features: [bardic_inspiration_d12]}
+          16: {features: [ability_score_improvement], choices: [asi]}
+          17: {features: [song_of_rest_d12]}
+          18: {features: [magical_secrets]}
+          19: {features: [ability_score_improvement], choices: [asi]}
+          20: {features: [superior_inspiration]}
+      cleric:
+        hit_die: 1d8
+        levels:
+          1: {features: [spellcasting, divine_domain], choices: [subclass]}
+          2: {features: [channel_divinity_1, divine_domain_feature]}
+          3: {features: []}
+          4: {features: [ability_score_improvement], choices: [asi]}
+          5: {features: [destroy_undead_cr_half, channel_divinity_2]}
+          6: {features: [divine_domain_feature]}
+          7: {features: []}
+          8: {features: [ability_score_improvement, destroy_undead_cr_1, divine_domain_feature], choices: [asi]}
+          9: {features: []}
+          10: {features: [divine_intervention]}
+          11: {features: [destroy_undead_cr_2]}
+          12: {features: [ability_score_improvement], choices: [asi]}
+          13: {features: []}
+          14: {features: [destroy_undead_cr_3]}
+          15: {features: []}
+          16: {features: [ability_score_improvement], choices: [asi]}
+          17: {features: [divine_domain_feature, destroy_undead_cr_4]}
+          18: {features: [channel_divinity_3]}
+          19: {features: [ability_score_improvement], choices: [asi]}
+          20: {features: [divine_intervention_improvement]}
+      druid:
+        hit_die: 1d8
+        levels:
+          1: {features: [druidic, spellcasting]}
+          2: {features: [wild_shape, druid_circle], choices: [subclass]}
+          3: {features: []}
+          4: {features: [wild_shape_improvement, ability_score_improvement], choices: [asi]}
+          5: {features: []}
+          6: {features: [druid_circle_feature]}
+          7: {features: []}
+          8: {features: [wild_shape_improvement, ability_score_improvement], choices: [asi]}
+          9: {features: []}
+          10: {features: [druid_circle_feature]}
+          11: {features: []}
+          12: {features: [ability_score_improvement], choices: [asi]}
+          13: {features: []}
+          14: {features: [druid_circle_feature]}
+          15: {features: []}
+          16: {features: [ability_score_improvement], choices: [asi]}
+          17: {features: []}
+          18: {features: [timeless_body, beast_spells]}
+          19: {features: [ability_score_improvement], choices: [asi]}
+          20: {features: [archdruid]}
+      fighter:
+        hit_die: 1d10
+        levels:
+          1: {features: [fighting_style, second_wind]}
+          2: {features: [action_surge_1]}
+          3: {features: [martial_archetype], choices: [subclass]}
+          4: {features: [ability_score_improvement], choices: [asi]}
+          5: {features: [extra_attack]}
+          6: {features: [ability_score_improvement], choices: [asi]}
+          7: {features: [martial_archetype_feature]}
+          8: {features: [ability_score_improvement], choices: [asi]}
+          9: {features: [indomitable_1]}
+          10: {features: [martial_archetype_feature]}
+          11: {features: [extra_attack_2]}
+          12: {features: [ability_score_improvement], choices: [asi]}
+          13: {features: [indomitable_2]}
+          14: {features: [ability_score_improvement], choices: [asi]}
+          15: {features: [martial_archetype_feature]}
+          16: {features: [ability_score_improvement], choices: [asi]}
+          17: {features: [action_surge_2, indomitable_3]}
+          18: {features: [martial_archetype_feature]}
+          19: {features: [ability_score_improvement], choices: [asi]}
+          20: {features: [extra_attack_3]}
+      monk:
+        hit_die: 1d8
+        levels:
+          1: {features: [unarmored_defense, martial_arts]}
+          2: {features: [ki, unarmored_movement]}
+          3: {features: [monastic_tradition, deflect_missiles], choices: [subclass]}
+          4: {features: [ability_score_improvement, slow_fall], choices: [asi]}
+          5: {features: [extra_attack, stunning_strike]}
+          6: {features: [ki_empowered_strikes, monastic_tradition_feature]}
+          7: {features: [evasion, stillness_of_mind]}
+          8: {features: [ability_score_improvement], choices: [asi]}
+          9: {features: [unarmored_movement_improvement]}
+          10: {features: [purity_of_body]}
+          11: {features: [monastic_tradition_feature]}
+          12: {features: [ability_score_improvement], choices: [asi]}
+          13: {features: [tongue_of_sun_and_moon]}
+          14: {features: [diamond_soul]}
+          15: {features: [timeless_body]}
+          16: {features: [ability_score_improvement], choices: [asi]}
+          17: {features: [monastic_tradition_feature]}
+          18: {features: [empty_body]}
+          19: {features: [ability_score_improvement], choices: [asi]}
+          20: {features: [perfect_self]}
+      paladin:
+        hit_die: 1d10
+        levels:
+          1: {features: [divine_sense, lay_on_hands]}
+          2: {features: [fighting_style, spellcasting, divine_smite]}
+          3: {features: [divine_health, sacred_oath], choices: [subclass]}
+          4: {features: [ability_score_improvement], choices: [asi]}
+          5: {features: [extra_attack]}
+          6: {features: [aura_of_protection]}
+          7: {features: [sacred_oath_feature]}
+          8: {features: [ability_score_improvement], choices: [asi]}
+          9: {features: []}
+          10: {features: [aura_of_courage]}
+          11: {features: [improved_divine_smite]}
+          12: {features: [ability_score_improvement], choices: [asi]}
+          13: {features: []}
+          14: {features: [cleansing_touch]}
+          15: {features: [sacred_oath_feature]}
+          16: {features: [ability_score_improvement], choices: [asi]}
+          17: {features: []}
+          18: {features: [aura_improvements]}
+          19: {features: [ability_score_improvement], choices: [asi]}
+          20: {features: [sacred_oath_capstone]}
+      ranger:
+        hit_die: 1d10
+        levels:
+          1: {features: [favored_enemy, natural_explorer]}
+          2: {features: [fighting_style, spellcasting]}
+          3: {features: [ranger_archetype, primeval_awareness], choices: [subclass]}
+          4: {features: [ability_score_improvement], choices: [asi]}
+          5: {features: [extra_attack]}
+          6: {features: [favored_enemy_improvement, natural_explorer_improvement]}
+          7: {features: [ranger_archetype_feature]}
+          8: {features: [ability_score_improvement, land_stride], choices: [asi]}
+          9: {features: []}
+          10: {features: [natural_explorer_improvement, hide_in_plain_sight]}
+          11: {features: [ranger_archetype_feature]}
+          12: {features: [ability_score_improvement], choices: [asi]}
+          13: {features: []}
+          14: {features: [favored_enemy_improvement, vanish]}
+          15: {features: [ranger_archetype_feature]}
+          16: {features: [ability_score_improvement], choices: [asi]}
+          17: {features: []}
+          18: {features: [feral_senses]}
+          19: {features: [ability_score_improvement], choices: [asi]}
+          20: {features: [foe_slayer]}
+      rogue:
+        hit_die: 1d8
+        levels:
+          1: {features: [expertise, sneak_attack_1d6, thieves_cant]}
+          2: {features: [cunning_action]}
+          3: {features: [roguish_archetype, sneak_attack_2d6], choices: [subclass]}
+          4: {features: [ability_score_improvement], choices: [asi]}
+          5: {features: [uncanny_dodge, sneak_attack_3d6]}
+          6: {features: [expertise]}
+          7: {features: [evasion, sneak_attack_4d6]}
+          8: {features: [ability_score_improvement], choices: [asi]}
+          9: {features: [roguish_archetype, sneak_attack_5d6]}
+          10: {features: [ability_score_improvement], choices: [asi]}
+          11: {features: [reliable_talent, sneak_attack_6d6]}
+          12: {features: [ability_score_improvement], choices: [asi]}
+          13: {features: [roguish_archetype, sneak_attack_7d6]}
+          14: {features: [blindsense]}
+          15: {features: [slippery_mind, sneak_attack_8d6]}
+          16: {features: [ability_score_improvement], choices: [asi]}
+          17: {features: [roguish_archetype, sneak_attack_9d6]}
+          18: {features: [elusive]}
+          19: {features: [ability_score_improvement], choices: [asi]}
+          20: {features: [stroke_of_luck, sneak_attack_10d6]}
+      sorcerer:
+        hit_die: 1d6
+        levels:
+          1: {features: [spellcasting, sorcerous_origin], choices: [subclass]}
+          2: {features: [font_of_magic]}
+          3: {features: [metamagic]}
+          4: {features: [ability_score_improvement], choices: [asi]}
+          5: {features: []}
+          6: {features: [sorcerous_origin_feature]}
+          7: {features: []}
+          8: {features: [ability_score_improvement], choices: [asi]}
+          9: {features: []}
+          10: {features: [metamagic]}
+          11: {features: []}
+          12: {features: [ability_score_improvement], choices: [asi]}
+          13: {features: []}
+          14: {features: [sorcerous_origin_feature]}
+          15: {features: []}
+          16: {features: [ability_score_improvement], choices: [asi]}
+          17: {features: [metamagic]}
+          18: {features: [sorcerous_origin_feature]}
+          19: {features: [ability_score_improvement], choices: [asi]}
+          20: {features: [sorcerous_restoration]}
+      warlock:
+        hit_die: 1d8
+        levels:
+          1: {features: [otherworldly_patron, pact_magic], choices: [subclass]}
+          2: {features: [eldritch_invocations]}
+          3: {features: [pact_boon]}
+          4: {features: [ability_score_improvement], choices: [asi]}
+          5: {features: []}
+          6: {features: [otherworldly_patron_feature]}
+          7: {features: [eldritch_invocations]}
+          8: {features: [ability_score_improvement], choices: [asi]}
+          9: {features: []}
+          10: {features: [otherworldly_patron_feature]}
+          11: {features: [mystic_arcanum_6]}
+          12: {features: [ability_score_improvement], choices: [asi]}
+          13: {features: [mystic_arcanum_7]}
+          14: {features: [otherworldly_patron_feature]}
+          15: {features: [eldritch_invocations]}
+          16: {features: [ability_score_improvement], choices: [asi]}
+          17: {features: [mystic_arcanum_8]}
+          18: {features: [eldritch_invocations]}
+          19: {features: [ability_score_improvement], choices: [asi]}
+          20: {features: [eldritch_master]}
+      wizard:
+        hit_die: 1d6
+        levels:
+          1: {features: [spellcasting, arcane_recovery]}
+          2: {features: [arcane_tradition], choices: [subclass]}
+          3: {features: []}
+          4: {features: [ability_score_improvement], choices: [asi]}
+          5: {features: []}
+          6: {features: [arcane_tradition_feature]}
+          7: {features: []}
+          8: {features: [ability_score_improvement], choices: [asi]}
+          9: {features: []}
+          10: {features: [arcane_tradition_feature]}
+          11: {features: []}
+          12: {features: [ability_score_improvement], choices: [asi]}
+          13: {features: []}
+          14: {features: [arcane_tradition_feature]}
+          15: {features: []}
+          16: {features: [ability_score_improvement], choices: [asi]}
+          17: {features: []}
+          18: {features: [spell_mastery]}
+          19: {features: [ability_score_improvement], choices: [asi]}
+          20: {features: [signature_spells]}
   encounters:
     budget:
       count_multipliers: {}
@@ -645,4 +956,3 @@ races:
     speed: 30
     darkvision: 0
     traits: {en: "Breath Weapon (by draconic ancestry); Damage Resistance matching the ancestry.", zh: "龙息武器（按龙血谱系吐息）；与谱系对应的伤害抗性。"}
-

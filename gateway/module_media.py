@@ -10,8 +10,8 @@ that imported the pack (room media store + ``module_media_index`` provenance, so
 
 A job persists: kind, subject, prompt, caption, status (``pending``/``generating``/
 ``done``/``failed``), and -- when done -- the asset name + content hash; when failed --
-the error. The prompt is persisted verbatim (iron-clad requirement: a failed job keeps
-the prompt it was attempted with), so the keeper can re-queue it without re-planning, or
+the error. The authored shot prompt is persisted, and a retry repairs a missing public
+visual-world block before rendering, so the keeper can re-queue it without re-planning, or
 re-plan fresh shots from the module detail page.
 
 Rooms: the sidecar records which rooms imported the pack while jobs were still pending
@@ -44,6 +44,7 @@ from agent.forge import (
     _parse_shot_list,
     _worldbook_subject_names,
 )
+from agent.visual_context import append_visual_context
 from agent.services import Services
 from core.pack import DEV_PACK_HOMES, MANIFEST_NAME, parse_manifest_text
 from core.yaml_safety import safe_load_no_aliases
@@ -205,6 +206,7 @@ async def plan_media_jobs(
             i18n,
             pregen_names=pregen_names or None,
             subject_names=subject_names or None,
+            visual_source=card,
         ),
         chat_key=chat_key,
         lane="media_shot_list",
@@ -238,7 +240,10 @@ async def plan_media_jobs(
                 "id": f"{shot.kind}-{index}",
                 "kind": shot.kind,
                 "subject": shot.subject,
-                "prompt": shot.prompt,
+                # Persist the complete provider prompt, including the card's
+                # explicit public worldview, so retries and queue resumption use
+                # exactly the same visual contract.
+                "prompt": append_visual_context(shot.prompt, card, locale=getattr(i18n, "locale", "zh")),
                 "caption": shot.caption,
                 # The asset's stem is fixed at plan time so later re-plans cannot collide;
                 # the extension is stamped on completion once the provider's mime is known.
@@ -305,12 +310,19 @@ def _fail_all_pending(home: Path, error: str) -> None:
     save_jobs(home, data)
 
 
-def requeue_jobs(home: Path, job_ids: list[str]) -> int:
-    """Return failed — or already-done — jobs to ``pending`` (prompt preserved verbatim) so
-    the worker re-renders them. Done jobs re-render with their SAME prompt (a fresh provider
-    call yields a new plate, overwriting the old file), which is how the detail page's
-    "re-generate" button on a finished illustration swaps it for a new one. Returns how many
-    jobs were re-queued."""
+def requeue_jobs(
+    home: Path,
+    job_ids: list[str],
+    *,
+    visual_source: dict[str, Any] | None = None,
+    locale: str = "zh",
+) -> int:
+    """Return failed — or already-done — jobs to ``pending`` so the worker re-renders them.
+
+    A retry keeps the authored shot prompt intact, but repairs prompts from jobs created before
+    the module's explicit visual-world contract was present. When a world card is supplied, a
+    missing visual-context block is appended once before the job is persisted and rendered.
+    """
     wanted = set(job_ids)
     data = load_jobs(home)
     requeued = 0
@@ -319,6 +331,15 @@ def requeue_jobs(home: Path, job_ids: list[str]) -> int:
             continue
         if job.get("status") not in ("failed", "done"):
             continue
+        prompt_text = str(job.get("prompt") or "")
+        has_visual_context = (
+            "世界观与视觉锚点" in prompt_text
+            or "WORLDVIEW AND VISUAL ANCHOR" in prompt_text
+        )
+        if visual_source and not has_visual_context:
+            job["prompt"] = append_visual_context(
+                prompt_text, visual_source, locale=locale
+            )
         job["status"] = "pending"
         job["error"] = ""
         # A re-render produces fresh bytes: drop the previous result so the detail page never

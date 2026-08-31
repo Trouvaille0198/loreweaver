@@ -9,7 +9,9 @@ from typing import Any
 
 from agent import npc as npc_records
 from agent.history import DEFAULT_HISTORY_KEY, load_chain
+from agent.visual_context import append_visual_context, visual_context_block
 from core.documents import MODULE_POOL_ID, PLAYER_VIEWER, DocumentStore
+from core.module_brief import BRIEF_DOC_TYPE
 from core.prompt_sections import inject_game_state_prompt
 from gateway.audio import add_audio_item, build_audio_control, list_audio_items, resolve_audio_item, update_audio_item
 from gateway.avatar import AvatarError, set_target_avatar, set_user_avatar
@@ -365,9 +367,10 @@ class MediaCommands:
             prompt = extra
         if not prompt:
             return ctx.i18n.t("commands.image.usage")
-        # For `.image clue <name>` the extra detail is the clue FOCUS — the material
-        # gatherer keeps only scenes/clues mentioning it.
-        focus = extra if kind == "clue" and extra else ""
+        # For `.image clue <name>` / `.image portrait <name>` the extra detail is the
+        # subject FOCUS — the material gatherer keeps only pool entries mentioning it,
+        # and the reference search matches that name.
+        focus = extra if kind in ("clue", "portrait") and extra else ""
         return await self._generate_image(ctx, kind, prompt, intent=intent, focus=focus)
 
     async def _generate_image(
@@ -501,45 +504,105 @@ class MediaCommands:
         source the room has (the battle-status panel, the module knowledge pool's
         player views of scenes/NPCs/items, non-secret worldbook entries, and the tail
         of the conversation) so the picture reflects what is actually happening.
-        Otherwise the prompt is returned unchanged so the command stays a plain
-        prompt-to-image pass-through."""
+        Otherwise the user's description stays intact and receives only the
+        module's visual-world anchor before it reaches the image provider."""
+        visual_source = await self._gather_visual_source(ctx)
         if not force and not _is_live_state_intent(prompt):
-            return prompt
+            # Plain `.image <prompt>` still needs the module's visual identity;
+            # pass-through must not silently discard it.
+            return append_visual_context(prompt, visual_source, locale="zh")
         # The image prompt must match the room's material language (Chinese for a
         # Chinese module), NOT the command session's locale — a Chinese table on an
         # English UI still wants Chinese prompts, and the material is Chinese.
         prompt_i18n = ctx.services.i18n.with_locale("zh")
+        visual_context = visual_context_block(visual_source, locale="zh")
         state = await inject_game_state_prompt(ctx.raw_ctx, ctx.services.characters, ctx.services.store, prompt_i18n)
         material = await self._gather_scene_material(ctx, kind, focus=focus, story_mode=story_mode)
         if not state.strip() and not material.strip():
-            return prompt
-        messages = [
-            {
-                "role": "system",
-                "content": prompt_i18n.t("commands.image.expand_system"),
-            },
-            {
-                "role": "user",
-                "content": prompt_i18n.t(
-                    "commands.image.expand_user",
-                    kind=kind,
-                    intent=prompt,
-                    state=state,
-                    material=material,
-                ),
-            },
-        ]
+            return append_visual_context(prompt, visual_source, locale="zh")
+            messages = [
+                {
+                    "role": "system",
+                    "content": prompt_i18n.t("commands.image.expand_system"),
+                },
+                {
+                    "role": "user",
+                    "content": prompt_i18n.t(
+                        "commands.image.expand_user",
+                        kind=kind,
+                        intent=prompt,
+                        state=state,
+                        material=material,
+                        visual_context=visual_context,
+                        kind_instruction=prompt_i18n.t(f"commands.image.kind_instruction.{kind}"),
+                    ),
+                },
+            ]
         try:
             with lane_scope("authoring", chat_key=ctx.chat_key):
                 llm = await ctx.services.main_llm(ctx.chat_key)
                 result = await llm.chat(messages)
             expanded = (getattr(result, "content", "") or "").strip()
+            final_prompt = append_visual_context(expanded if expanded else prompt, visual_source, locale="zh")
             if expanded:
-                _log_image_prompt(ctx, kind, prompt, expanded, ok=True)
-            return expanded if expanded else prompt
+                _log_image_prompt(ctx, kind, prompt, final_prompt, ok=True)
+            return final_prompt
         except Exception as exc:  # noqa: BLE001 — image generation must never break a turn
             _log_image_prompt(ctx, kind, prompt, "", ok=False, error=str(exc))
-            return prompt
+            return append_visual_context(prompt, visual_source, locale="zh")
+
+    async def expand_regenerate_prompt(
+        self,
+        services: Any,
+        raw_ctx: Any,
+        kind: str,
+        prompt: str,
+    ) -> str:
+        """Run one existing handout's prompt through the SAME `.image` expansion lane.
+
+        `media_regenerate` (the client's regenerate button) arrives with the original
+        frame's prompt. Re-rendering it verbatim would freeze the picture at the moment
+        it was first drawn; seeding the authoring-lane expansion with it keeps the
+        re-render consistent with the story as it is NOW, and the new frame carries the
+        expanded prompt so the client's preview shows what was actually requested.
+        Expansion failures fall back to the visual-anchored original inside
+        `_expand_image_prompt` — a regeneration must survive an expansion outage."""
+        return await self._expand_image_prompt(
+            _RegenerateExpansionCtx(services, raw_ctx), kind, prompt, force=True
+        )
+
+    async def _gather_visual_source(self, ctx: CommandCtx) -> dict[str, str]:
+        """Read only the module's explicitly player-safe visual-world metadata.
+
+        The module pool and the imported-card brief are both projection-aware;
+        this method never reads raw module prose or keeper-only background.
+        """
+        docs = DocumentStore(ctx.services.store)
+        try:
+            pool = await docs.get_view(ctx.chat_key, "module_pool", MODULE_POOL_ID, PLAYER_VIEWER)
+            if isinstance(pool, dict) and str(pool.get("visual_world") or "").strip():
+                return {"visual_world": str(pool["visual_world"]).strip()}
+        except Exception:
+            pass
+        try:
+            pairs = await docs.list_views(ctx.chat_key, BRIEF_DOC_TYPE, PLAYER_VIEWER)
+            for _document, view in pairs:
+                if isinstance(view, dict) and str(view.get("visual_world") or "").strip():
+                    return {"visual_world": str(view["visual_world"]).strip()}
+        except Exception:
+            pass
+        # A legacy/imported module may predate the explicit field. The room's
+        # public rulepack genre is still a real visual constraint (and never
+        # contains module secrets), so retain it instead of guessing from Chinese.
+        try:
+            pack = await ctx.services.room_rulepack(ctx.raw_ctx)
+            genre = pack.genre.get("zh") or pack.genre.get("en") or ""
+            system = str(pack.system or "").strip()
+            if genre or system:
+                return {"visual_world": "; ".join(part for part in (system, genre) if part)}
+        except Exception:
+            pass
+        return {}
 
     async def _last_keeper_text(self, ctx: CommandCtx) -> str:
         """The Keeper's most recent narration text from the room's history.
@@ -587,15 +650,54 @@ class MediaCommands:
             pool = await docs.get_view(chat_key, "module_pool", MODULE_POOL_ID, PLAYER_VIEWER)
             if pool:
                 if kind == "portrait":
+                    # The ONE character a portrait depicts: a named subject
+                    # (`.image portrait 老周`) wins; otherwise the CALLER'S current
+                    # character. Their card's `appearance` text (the 画立绘 field,
+                    # kept on the party roster for claimed pregens) is the primary
+                    # likeness source — without it the expansion model only ever saw
+                    # the NPC list and turned portraits into group scenes.
+                    subject_name = focus
+                    if not subject_name:
+                        try:
+                            sheet = await ctx.services.characters.get_character(ctx.user_id, chat_key)
+                            if sheet is not None and getattr(sheet, "name", "") and sheet.name != "default":
+                                subject_name = str(sheet.name)
+                        except Exception:
+                            pass
+                    subject_appearance = ""
+                    if subject_name:
+                        try:
+                            roster = await ctx.services.characters.get_party_roster(chat_key)
+                            for member in roster:
+                                if str(member.get("name", "")) == subject_name:
+                                    subject_appearance = str(member.get("appearance", "") or "").strip()
+                                    break
+                        except Exception:
+                            pass
+                    if subject_name:
+                        lines.append("## Portrait subject — depict ONLY this character")
+                        line = f"- {subject_name}"
+                        if subject_appearance:
+                            line += f"：{subject_appearance}"
+                        lines.append(line)
                     npcs = pool.get("npcs") or []
                     if npcs:
-                        lines.append("## Characters present (player-visible)")
-                        for n in npcs[:5]:
-                            name = n.get("name", "")
-                            desc = str(n.get("description") or "").strip()
-                            if name and desc and name not in seen:
-                                seen.add(name)
-                                lines.append(f"- {name}：{desc}")
+                        matched = (
+                            [n for n in npcs if focus and focus in str(n.get("name") or "")]
+                            if focus
+                            else []
+                        )
+                        # A named subject keeps only the matching NPC; otherwise the
+                        # present-NPC list is CONTEXT for the scene, never the subject.
+                        chosen = matched or npcs[:5]
+                        if chosen:
+                            lines.append("## Other characters present (player-visible, context only)")
+                            for n in chosen[:5]:
+                                name = n.get("name", "")
+                                desc = str(n.get("description") or "").strip()
+                                if name and desc and name not in seen:
+                                    seen.add(name)
+                                    lines.append(f"- {name}：{desc}")
                 elif kind == "clue":
                     # A clue picture depicts an actual unlocked clue from the clues
                     # pool — NOT ordinary objects in scene descriptions. With a
@@ -879,6 +981,31 @@ class MediaCommands:
     async def _publish_audio(self, ctx: CommandCtx, frame: dict[str, Any]) -> None:
         if ctx.router.hub is not None:
             await ctx.router.hub.publish(ctx.chat_key, Event.audio(frame))
+
+
+class _RegenerateExpansionCtx:
+    """The slice of CommandCtx the prompt-expansion helpers actually read.
+
+    `media_regenerate` arrives over the wire with a `Member`, not a command
+    invocation, so the regenerate path borrows the `.image` expansion lane through
+    `MediaCommands.expand_regenerate_prompt` carrying this shim instead of a full
+    CommandCtx (which would need a router, a spec and parsed args it has no use for).
+    """
+
+    def __init__(self, services: Any, raw_ctx: Any) -> None:
+        self.services = services
+        self.raw_ctx = raw_ctx
+
+    @property
+    def chat_key(self) -> str:
+        value = getattr(self.raw_ctx, "chat_key", "")
+        return value() if callable(value) else str(value)
+
+    @property
+    def user_id(self) -> str:
+        if hasattr(self.raw_ctx, "uid") and callable(self.raw_ctx.uid):
+            return str(self.raw_ctx.uid())
+        return str(getattr(self.raw_ctx, "user_id", ""))
 
 
 def _log_image_prompt(

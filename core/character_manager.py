@@ -269,6 +269,10 @@ class CharacterSheet:
         # enforces membership at cast time; this is deterministic sheet data,
         # never model-generated mid-turn.
         self.known_spells: list[str] = []
+        self.features: list[Any] = []
+        self.advancement: dict[str, Any] = {}
+        self.subclass = ""
+        self.class_levels: dict[str, int] = {}
         self.background = ""
         self.notes = ""
         self.avatar: dict[str, Any] | None = None
@@ -319,6 +323,10 @@ class CharacterSheet:
             "resources": {str(key): dict(value) for key, value in getattr(self, "resources", {}).items() if isinstance(value, dict)},
             "rest_state": dict(getattr(self, "rest_state", {})),
             "xp": getattr(self, "xp", 0),
+            "features": list(getattr(self, "features", [])),
+            "advancement": copy.deepcopy(getattr(self, "advancement", {})),
+            "subclass": getattr(self, "subclass", ""),
+            "class_levels": dict(getattr(self, "class_levels", {})),
             "known_spells": list(getattr(self, "known_spells", [])),
             "equipped_bonuses": dict(getattr(self, "equipped_bonuses", {})),
             "background": getattr(self, "background", ""),
@@ -352,6 +360,14 @@ class CharacterSheet:
         advancement = data.get("advancement", {})
         if isinstance(advancement, dict):
             character.advancement = dict(advancement)
+        character.subclass = str(data.get("subclass") or "")
+        class_levels = data.get("class_levels", {})
+        if isinstance(class_levels, dict):
+            character.class_levels = {
+                str(key).casefold(): int(value)
+                for key, value in class_levels.items()
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+            }
         known_spells = data.get("known_spells", [])
         if isinstance(known_spells, list):
             character.known_spells = [str(value) for value in known_spells]
@@ -524,6 +540,10 @@ class CharacterManager:
         if pack is not None:
             from core.sheets import refresh_sheet
 
+            if getattr(pack, "runtime_spec", None) is not None and pack.runtime_spec.advancement:
+                from core.advancement import synchronize_progression
+
+                synchronize_progression(character, pack)
             refresh_sheet(character, pack)
         character.last_updated = time.time()
         await self.documents.put(

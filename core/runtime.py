@@ -811,7 +811,7 @@ def parse_runtime_section(pack_id: str, raw: Any) -> RuntimeSpec | None:
 
     advancement_raw = mapping.get("advancement") or {}
     advancement = dict(_mapping(pack_id, "advancement", advancement_raw))
-    _known_keys(pack_id, "advancement", advancement, {"modes", "level_field", "xp_thresholds", "tracks", "hp", "features"})
+    _known_keys(pack_id, "advancement", advancement, {"modes", "level_field", "level_cap", "xp_thresholds", "tracks", "multiclass_prerequisites", "hit_dice", "hp", "features"})
     advancement = _validate_nested_values(pack_id, "advancement", advancement)
     modes = advancement.get("modes")
     if modes is not None:

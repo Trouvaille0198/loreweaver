@@ -32,6 +32,13 @@ from gateway.commands import CommandRouter
 from gateway.demo import is_demo_setup_request, is_guided_demo_request
 from gateway.hub import TURN_QUEUED_KEY, Event, RoomHub
 from gateway.media import MEDIA_HISTORY_REPLAY_CAP, media_frame, record_media_history
+from gateway.imagegen import allow_imagegen_request, gather_image_reference, generate_traced, image_name
+from gateway.media import (
+    MEDIA_HISTORY_REPLAY_CAP,
+    media_frame,
+    publish_media,
+    record_media_history,
+)
 from gateway.ops import Censor, RateLimiter, censor_from_settings, is_media_enabled, set_media_enabled
 from gateway.session import SessionSource
 from gateway.turn import TURN_EVENT_HISTORY_KEY, publish_state, run_turn
@@ -305,6 +312,10 @@ def render_frame(event: Event) -> dict[str, Any] | None:
         return {"type": "turn_status", **event.data}
     if event.kind == "media":
         return dict(event.data)
+    if event.kind == "media_hidden":
+        return dict(event.data)
+    if event.kind == "media":
+        return dict(event.data)
     if event.kind == "audio":
         return dict(event.data)
     return None
@@ -463,6 +474,142 @@ class SessionCore:
             except Exception:
                 logger.debug("replay: skipping a malformed turn event record for %s", chat_key, exc_info=True)
         return events
+
+    async def _handle_media_regenerate(self, member: Any, frame: dict[str, Any]) -> None:
+        """Keeper re-renders one generated handout.
+
+        The original prompt only SEEDS the render: the background task re-runs it
+        through the same `.image` expansion lane, so the new picture tracks the story
+        as it is now and the fresh media frame carries the expanded prompt. The render
+        runs in a background task (expansion + imagegen are minutes-long) and the new
+        picture lands as a fresh media frame, exactly like ``.image``. The target must
+        be a real broadcast handout of this room.
+        """
+        i18n = get_i18n(member.locale)
+        if member.role != "keeper":
+            await member.send_frame(error_frame("forbidden", i18n))
+            return
+        media_id = str(frame.get("id") or "").strip()
+        kind = str(frame.get("kind") or "").strip()
+        prompt = str(frame.get("prompt") or "").strip()
+        if not media_id or kind not in ("scene", "portrait", "clue", "combat") or not prompt:
+            await member.send_frame(error_frame("bad_frame", i18n))
+            return
+        if not await is_media_enabled(self.services.store, member.session_key):
+            await member.send_frame(error_frame("media_disabled", i18n))
+            return
+        try:
+            raw = await self.services.store.state_get(member.session_key, "media_history")
+        except Exception:
+            raw = None
+        try:
+            history = json.loads(raw) if raw else []
+        except Exception:
+            history = []
+        if not any(isinstance(item, dict) and item.get("id") == media_id for item in history):
+            await member.send_frame(error_frame("media_not_found", i18n))
+            return
+        imagegen = await self.services.imagegen_for_room(member.session_key)
+        if imagegen is None:
+            await member.send_frame(error_frame("server_error", i18n))
+            return
+        if not allow_imagegen_request(self.services, member.session_key):
+            await member.send_frame(error_frame("media_rate_limited", i18n))
+            return
+        task = asyncio.create_task(self._regenerate_media_background(member, kind, prompt, imagegen))
+        task.add_done_callback(lambda _done: None)
+        await self.hub.publish(
+            member.session_key,
+            Event.system("info", get_i18n(member.locale).t("commands.image.regenerating")),
+        )
+
+    async def _regenerate_media_background(
+        self, member: Any, kind: str, prompt: str, imagegen: Any
+    ) -> None:
+        """The slow half of ``media_regenerate`` — prompt expansion, reference gather,
+        provider render, storage and publication — kept off any turn lock.
+
+        The client's prompt (the original frame's) seeds the `.image` expansion lane;
+        `expand_regenerate_prompt` returns the expanded render brief, or the
+        visual-anchored original when the expansion lane is down, so a regeneration
+        never fails because its expansion did."""
+        services = self.services
+        chat_key = member.session_key
+        try:
+            prompt = await self.command_router.expand_regenerate_prompt(
+                services,
+                AgentCtx(chat_key=chat_key, user_id=member.id, locale=member.locale),
+                kind,
+                prompt,
+            )
+            ref_bytes, ref_mime = await gather_image_reference(
+                services, chat_key, kind, imagegen, extra=prompt
+            )
+            display_prompt = prompt
+            gen_prompt = prompt
+            if ref_bytes and kind != "portrait":
+                hint = get_i18n(member.locale).t("commands.image.reference_hint")
+                gen_prompt = f"{prompt} {hint}".strip()
+            data, mime = await generate_traced(
+                services,
+                chat_key,
+                imagegen,
+                gen_prompt,
+                size=services.settings.imagegen.size,
+                reference=ref_bytes,
+                reference_mime=ref_mime,
+            )
+            record = await self.media_store.register_blob(
+                room=chat_key,
+                data=data,
+                mime=mime,
+                name=image_name(kind, display_prompt),
+                uploader=member.id,
+            )
+            await publish_media(
+                self.hub,
+                services.store,
+                chat_key,
+                media_frame(record, from_name="KP", prompt=display_prompt),
+            )
+            await self.hub.publish(
+                chat_key,
+                Event.system("info", get_i18n(member.locale).t("commands.image.regenerated")),
+            )
+        except Exception:  # noqa: BLE001 — a failed re-render reports, never breaks the connection
+            logger.exception("media_regenerate failed for %s", chat_key)
+            await self.hub.publish(
+                chat_key,
+                Event.system("error", get_i18n(member.locale).t("commands.image.regenerate_failed")),
+            )
+
+    async def _handle_media_hide(self, member: Any, frame: dict[str, Any]) -> None:
+        """Keeper retires one broadcast handout from the room's media history.
+
+        Removing the frame from ``media_history`` means no reconnect replays it, and
+        the ``media_hidden`` broadcast makes every connected client drop the line now.
+        """
+        i18n = get_i18n(member.locale)
+        if member.role != "keeper":
+            await member.send_frame(error_frame("forbidden", i18n))
+            return
+        media_id = str(frame.get("id") or "").strip()
+        if not media_id:
+            await member.send_frame(error_frame("bad_frame", i18n))
+            return
+        try:
+            raw = await self.services.store.state_get(member.session_key, "media_history")
+        except Exception:
+            raw = None
+        try:
+            history = json.loads(raw) if raw else []
+        except Exception:
+            history = []
+        filtered = [item for item in history if not (isinstance(item, dict) and item.get("id") == media_id)]
+        await self.services.store.state_set(
+            member.session_key, "media_history", json.dumps(filtered, ensure_ascii=False)
+        )
+        await self.hub.publish(member.session_key, Event.media_hidden(media_id))
 
     async def _replay_history(self, member: Any) -> None:
         """Replay this room's recent narrative to `member` ONLY (never broadcast to the room).
@@ -792,6 +939,19 @@ class SessionCore:
                         await member.send_frame(error_frame("forbidden", i18n))
                         return
                     await self._handle_avatar_set(member, frame)
+                return
+            if kind == "media_regenerate":
+                if not self._refresh_member_authorization(member):
+                    await member.send_frame(error_frame("forbidden", i18n))
+                    return
+                await self._handle_media_regenerate(member, frame)
+                return
+            if kind == "media_hide":
+                async with self.hub.turn_lock(member.session_key):
+                    if not self._refresh_member_authorization(member):
+                        await member.send_frame(error_frame("forbidden", i18n))
+                        return
+                    await self._handle_media_hide(member, frame)
                 return
             if is_admin_frame(kind):
                 # Read-only admin frames (module/worldbook list & detail) never take the

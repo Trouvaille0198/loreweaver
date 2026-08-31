@@ -66,8 +66,8 @@ _SYS_PROMPT = """You are the settlement clerk for a TTRPG engine. The campaign h
 
 From the evidence below — the skill checks each character actually attempted (with outcomes), the campaign chronicle, each character's memory log, and their current sheets — decide for EACH character:
 
-1. "growth": the skills this character EARNED an improvement check on — genuinely exercised this campaign: attempted repeatedly, pushed through failure, or landed a critical when it mattered. At most 3 per character. Names must be skills on that character's sheet (or its aliases).
-2. "attribute_changes": a small, rule-fair attribute delta the campaign's events justify (training, injury, revelation, horror) — at most 2 per character, delta typically ±1..±2. Names must be attributes on the sheet. NEVER touch HP/SAN/MP — those are resources, not growth.
+1. "growth": the skills this character EARNED an improvement check on — genuinely exercised this campaign: attempted repeatedly, pushed through failure, or landed a critical when it mattered. At most 3 per character. Names must be skills on that character's sheet (or its aliases). ONLY propose these when that sheet says "improvement checks: available"; otherwise return an empty list because that rule system uses another advancement mechanism.
+2. "attribute_changes": a small, rule-fair attribute delta the campaign's events justify (training, injury, revelation, horror) — at most 2 per character, delta typically ±1..±2. Names must be attributes on the sheet. ONLY propose these when that sheet says "settlement attribute changes: available"; otherwise return an empty list. NEVER touch HP/SAN/MP — those are resources, not growth.
 3. "memory_fold": this character's PLAYTHROUGH memory — ONE self-contained paragraph (max 600 chars) that reads as a durable MEMORY, not a story excerpt: it must make sense to someone with no context of this scenario. Open with the character's name and the scenario; then state the main things they went through and did, and how it ended. Written in the language of the scenario. NEVER use context-dependent phrasing ("this time", "no longer", "he became") that only means something inside the scenario; no pronouns for scenario-only people without identifying them; no fragments.
 4. "background": the character's PERSONA — origin, family, occupation, personality, ties. KEEP the sheet's existing backstory traits, extending them only with durable identity facts (a lasting scar, a new occupation, a permanent bond). Do NOT narrate the campaign's plot — the story goes into memory_fold, and replaying it here pollutes the persona. At most ONE closing sentence on where the character stands now. Null when unchanged, max 400 chars.
 5. "keeper_note": a keeper-only note about the character's growth (max 400 chars), or "".
@@ -75,6 +75,8 @@ From the evidence below — the skill checks each character actually attempted (
 Rules:
 - You propose; the engine rolls dice and validates. Never decide dice outcomes, never invent mechanics.
 - Be conservative: a character who never touched a skill earns nothing.
+- A sheet marked "improvement checks: unavailable" MUST have "growth": []. Never invent an improvement mechanic for that rule system.
+- A sheet marked "settlement attribute changes: unavailable" MUST have "attribute_changes": []. Level-based ability score improvements belong to that rule system's advancement procedure, never to settlement.
 - A character with no memory entries still gets a memory_fold from the checks and chronicle; empty when they were not part of the scenario.
 - "name" must match a sheet below exactly.
 - Output ONLY a JSON object:
@@ -167,6 +169,8 @@ class ApplyOutcome:
 
     name: str
     growth: tuple[GrowthResult, ...] = ()
+    growth_unsupported: bool = False
+    attributes_unsupported: bool = False
     attributes: tuple[tuple[str, int, bool], ...] = ()  # (field, new_value, applied)
     folded: bool = False
     background: bool = False
@@ -245,36 +249,78 @@ def _extract_json(text: str) -> dict[str, Any] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
+def _improvement_check_spec(pack: Any) -> Any:
+    if pack is None:
+        return None
+    return next(
+        (entry for entry in pack.subsystems.values() if entry.template == "improvement_check"),
+        None,
+    )
+
+
+def _settlement_attributes_supported(pack: Any) -> bool:
+    """Whether this pack permits free-standing settlement attribute changes.
+
+    A runtime advancement declaration owns mechanical character growth. In
+    particular, D&D 5e ability-score improvements occur at class-declared
+    levels and cannot be invented by the settlement model.
+    """
+    runtime = None if pack is None else getattr(pack, "runtime_spec", None)
+    return runtime is None or not bool(getattr(runtime, "advancement", None))
+
+
 async def _sheet_lines(services: Services, chat_key: str) -> tuple[list[str], dict[str, str]]:
     """One summary line per sheet, and the sheet-name -> system map. A sheet's
     owned skills and attributes are shown so the proposal names only what exists."""
-    sheets = await services.documents.list(chat_key, "sheet")
+    party_names = await settlement_party_names(services, chat_key)
+    sheets = {
+        str(doc.data.get("name") or "").strip(): doc
+        for doc in await services.documents.list(chat_key, "sheet")
+    }
     lines: list[str] = []
     systems: dict[str, str] = {}
-    for doc in sheets:
+    for party_name in party_names:
+        doc = sheets.get(party_name)
+        if doc is None:
+            continue
         data = doc.data
         name = str(data.get("name") or "").strip()
         if not name:
             continue
         system = str(data.get("system") or "?")
         systems[name] = system
+        try:
+            pack = load_rulepack(system) if system != "?" else None
+        except Exception:  # noqa: BLE001 — an unreadable pack is not a growth mechanic
+            pack = None
+        improvement_checks = "available" if _improvement_check_spec(pack) is not None else "unavailable"
+        attribute_changes = "available" if _settlement_attributes_supported(pack) else "unavailable"
         attrs = {key: value for key, value in (data.get("attributes") or {}).items() if isinstance(value, int)}
         skills = {key: value for key, value in (data.get("skills") or {}).items() if isinstance(value, int) and value}
         background = str(data.get("background") or "").strip()
-        line = f"- {name} (system: {system}): attributes {attrs}; skills {skills}"
+        line = (
+            f"- {name} (system: {system}; improvement checks: {improvement_checks}; "
+            f"settlement attribute changes: {attribute_changes}): "
+            f"attributes {attrs}; skills {skills}"
+        )
         if background:
             line += f"\n  backstory: {background[:_MAX_STORY_CHARS]}"
         lines.append(line)
     return lines, systems
 
 
-async def _memory_lines(services: Services, chat_key: str) -> list[str]:
-    """Each character's memory log, newest entries first, plus the folded summary."""
+async def _memory_lines(
+    services: Services, chat_key: str, party_names: frozenset[str]
+) -> list[str]:
+    """Each current party character's memory log, newest entries first, plus
+    the folded summary."""
     lines: list[str] = []
     docs = await services.documents.list(chat_key, CHARACTER_MEMORY_DOC_TYPE)
     for doc in docs:
         data = doc.data
         name = str(doc.id)
+        if name not in party_names:
+            continue
         entries = list(data.get("entries") or [])
         entries = entries[-_MAX_MEMORY_ENTRIES_SHOWN:]
         texts = [str(entry.get("text") or "") for entry in entries if entry.get("text")]
@@ -311,15 +357,57 @@ async def _chronicle_lines(services: Services, chat_key: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+async def settlement_party_names(services: Services, chat_key: str) -> tuple[str, ...]:
+    """Names of the characters currently participating in this scenario.
+
+    Character sheets survive retirement so players can use them again later;
+    the party roster is the table's authoritative current-scenario membership.
+    A stale roster row whose sheet is absent or marked retired is excluded too.
+    """
+    roster = await services.characters.get_party_roster(chat_key)
+    roster_names: list[str] = []
+    seen: set[str] = set()
+    for member in roster:
+        if not isinstance(member, dict):
+            continue
+        name = str(member.get("name") or "").strip()
+        if name and name not in seen:
+            seen.add(name)
+            roster_names.append(name)
+
+    sheets = {
+        str(doc.data.get("name") or "").strip(): doc
+        for doc in await services.documents.list(chat_key, "sheet")
+    }
+    return tuple(
+        name
+        for name in roster_names
+        if name in sheets and not bool(sheets[name].data.get("retired", False))
+    )
+
+
+async def filter_settlement_to_party(
+    services: Services, chat_key: str, settlement: Settlement
+) -> Settlement:
+    """Discard proposal rows for characters outside the current scenario party."""
+    current = frozenset(await settlement_party_names(services, chat_key))
+    return Settlement(
+        characters=tuple(char for char in settlement.characters if char.name in current)
+    )
+
+
 async def build_settlement(services: Services, chat_key: str) -> Settlement | None:
     """Run the settlement lane: assemble the evidence, call the model, parse.
     Returns None when the model reply cannot be parsed into a valid proposal."""
     sheet_lines, systems = await _sheet_lines(services, chat_key)
     if not sheet_lines:
         return None
+    party_names = tuple(systems)
+    party_name_set = frozenset(party_names)
     checks = _aggregate_checks(await _collect_checks(services, chat_key))
     check_lines: list[str] = []
-    for char_name, skills in checks.items():
+    for char_name in party_names:
+        skills = checks.get(char_name, {})
         for skill, stats in skills.items():
             check_lines.append(
                 f"- {char_name}: {skill} — {stats['total']} checks, "
@@ -327,7 +415,7 @@ async def build_settlement(services: Services, chat_key: str) -> Settlement | No
             )
     if not check_lines:
         check_lines.append("(no skill checks recorded)")
-    memories = await _memory_lines(services, chat_key)
+    memories = await _memory_lines(services, chat_key, party_name_set)
     if not memories:
         memories.append("(no character memories yet)")
     chronicle = await _chronicle_lines(services, chat_key)
@@ -354,9 +442,29 @@ async def build_settlement(services: Services, chat_key: str) -> Settlement | No
         return None
     settlement = Settlement.from_dict(parsed)
     # A proposal may only name characters that actually play at this table.
-    known = frozenset(systems)
-    filtered = tuple(char for char in settlement.characters if char.name in known)
-    return Settlement(characters=filtered) if filtered else None
+    filtered: list[CharacterSettlement] = []
+    for char in settlement.characters:
+        if char.name not in party_name_set:
+            continue
+        try:
+            pack = load_rulepack(systems[char.name])
+        except Exception:  # noqa: BLE001 — no readable mechanic means no growth roll
+            pack = None
+        supports_improvement = _improvement_check_spec(pack) is not None
+        supports_attributes = _settlement_attributes_supported(pack)
+        if (char.growth and not supports_improvement) or (
+            char.attribute_changes and not supports_attributes
+        ):
+            char = CharacterSettlement(
+                name=char.name,
+                growth=char.growth if supports_improvement else (),
+                attribute_changes=char.attribute_changes if supports_attributes else (),
+                memory_fold=char.memory_fold,
+                background=char.background,
+                keeper_note=char.keeper_note,
+            )
+        filtered.append(char)
+    return Settlement(characters=tuple(filtered)) if filtered else None
 
 
 # ---------------------------------------------------------------------------
@@ -370,8 +478,12 @@ async def apply_settlement(services: Services, chat_key: str, settlement: Settle
     `core.character_memory`, and the sheet is saved exactly once."""
     sheets = await services.documents.list(chat_key, "sheet")
     by_name = {str(doc.data.get("name") or "").strip(): doc for doc in sheets}
+    party_names = frozenset(await settlement_party_names(services, chat_key))
     outcomes: list[ApplyOutcome] = []
     for char in settlement.characters:
+        if char.name not in party_names:
+            outcomes.append(ApplyOutcome(name=char.name, skipped="not_in_party"))
+            continue
         doc = by_name.get(char.name)
         if doc is None:
             outcomes.append(ApplyOutcome(name=char.name, skipped="no_such_character"))
@@ -379,11 +491,10 @@ async def apply_settlement(services: Services, chat_key: str, settlement: Settle
         try:
             sheet = CharacterSheet.from_dict(doc.data)
             pack = load_rulepack(sheet.system) if sheet.system else None
-            spec = (
-                next((entry for entry in pack.subsystems.values() if entry.template == "improvement_check"), None)
-                if pack is not None
-                else None
-            )
+            spec = _improvement_check_spec(pack)
+            growth_unsupported = bool(char.growth and spec is None)
+            supports_attributes = _settlement_attributes_supported(pack)
+            attributes_unsupported = bool(char.attribute_changes and not supports_attributes)
             growth: list[GrowthResult] = []
             for skill in char.growth:
                 if spec is None:
@@ -401,7 +512,7 @@ async def apply_settlement(services: Services, chat_key: str, settlement: Settle
                 growth.append(GrowthResult(skill=canonical, rolled=roll, gained=gain, value=new_value))
 
             attributes: list[tuple[str, int, bool]] = []
-            for change in char.attribute_changes:
+            for change in char.attribute_changes if supports_attributes else ():
                 canonical = (pack.resolve_skill(change.field) if pack is not None else None) or change.field
                 current = sheet_value(sheet, pack, canonical)
                 new_value = max(0, current + change.delta)
@@ -447,6 +558,8 @@ async def apply_settlement(services: Services, chat_key: str, settlement: Settle
                 ApplyOutcome(
                     name=char.name,
                     growth=tuple(growth),
+                    growth_unsupported=growth_unsupported,
+                    attributes_unsupported=attributes_unsupported,
                     attributes=tuple(attributes),
                     folded=folded,
                     background=bool(char.background),
@@ -520,6 +633,10 @@ def render_result(result: SettlementResult, i18n: I18n) -> str:
                     value=growth.value,
                 )
             )
+        if outcome.growth_unsupported:
+            lines.append(i18n.t("settle.result.growth_unsupported"))
+        if outcome.attributes_unsupported:
+            lines.append(i18n.t("settle.result.attributes_unsupported"))
         for field_name, new_value, applied in outcome.attributes:
             if applied:
                 lines.append(i18n.t("settle.result.attribute", field=field_name, value=new_value))
