@@ -1701,18 +1701,21 @@ class InitiativeTools:
         )
 
     @tool(read_only=False, needs="runtime")
-    async def advance_level(self, ctx: AgentCtx, *, mode: str = "", choice: str = "") -> str:
+    async def advance_level(self, ctx: AgentCtx, *, mode: str = "", choice: str = "", target: str = "") -> str:
         """Drive character advancement (leveling up) through the engine.
 
         `mode` is "status" to inspect, "grant" (with `choice` naming milestone or
-        xp) to open an advancement, or "apply" to commit a pending one. The engine
-        raises the level, grows HP and unlocks spell slots per the level table —
-        never narrate "you leveled up" without settling the real sheet."""
+        xp) to open an advancement, or "apply" to commit a pending one. `target`
+        names the character when the keeper is advancing another player. The
+        engine raises the level, grows HP, applies ASI/class features, and lets the
+        resource ledger recompute spell slots — never narrate a level-up first."""
         command = ".advance"
         if mode:
             command += f" {mode}"
             if choice:
                 command += f" {choice}"
+        if target:
+            command += f" --on {target}"
         return await self._dispatch_command(ctx, command, "kp_tools.cast.unavailable")
 
     @tool(read_only=False, needs="runtime")
@@ -1721,7 +1724,7 @@ class InitiativeTools:
         engine — HP, spell slots, hit dice, and any pack-declared pool.
 
         `action` is show (default), spend, set or recover; `pool` names the pool
-        (spell_slot_1..9, hp, temp_hp, hit_die_d10, ...); `amount` is the spend/set
+        (spell_slot_1..9, hp, temp_hp, hit_die_d6/d8/d10/d12, ...); `amount` is the spend/set
         value. Setting spell slots is how a keeper tops a caster up when the
         story grants it (`.resource` mirror)."""
         command = ".resource"

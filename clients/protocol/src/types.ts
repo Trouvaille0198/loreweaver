@@ -38,6 +38,11 @@ export const FrameType = {
   Media: "media",
   MediaSetEnabled: "media_set_enabled",
   MediaEnabled: "media_enabled",
+  // v2.10 additive: keeper re-renders a generated handout (media_regenerate) and
+  // retires one from the room's broadcast history (media_hide / media_hidden).
+  MediaRegenerate: "media_regenerate",
+  MediaHide: "media_hide",
+  MediaHidden: "media_hidden",
   AvatarSet: "avatar_set",
   AudioLibraryItem: "audio_library_item",
   AudioControl: "audio_control",
@@ -192,6 +197,28 @@ export interface MediaFrame extends MediaRef {
   ts: number
   /** The image-generation prompt that produced this picture (generated handouts only). */
   prompt?: string
+}
+
+export interface MediaRegenerateFrame {
+  type: typeof FrameType.MediaRegenerate
+  /** The media frame id of the handout to re-render (its `name` names the new blob). */
+  id: string
+  /** The image kind that produced the original — scene/portrait/clue/combat. */
+  kind: string
+  /** The display prompt carried by the original frame; the new render starts from it. */
+  prompt: string
+}
+
+export interface MediaHideFrame {
+  type: typeof FrameType.MediaHide
+  /** The media frame id to retire from the room's broadcast history. */
+  id: string
+}
+
+export interface MediaHiddenFrame {
+  type: typeof FrameType.MediaHidden
+  /** The retired media frame id — every client drops the line from its log. */
+  id: string
 }
 
 export interface MediaAcceptFrame {
@@ -1636,6 +1663,8 @@ export type ClientFrame =
   | PanelIntentFrame
   | MediaOfferFrame
   | MediaSetEnabledFrame
+  | MediaRegenerateFrame
+  | MediaHideFrame
   | AvatarSetFrame
   | AdminGetConfigFrame
   | AdminSetModelFrame
@@ -1671,6 +1700,7 @@ export type ServerFrame =
   | MediaAcceptFrame
   | MediaFrame
   | MediaEnabledFrame
+  | MediaHiddenFrame
   | AudioLibraryItemFrame
   | AudioControlFrame
   | AudioStateFrame

@@ -1281,7 +1281,24 @@ class ModuleAdminService:
         retry_ids = payload.get("retry")
         if isinstance(retry_ids, list) and retry_ids:
             retry_ids = [str(i) for i in retry_ids if str(i).strip()]
-            requeued = requeue_jobs(home, retry_ids)
+            # A retry must use the same public visual-world contract as a fresh plan. Older
+            # jobs may contain only the authored shot description, so load the world card here
+            # and let requeue_jobs repair that persisted prompt before rendering it.
+            visual_source: dict[str, Any] | None = None
+            _manifest, world_cards = self._pack_world_cards(home)
+            if world_cards:
+                try:
+                    candidate = json.loads(world_cards[0][1].read_text(encoding="utf-8"))
+                    if isinstance(candidate, dict):
+                        visual_source = candidate
+                except (OSError, json.JSONDecodeError):
+                    visual_source = None
+            requeued = requeue_jobs(
+                home,
+                retry_ids,
+                visual_source=visual_source,
+                locale=media_i18n.locale,
+            )
             if requeued:
                 schedule_pack_media(self.services, pack_id)
             return _module_reply(

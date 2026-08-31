@@ -153,6 +153,19 @@ def _slot_table_for(sheet: Any, runtime: Any) -> tuple[tuple[int, ...], ...]:
     half (paladin/ranger) or pact (warlock) table; everything else uses the
     full caster's `spell_slots_by_level`."""
     class_name = str(getattr(sheet, "character_class", "") or "").strip().casefold()
+    levels = getattr(sheet, "class_levels", None)
+    if isinstance(levels, Mapping) and len(levels) > 1:
+        # Multiclass spellcasting uses one combined regular-caster level:
+        # full casters contribute all levels, half casters contribute half
+        # levels rounded down. Warlock pact slots remain a separate class
+        # resource and are handled by its own table when it is the sole class.
+        full = {name for name, kind in (runtime.spell_slot_class or {}).items() if kind == "full"}
+        half = {name for name, kind in (runtime.spell_slot_class or {}).items() if kind == "half"}
+        regular_level = sum(int(level) for name, level in levels.items() if str(name).casefold() in full)
+        regular_level += sum(int(level) // 2 for name, level in levels.items() if str(name).casefold() in half)
+        if regular_level > 0:
+            table = tuple(runtime.spell_slots_by_level or ())
+            return table if table else ()
     table_kind = (runtime.spell_slot_class or {}).get(class_name)
     if table_kind is None:
         for canonical, names in (runtime.class_aliases or {}).items():
@@ -166,6 +179,18 @@ def _slot_table_for(sheet: Any, runtime: Any) -> tuple[tuple[int, ...], ...]:
     if table_kind == "pact":
         return tuple(runtime.spell_slots_pact or ())
     return tuple(runtime.spell_slots_by_level or ())
+
+
+def _effective_spell_level(sheet: Any, runtime: Any) -> int:
+    """Return the caster level used to index a slot table."""
+    levels = getattr(sheet, "class_levels", None)
+    if not isinstance(levels, Mapping) or len(levels) <= 1:
+        return int(getattr(sheet, "level", 1) or 1)
+    full = {name for name, kind in (runtime.spell_slot_class or {}).items() if kind == "full"}
+    half = {name for name, kind in (runtime.spell_slot_class or {}).items() if kind == "half"}
+    return sum(int(level) for name, level in levels.items() if str(name).casefold() in full) + sum(
+        int(level) // 2 for name, level in levels.items() if str(name).casefold() in half
+    )
 
 
 def _initial_state(sheet: Any, pack: Any) -> dict[str, ResourceValue]:
@@ -195,6 +220,26 @@ def _initial_state(sheet: Any, pack: Any) -> dict[str, ResourceValue]:
         )
         if maximum is not None:
             maximum = max(0, maximum)
+        # A recovery-die pool's maximum is the number of class levels using
+        # that die. This keeps multiclass characters' d6/d8/d10/d12 pools
+        # separate, as required by D&D 5e.
+        if spec.role == "recovery_die" and getattr(pack, "runtime_spec", None) is not None:
+            hit_dice = (pack.runtime_spec.advancement or {}).get("hit_dice") or {}
+            levels = getattr(sheet, "class_levels", None)
+            if not isinstance(levels, Mapping) or not levels:
+                class_name = str(getattr(sheet, "character_class", "") or "").strip().casefold()
+                normalizer = getattr(pack, "normalize_class", None)
+                if normalizer:
+                    class_name = str(normalizer(class_name)).strip().casefold()
+                levels = {class_name: int(getattr(sheet, "level", 1) or 1)}
+            pool_die = str(spec.die or "")
+            maximum = sum(
+                int(level)
+                for class_name, level in levels.items()
+                if str(hit_dice.get(str(class_name).casefold()) or "") == pool_die
+            )
+            if maximum <= 0:
+                maximum = 0
         # A spell_slot pool's maximum is driven by the pack's per-caster-type
         # slot tables (selected by the sheet's class), when declared — the
         # pack's static `max` is the pre-table fallback (0 = ring locked).
@@ -202,12 +247,16 @@ def _initial_state(sheet: Any, pack: Any) -> dict[str, ResourceValue]:
             runtime = pack.runtime_spec
             table = _slot_table_for(sheet, runtime)
             if table:
-                level = _resolve_value({"ref": "等级"}, sheet=sheet, pack=pack, pools=resolved, path=f"resources.{pool_id}.level")
+                level = _effective_spell_level(sheet, runtime)
                 ring_text = str(pool_id).rsplit("_", 1)[-1]
                 ring = int(ring_text) if ring_text.isdigit() else 0
                 if 1 <= ring <= 9 and 1 <= int(level) <= len(table):
                     maximum = max(0, int(table[int(level) - 1][ring - 1]))
         stored = raw.get(pool_id)
+        # Keep the old universal d10 pool readable when migrating a sheet.
+        if spec.role == "recovery_die" and stored is None and pool_id == "hit_die_d10":
+            stored = raw.get("hit_die_d10")
+        die = spec.die
         if isinstance(stored, Mapping) and "current" in stored:
             current = _as_int(stored.get("current"), path=f"resources.{pool_id}.current")
             revision = _as_int(stored.get("revision", 0), path=f"resources.{pool_id}.revision")
@@ -225,6 +274,8 @@ def _initial_state(sheet: Any, pack: Any) -> dict[str, ResourceValue]:
                     current = _resolve_value(
                         spec.initial, sheet=sheet, pack=pack, pools=resolved, path=f"resources.{pool_id}.initial"
                     )
+            elif spec.role == "recovery_die" and maximum is not None:
+                current = maximum
             else:
                 current = _resolve_value(
                     spec.initial, sheet=sheet, pack=pack, pools=resolved, path=f"resources.{pool_id}.initial"
@@ -240,7 +291,7 @@ def _initial_state(sheet: Any, pack: Any) -> dict[str, ResourceValue]:
             maximum=maximum,
             revision=max(0, revision),
             group=spec.group,
-            die=spec.die,
+            die=die,
             reset_tags=spec.reset_tags,
             prominent=spec.prominent,
             display=spec.display,
@@ -340,6 +391,9 @@ def _is_pact_caster(sheet: Any, pack: Any) -> bool:
     recover on a SHORT rest, unlike every other caster."""
     runtime = getattr(pack, "runtime_spec", None)
     if runtime is None:
+        return False
+    levels = getattr(sheet, "class_levels", None)
+    if isinstance(levels, Mapping) and len(levels) > 1:
         return False
     class_name = str(getattr(sheet, "character_class", "") or "").strip().casefold()
     return (runtime.spell_slot_class or {}).get(class_name) == "pact"

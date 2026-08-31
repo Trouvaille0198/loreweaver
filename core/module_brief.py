@@ -29,12 +29,17 @@ MAX_FIELD_CHARS = 8_000
 MAX_OPENINGS = 8
 MAX_TAGS = 24
 
-_TEXT_FIELDS = ("name", "description", "personality", "scenario", "opening", "examples", "notes")
+_TEXT_FIELDS = ("name", "description", "personality", "scenario", "opening", "examples", "notes", "visual_world")
 
 
 def project_brief(doc: Document, viewer: Viewer) -> dict[str, Any] | None:
-    """Keeper-only, whole or nothing — prose is module truth, not a partial view."""
-    return dict(doc.data) if viewer.is_keeper else None
+    """Keep prose keeper-only while exposing the separately-authored visual anchor."""
+    if viewer.is_keeper:
+        return dict(doc.data)
+    # The visual anchor is authored as explicitly player-safe module metadata;
+    # the scenario/opening and every other prose field remain keeper-only.
+    visual_world = str(doc.data.get("visual_world") or "").strip()
+    return {"visual_world": visual_world} if visual_world else None
 
 
 def validate_brief_write(doc: Document, services: Any) -> list[str]:
@@ -72,9 +77,16 @@ def build_brief(card: Any, alternate_openings: tuple[str, ...] = ()) -> dict[str
         "openings": [clip(entry) for entry in alternate_openings[:MAX_OPENINGS] if clip(entry)],
         "examples": clip(getattr(card, "mes_example", "")),
         "notes": clip(getattr(card, "creator_notes", "")),
+        "visual_world": "",
         "tags": [str(tag)[:200] for tag in list(getattr(card, "tags", ()) or ())[:MAX_TAGS]],
     }
-    has_prose = any(data[field] for field in ("description", "personality", "scenario", "opening", "examples")) or data[
+    raw = getattr(card, "raw", {})
+    if isinstance(raw, dict):
+        visual_world = raw.get("visual_world") or raw.get("visual_context")
+        if not visual_world and isinstance(raw.get("data"), dict):
+            visual_world = raw["data"].get("visual_world")
+        data["visual_world"] = clip(visual_world)
+    has_prose = any(data[field] for field in ("description", "personality", "scenario", "opening", "examples", "visual_world")) or data[
         "openings"
     ]
     return data if has_prose else None

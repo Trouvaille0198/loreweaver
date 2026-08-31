@@ -133,6 +133,21 @@ def complete_rest(
         reset_tags = tuple(str(item) for item in procedure.get("reset", []) or [])
         for tag in reset_tags:
             mutations.extend(recover_by_reset(sheet, pack, tag))
+        recovery = procedure.get("recover") or {}
+        if isinstance(recovery, Mapping) and recovery.get("hit_dice") == "half":
+            # D&D 5e restores up to half of the character's total Hit Dice on
+            # a long rest, rounded down; the player may choose which die types.
+            # The command has no interactive allocation yet, so allocate the
+            # legal pool deterministically without exceeding spent dice.
+            recovery_pools = [value for value in resource_values(sheet, pack).values() if value.role == "recovery_die"]
+            remaining = sum(value.maximum or 0 for value in recovery_pools) // 2
+            for value in recovery_pools:
+                if remaining <= 0:
+                    break
+                amount = min(remaining, max(0, (value.maximum or 0) - value.current))
+                if amount:
+                    mutations.append(recover_resource(sheet, pack, value.id, amount))
+                    remaining -= amount
         state["last_long_elapsed"] = elapsed + _seconds(procedure.get("advance_time", 0), path="rest.advance_time")
         sheet.conditions = []
         sheet.rest_state = copy.deepcopy(state)

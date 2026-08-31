@@ -711,10 +711,12 @@ class WorldCommands:
             apply_settlement,
             build_settlement,
             clear_pending,
+            filter_settlement_to_party,
             load_pending,
             render_proposal,
             render_result,
             save_pending,
+            settlement_party_names,
         )
 
         if not _is_keeper(ctx.raw_ctx):
@@ -724,13 +726,19 @@ class WorldCommands:
             # The pending copy is the durable record: re-show it instead of silently
             # regenerating, so a `.settle` after a reload or a second look never wastes
             # a model call. `.settle cancel` starts fresh.
+            party_names = await settlement_party_names(ctx.services, ctx.chat_key)
             existing = await load_pending(ctx.services, ctx.chat_key)
             if existing is not None:
-                return f"{render_proposal(existing, ctx.i18n)}\n{ctx.i18n.t('commands.settle.applied_hint')}"
+                current = await filter_settlement_to_party(ctx.services, ctx.chat_key, existing)
+                current_names = {char.name for char in current.characters}
+                if current.characters and current_names == set(party_names):
+                    if current != existing:
+                        await save_pending(ctx.services, ctx.chat_key, current)
+                    return f"{render_proposal(current, ctx.i18n)}\n{ctx.i18n.t('commands.settle.applied_hint')}"
+                await clear_pending(ctx.services, ctx.chat_key)
             # A failed analysis must not read as "nobody is playing": distinguish an
-            # empty table (no sheets to settle) from a model that produced no proposal.
-            sheets = await ctx.services.documents.list(ctx.chat_key, "sheet")
-            if not sheets:
+            # empty current party from a model that produced no proposal.
+            if not party_names:
                 return ctx.fail(ctx.i18n.t("commands.settle.no_data"))
             # The analysis call can take a while — tell the room it is running before
             # the silence.

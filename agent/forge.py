@@ -68,6 +68,7 @@ from core.pack import build_pack
 from core.pregen_roster import pregen_add
 from core.yaml_safety import safe_load_no_aliases
 from gateway.imagegen import allow_imagegen_request
+from agent.visual_context import append_visual_context, visual_context_block
 from infra.file_permissions import atomic_write_private
 from infra.imagegen import ImageGenError
 from infra.media_store import ALLOWED_IMAGE_MIMES, MediaStore
@@ -705,6 +706,21 @@ def _extract_module_id(content: str) -> str:
     return str(value).strip() if value is not None else ""
 
 
+def _extract_module_visual_world(content: str) -> dict[str, str]:
+    """Read the explicitly player-safe visual anchor from module frontmatter."""
+    match = _MODULE_FRONTMATTER_RE.match(content)
+    if match is None:
+        return {}
+    try:
+        frontmatter = safe_load_no_aliases(match.group("body")) or {}
+    except yaml.YAMLError:
+        return {}
+    if not isinstance(frontmatter, dict):
+        return {}
+    value = str(frontmatter.get("visual_world") or "").strip()
+    return {"visual_world": value} if value else {}
+
+
 def _unique_user_module_id(user_dir: Path, base: str) -> str:
     """Module analogue of `_unique_user_id`/`_unique_user_rulepack_id`: a generated module installs
     as a flat `<id>.md` file. Unlike skills/rulepacks there is no built-in-id namespace to protect
@@ -827,6 +843,7 @@ def _build_module_messages(
             i18n.t("agent.forge.module_system_prompt"),
             i18n.t("agent.forge.module_language_requirement"),
             i18n.t("agent.forge.module_id_requirement"),
+            i18n.t("agent.forge.module_visual_world_requirement"),
         )
     )
     difficulty_note = _difficulty_note(i18n, difficulty, levels)
@@ -1225,6 +1242,7 @@ async def _generate_and_install_module_impl(
                 media_kinds,
                 i18n,
                 assets_dir=user_dir / f"{module_id}.assets",
+                visual_source=_extract_module_visual_world(content),
             )
         )
     if companion_kinds:
@@ -1448,6 +1466,7 @@ def _build_module_media_messages(
     i18n,
     pregen_names: list[str] | None = None,
     subject_names: dict[str, list[str]] | None = None,
+    visual_source: dict[str, Any] | None = None,
 ) -> list[dict]:
     """The two-message shot-list prompt, mirroring `_build_module_messages`: the localized
     shot-designer framing as the system message, and the kinds-with-caps request plus the module
@@ -1461,10 +1480,15 @@ def _build_module_media_messages(
         (
             i18n.t("agent.forge.module_media_system_prompt"),
             i18n.t("agent.forge.module_media_language_requirement"),
+            i18n.t("agent.forge.module_media_worldview_requirement"),
         )
     )
     kinds_text = ", ".join(f"{kind} ≤ {_MEDIA_KIND_CAPS[kind]}" for kind in kinds)
     user_prompt = i18n.t("agent.forge.module_media_request", kinds=kinds_text, module=content)
+    user_prompt += "\n\n" + i18n.t(
+        "agent.forge.module_media_visual_context",
+        context=visual_context_block(visual_source, locale=getattr(i18n, "locale", "zh")),
+    )
     if pregen_names:
         user_prompt += "\n\n" + i18n.t(
             "agent.forge.module_media_pregen_list", names="\n".join(f"- {name}" for name in pregen_names)
@@ -1490,6 +1514,7 @@ async def _module_media_pass(
     i18n,
     *,
     assets_dir: Path | None = None,
+    visual_source: dict[str, Any] | None = None,
 ) -> str:
     """Generate the keeper-selected module illustrations: one scoped shot-list call, then the
     room's own imagegen lane per shot, stored into the room's media deck under a
@@ -1511,7 +1536,7 @@ async def _module_media_pass(
 
     raw, failure = await _llm_authored(
         services,
-        _build_module_media_messages(services, content, kinds, i18n),
+        _build_module_media_messages(services, content, kinds, i18n, visual_source=visual_source),
         chat_key=ctx.chat_key,
         lane="media_shot_list",
     )
@@ -1541,7 +1566,9 @@ async def _module_media_pass(
             break
         try:
             data, mime = await _imagegen_generate_retry(
-                imagegen, shot.prompt, size=services.settings.imagegen.size
+                imagegen,
+                append_visual_context(shot.prompt, visual_source, locale=getattr(i18n, "locale", "zh")),
+                size=services.settings.imagegen.size,
             )
         except Exception as exc:  # provider down after bounded retries: skip THIS shot, keep going
             logger.warning(
@@ -1821,6 +1848,7 @@ _PACK_MODULE_CARD_SCHEMA = """{
     "alternate_openings": ["other ways to enter the scenario (optional)"],
     "recommended_levels": "recommended character level range for this module, e.g. '1-3' (REQUIRED for systems with character levels like D&D 5e; omit for systems without levels like CoC)",
     "tags": ["free-form keywords"],
+    "visual_world": "player-safe visual world anchor: the named rule system/world (e.g. D&D Forgotten Realms/Faerûn), era, region, peoples, culture and visual direction; never include secrets or plot twists",
     "worldbook": [
         {
             "id": "stable id for a clue entry, e.g. 'clue-bronze-mirror' (required when an item references it)",
@@ -2427,6 +2455,7 @@ def _build_pack_module_messages(
     difficulty_note = _difficulty_note(i18n, difficulty, levels)
     if difficulty_note:
         user_content = f"{user_content}\n\n{difficulty_note}"
+    user_content = f"{user_content}\n\n{i18n.t('agent.forge.pack_module_visual_world_requirement')}"
     resolved_system = system or extends_base
     if resolved_system:
         try:

@@ -369,8 +369,9 @@ The Scribe keeps a per-character memory log as play proceeds (one player-grade l
 turn per PC whose own experience the turn showed), so by the end every character has a
 past. `.settle` runs one model call over the room's process data — skill checks,
 chronicle, memories, sheets — and proposes, per character: which skills earned
-improvement checks (rolled with real dice on `.settle apply`, through the pack's
-`improvement_check`), small attribute changes (validated exactly like `.st`), the folded
+improvement checks when the rule system declares that mechanic (rolled with real dice on
+`.settle apply`, through the pack's `improvement_check`), small attribute changes
+(validated exactly like `.st`), the folded
 life-summary, and an updated backstory. The proposal changes nothing until the Keeper
 applies it; `.mem` is player-facing and shows what the table shared.
 
