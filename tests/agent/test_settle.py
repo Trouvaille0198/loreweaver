@@ -213,8 +213,8 @@ async def test_apply_settlement_skips_unknown_characters_and_no_improvement_syst
     )
     assert result.outcomes[0].skipped == "no_such_character"
 
-    # D&D 5e declares no improvement_check subsystem: growth is skipped, not invented.
-    await _make_character(services, name="Thorin", system="dnd5e")
+    # WoD declares no improvement_check subsystem: growth is skipped, not invented.
+    await _make_character(services, name="Thorin", system="wod")
     result = await apply_settlement(
         services,
         ROOM,

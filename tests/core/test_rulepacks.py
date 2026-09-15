@@ -1,6 +1,6 @@
 """Tests for the rule-pack data-plugin foundation (core/rulepacks.py).
 
-Covers: (a) coc7/dnd5e behavior-preservation against pre-refactor baseline
+Covers: (a) coc7 behavior-preservation against pre-refactor baseline
 numbers, (b) a brand-new pure-data system loading via the declarative DSL
 only, (c) each declarative primitive in isolation (including inclusive range
 boundaries), (d) available_systems() discovery, (e) unknown-system errors,
@@ -40,11 +40,10 @@ def _alias_bomb_yaml(levels: int = 6, branch: int = 10) -> str:
     return "\n".join(lines)
 
 # ---------------------------------------------------------------------------
-# (a) coc7 / dnd5e derived math must match the rulebook baselines. The shared
+# (a) coc7 derived math must match the rulebook baselines. The shared
 # numbers were computed from the ORIGINAL hardcoded tables before the YAML
 # refactor; stage B added entries the hardcoded tables kept elsewhere (coc7
-# 灵感/知识, dnd5e's secondary block + 熟练加值) — those extend the baseline,
-# every pre-existing number is unchanged.
+# 灵感/知识) — those extend the baseline, every pre-existing number is unchanged.
 # ---------------------------------------------------------------------------
 
 
@@ -111,47 +110,6 @@ def test_coc7_compute_derived_matches_baseline_high_totals_multidice_db():
     }
 
 
-def test_dnd5e_compute_derived_matches_pre_refactor_baseline():
-    pack = load_rulepack("dnd5e")
-    values = dict(pack.defaults)
-    values.update({"力量": 14, "敏捷": 16, "体质": 12, "智力": 10, "感知": 13, "魅力": 8})
-
-    assert pack.compute_derived(values) == {
-        "pp": 10,
-        "力量调整值": 2,
-        "敏捷调整值": 3,
-        "体质调整值": 1,
-        "智力调整值": 0,
-        "感知调整值": 1,
-        "魅力调整值": -1,
-        "运动": 2,
-        "体操": 3,
-        "巧手": 3,
-        "隐匿": 3,
-        "调查": 0,
-        "奥秘": 0,
-        "历史": 0,
-        "自然": 0,
-        "宗教": 0,
-        "察觉": 1,
-        "洞悉": 1,
-        "驯兽": 1,
-        "医药": 1,
-        "求生": 1,
-        "游说": -1,
-        "欺瞒": -1,
-        "威吓": -1,
-        "表演": -1,
-        # Stage B: the old recompute_dnd_derived secondary block, now pack DSL.
-        "先攻修正": 3,
-        "速度": 30,
-        "载重": 210,
-        "负重": 140,
-        "护甲等级": 13,
-        "熟练加值": 2,
-        "被动感知": 10,
-    }
-
 
 def test_coc7_named_computer_matches_declarative_form():
     """母语 (copy_of) and 闪避 (half_of) must equal the old bespoke functions."""
@@ -194,19 +152,19 @@ def test_coc7_declarative_derived_matches_old_defaults_on_partial_or_nonnumeric(
 def test_available_systems_contains_builtin_packs():
     systems = available_systems()
     assert "coc7" in systems
-    assert "dnd5e" in systems
+    assert "wod" in systems
     assert systems == sorted(systems)
 
 
 def test_load_rulepack_resolves_declared_names_and_set_keys():
     coc = load_rulepack("coc7")
-    dnd = load_rulepack("dnd5e")
+    wod = load_rulepack("wod")
 
     assert load_rulepack("coc") is coc
     assert load_rulepack("call of cthulhu") is coc
     assert load_rulepack("CoC7") is coc
-    assert load_rulepack("dnd") is dnd
-    assert load_rulepack("d&d5e") is dnd
+    assert load_rulepack("wod") is wod
+    assert load_rulepack("world of darkness") is wod
 
 
 def test_coc7_luc_alias_resolves_to_the_luck_attribute():
@@ -441,7 +399,7 @@ def test_user_rulepack_dir_pack_discovered_alongside_built_ins(tmp_path: Path) -
         systems = rulepacks_module.available_systems()
         assert "user-fixture" in systems
         assert "coc7" in systems  # the real built-ins are still discoverable alongside it
-        assert "dnd5e" in systems
+        assert "wod" in systems
 
         pack = rulepacks_module.load_rulepack("user-fixture-system")
         assert pack.system == "user-fixture"
@@ -569,7 +527,7 @@ def test_unknown_rulepack_name_does_not_rescan_when_the_dirs_are_unchanged(
 def test_built_in_rulepack_ids_matches_the_real_rulepacks_dir() -> None:
     ids = rulepacks_module.built_in_rulepack_ids()
     assert "coc7" in ids
-    assert "dnd5e" in ids
+    assert "wod" in ids
 
 
 def test_built_in_rulepack_ids_ignores_the_user_dir(tmp_path: Path) -> None:
@@ -645,8 +603,8 @@ def test_builtin_packs_ship_en_display_for_check_staples() -> None:
     coc = rulepacks_module.load_rulepack("coc7")
     assert coc.display_name("侦查", "en") == "Spot Hidden"
     assert coc.display_name("理智", "en") == "Sanity"
-    dnd = rulepacks_module.load_rulepack("dnd5e")
-    assert dnd.display_name("察觉", "en") == "Perception"
+    wod = rulepacks_module.load_rulepack("wod")
+    assert wod.display_name("察觉", "en") == "察觉"  # no display table -> canonical
 
 
 def test_parse_rulepack_text_rejects_bad_display_shapes() -> None:

@@ -95,7 +95,7 @@
   `{type:"state", character?:{name,system,resources:[Resource],attributes:{},skills?:{},secondary_attributes?:{},fields?:{},equipment?:[],background?:string,notes?:string,status_effects:[],avatar?:{hash,mime,size,name?}}, party:[{name,online:boolean,active:boolean,initiative?:int,resources?:[Resource],ai?:boolean,avatar?:{hash,mime,size,name?},system?:string,attributes?:{},skills?:{},secondary_attributes?:{},fields?:{},equipment?:[],background?:string,status_effects?:string[]}], scene?:{name,focus?}, clock?:{time,round?}, initiative:[{name,value:int,current:boolean}], online:int, variables?:[{id:string,label:string,kind:"number"|"bool"|"text"|"enum",value:number|boolean|string,min?:int,max?:int,hidden?:boolean}], pregens?:[{name:string,claimed_by:string}], systems?:[{id:string,make_char?:string}], reset?:boolean}`
   `Resource = {id:string, label:string, value:number, max?:number}` — 规则系统的生命体征条（HP、理智、魔法值……）作为通用数据：客户端按列表渲染条形量表，无需知道任何系统的字段名。条目按渲染顺序到达。`label` 已按**本观看者**的语言解析：规则包的 `sheet.resources[].label` 可写成语言映射，于是同一个房间的 `en` 与 `zh` 连接各自读到自己那一版。
   `room_system` 是房间解析出的当前规则系统：依次使用当前角色系统、房间模组锁定的系统、部署默认系统。它与 `systems` 分开，后者仍是服务端发现的完整系统列表。
-  `character.attributes`（v2.3）只含卡的**特征值**——规则系统 `sheet.attributes` 声明的那些键，按包自己的顺序（CoC 7e 的 `STR CON SIZ …`、D&D 5e 的 `STR DEX CON …`、社区包自己系统的自己那套）；生命体征**不**在这里重复（它们是 `resources`），派生值从不发送——客户端照线上顺序原样渲染，每个键都是 `.st <key>=<n>` 接受的名字。没有声明卡表规格的系统按存储原样发送。
+  `character.attributes`（v2.3）只含卡的**特征值**——规则系统 `sheet.attributes` 声明的那些键，按包自己的顺序（CoC 7e 的 `STR CON SIZ …`、社区包自己系统的自己那套）；生命体征**不**在这里重复（它们是 `resources`），派生值从不发送——客户端照线上顺序原样渲染，每个键都是 `.st <key>=<n>` 接受的名字。没有声明卡表规格的系统按存储原样发送。
   `character.source` 是这张卡（若为认领的预建角色）来自哪个模组（如 `forge-module:the-snow-demon-villa`）——只有预建角色才有。`character.memory` 是角色的玩家级记忆投影：`summary`（结算后的人生总结）加 `entries`（最近几条经历，新的在前，线上最多 10 条）。`character.relationships` 列出**这个角色**对每个命名实体的数值轨道（`[{target, tracks:[{track,value}]}]`），只发非默认值；轨道 id 是原样（`affection`/`desire`），由客户端本地化标签。三者都是增量线字段——旧客户端直接忽略。
   `party[]` 可以携带公开的人物资料面（`system`、`attributes`、`skills`、`secondary_attributes`、`fields`、`equipment`、`background`、`status_effects`），客户端无需再次请求就能展示队友详情。私密的 `notes` 只留在拥有者自己的 `character` 中。
   `variables`（v1.6，增量字段，可有可无——房间没有就整个省略）是房间的确定性模块变量，且只含玩家可见子集：仅守秘人可见的变量在引擎内部（`core.modvars.player_entries`）就被过滤，永远不会到达任何传输层。条目按定义顺序到达（按原样渲染，不要排序）；`label` 已按房间语言本地化；`min`/`max` 只出现在有界的 `number` 变量上（客户端可将其渲染为进度条）。导入的 SillyTavern MVU 卡片变量共用同一列表：`id` 带 `mvu.` 前缀、点分路径作为 `label`（只有标量叶子，数量由服务端封顶）——不新增帧类型，客户端无需改动。MVU 的叶子由**守秘人挑着放出来**（默认全部隐藏，没公开的一律不发）：玩家帧只携带守秘人公开过的路径（`.var expose`）；守秘人自己连接的帧额外携带未公开的其余叶子，每条带 `hidden:true` 标记（增量字段，可有可无——不认识它的客户端照常渲染，认识的可以画成置灰或者加把锁）。
@@ -109,7 +109,7 @@
   `{type:"presence", players:[{id,name,online}], online:int}`
 - `system` — 带外通知：`{type:"system", level:"info"|"warn", text:string}`
 - `turn_status` — 临时的房间级 AI-KP 活动状态。`busy` 携带正在结算其行动的 actor，`idle` 清除状态。客户端应显示动画忙碌指示，并设置安全超时以防结束帧丢失：
-  `{type:"turn_status", status:"busy", actor:string, activity?:"reading"|"dice"|"cast"|"bookkeeping", round?:int}` 或 `{type:"turn_status", status:"idle"}`。
+  `{type:"turn_status", status:"busy", actor:string, activity?:"reading"|"dice"|"bookkeeping", round?:int}` 或 `{type:"turn_status", status:"idle"}`。
   长回合每进入一个工具轮会重发一次 `busy`，携带可选的 `activity` 与 `round`（2.3.1 新增）：`activity`
   是该轮开头那类工作的粗分类，绝不含工具名或参数；`round` 从 1 开始计数。开场的 `busy` 以及更早版本的
   服务器都不带这两个字段，忽略它们的客户端行为与以前完全一致；重复的 `busy` 应视为同一个指示器的刷新，
@@ -277,7 +277,7 @@ role = "player"  # 或 "keeper"；默认为 "player"
   `{type:"admin_update", status:"restarting"|"failed", output?:string}`
 - `admin_skills` — 所有可发现技能，`enabled` 反映调用者房间的启用状态（`name`/`description` 已按请求的 `locale` 本地化）：
   `{type:"admin_skills", skills:[{id:string, name:string, description:string, content_rating:string, enabled:boolean}]}`
-- `admin_rules` — 所有可发现的规则系统，`built_in` 区分内置系统（`coc7`/`dnd5e`）与生成/用户安装的系统：
+- `admin_rules` — 所有可发现的规则系统，`built_in` 区分内置系统（`coc7`/`wod`）与生成/用户安装的系统：
   `{type:"admin_rules", systems:[{id:string, built_in:boolean}]}`
 - `admin_generated` — 锻造引擎的结果；`ok` 为 `false` 时 `id`/`name` 为空、`error` 携带（未翻译的）创作或文件安装诊断。对 `kind:"module"`/`"pack"`，`detail` 携带按房间的安装/导入结果；要据此判断模组是否真的进入房间（`ok` 只表示创作出的产物已写入，不保证后续房间导入成功）。对 `skill`/`rule` 为空：
   `{type:"admin_generated", kind:"skill"|"rule"|"module"|"pack", ok:boolean, id:string, name:string, error:string, detail:string}`

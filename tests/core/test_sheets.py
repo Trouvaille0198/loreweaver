@@ -90,63 +90,48 @@ def test_refresh_clamps_current_vitals_and_initializes_missing_ones():
     assert sheet.attributes["HP"] == 6  # creation re-derives the pools
 
 
-def test_dnd_sheet_secondary_and_field_bridges():
-    pack = load_rulepack("dnd5e")
-    sheet = CharacterSheet("Kael", "DnD5e")
-    sheet.attributes["DEX"] = 16
-    refresh_sheet(sheet, pack, preserve_trained=False)
+def test_sheet_field_bridges_route_meta_fields():
+    pack = load_rulepack("coc7")
+    sheet = CharacterSheet("Ada", "CoC")
 
-    assert sheet_value(sheet, pack, "护甲等级") == 13
-    assert sheet_value(sheet, pack, "等级") == 1  # field_keys bridge
-    set_sheet_value(sheet, pack, "等级", 5)
-    assert sheet.level == 5
-    refresh_sheet(sheet, pack)
-    assert sheet_value(sheet, pack, "熟练加值") == 3
+    assert sheet_value(sheet, pack, "年龄") == 25  # field_keys bridge, declared default
+    set_sheet_value(sheet, pack, "年龄", 34)
+    assert sheet.age == 34
+    assert sheet_value(sheet, pack, "年龄") == 34
+
 
 def test_projected_skills_folds_derived_skills_back_in():
-    pack = load_rulepack("dnd5e")
-    sheet = CharacterSheet("Kael", "DnD5e")
-    sheet.attributes["STR"] = 16
-    sheet.attributes["DEX"] = 14
-    refresh_sheet(sheet, pack, preserve_trained=False)
+    pack = load_rulepack("coc7")
+    sheet = CharacterSheet("Kael", "CoC")
+    sheet.attributes["敏捷"] = 60
+    sheet.attributes["教育"] = 70
 
-    # dnd5e's 18 skills are ALL derived (ability modifiers) and deliberately never
-    # persisted: a bare sheet carries no stored skills, but a display projection
-    # must fold the recomputed values back in or the client renders an empty panel.
-    assert sheet.skills == {}
+    # Derived skills are deliberately never persisted: a bare sheet carries no
+    # stored value, but a display projection must fold the recomputed values
+    # back in or the client renders an empty slot.
+    assert sheet.skills.get("闪避") is None
     projected = projected_skills(sheet, pack)
-    assert len(projected) == 18
-    assert projected["运动"] == 3  # STR 16 → +3
-    assert projected["体操"] == 2  # DEX 14 → +2
-    assert projected["察觉"] == 0
+    assert projected["闪避"] == 30  # half_of 敏捷60
+    assert projected["母语"] == 70  # copy_of 教育
 
     # A trained skill (stored value differing from its derivation) wins.
-    sheet.skills["运动"] = 5
+    sheet.skills["闪避"] = 45
     projected = projected_skills(sheet, pack)
-    assert projected["运动"] == 5
-    assert projected["体操"] == 2  # untrained slots still fold in
+    assert projected["闪避"] == 45
+    assert projected["母语"] == 70  # untrained slots still fold in
 
     # Plain-dict rows (party roster / pregen sheets) project the same way.
     projected = projected_skills(sheet.to_dict(), pack)
-    assert projected["运动"] == 5
-    assert projected["体操"] == 2
+    assert projected["闪避"] == 45
+    assert projected["母语"] == 70
 
 
-def test_check_value_bridges_ability_checks_to_modifiers():
-    pack = load_rulepack("dnd5e")
-    sheet = CharacterSheet("Kael", "DnD5e")
-    sheet.attributes["STR"] = 16
-    refresh_sheet(sheet, pack, preserve_trained=False)
-
-    # A STR check rolls the MODIFIER (+3), not the score.
-    assert check_value(sheet, pack, "力量") == 3
-    # Skill checks feed the skill's own (derived) value.
-    assert check_value(sheet, pack, "运动") == 3
-
+def test_check_value_reads_the_raw_attribute_without_a_bridge():
     coc = load_rulepack("coc7")
     investigator = CharacterSheet("调查员", "CoC")
     investigator.attributes["STR"] = 65
-    # CoC has no bridge: an attribute check rolls the raw value.
+
+    # CoC has no modifier bridge: an attribute check rolls the raw value.
     assert check_value(investigator, coc, "力量") == 65
 
 
@@ -169,17 +154,10 @@ def test_wire_resources_lists_declared_meters():
     assert set(meters) == {"hp", "san", "mp"}
     assert meters["hp"] == {"id": "hp", "label": "HP", "value": 10, "max": 10}
 
-    # dnd5e opted into the runtime pools contract: its top-level meters come
-    # from the UNGROUPED pools (HP + temporary HP), never the grouped hit-dice
-    # or spell-slot pools, and labels resolve per viewer locale.
-    dnd = load_rulepack("dnd5e")
-    fighter = CharacterSheet("Kael", "DnD5e")
-    meters = {entry["id"]: entry for entry in wire_resources(fighter, dnd)}
-    assert set(meters) == {"hp", "temp_hp"}
-    assert meters["hp"] == {"id": "hp", "label": "HP", "value": 8, "max": 8}
-    assert meters["temp_hp"] == {"id": "temp_hp", "label": "Temporary HP", "value": 0, "max": None}
-    zh = {entry["id"]: entry["label"] for entry in wire_resources(fighter, dnd, "zh")}
-    assert zh["hp"] == "生命值" and zh["temp_hp"] == "临时生命值"
+
+    # Labels resolve per viewer locale straight off the pack declaration.
+    zh = {entry["id"]: entry["label"] for entry in wire_resources(investigator, coc, "zh")}
+    assert zh["hp"] == "HP" and zh["san"] == "SAN"
 
 
 def test_canonical_values_translate_storage_keys():

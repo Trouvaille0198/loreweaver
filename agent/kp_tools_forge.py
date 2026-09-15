@@ -76,8 +76,6 @@ class ForgeTools:
         description: str,
         media: list[str] | None = None,
         companion: list[str] | None = None,
-        difficulty: str = "",
-        levels: str = "",
     ) -> str:
         """Author and install a brand-new module/scenario document from a natural-language
         description (or a keeper-provided premise), landing it directly in THIS room's module
@@ -87,15 +85,6 @@ class ForgeTools:
         Args:
             description: A clear, self-contained description of the scenario to author: setting,
                 premise, the key NPCs/threats involved, and the shape of the mystery/adventure.
-            difficulty: The module's difficulty tier, one of "easy", "standard", "hard" or
-                "deadly" (default standard). It drives the DESIGN of the environment and
-                challenge: easy = mild surroundings, weak sparse threats, plentiful resources;
-                hard = perilous surroundings, strong threats, scarce resources, time pressure;
-                deadly = near-uninhabitable, overwhelming threats, almost no resources. Ask the
-                keeper for a tier when they have one; omit for a default-standard module.
-            levels: The recommended character level range this module is tuned for, e.g. "1-3"
-                or "5-10" (systems with levels like D&D). The module documents it and the threat
-                budget matches it.
             media: Optional extra illustrations to generate alongside the module, chosen from:
                 "cover" (one opening image), "scenes" (one per key scene), "npcs" (one portrait
                 per key NPC), "items" (one per key item/clue). Generated images are stored in the
@@ -111,7 +100,7 @@ class ForgeTools:
         """
         i18n = self._i18n(ctx)
         result = await generate_and_install_module(
-            self._services, ctx, description, media=media, companion=companion, difficulty=difficulty, levels=levels
+            self._services, ctx, description, media=media, companion=companion
         )
         if result.ok:
             if result.reused:
@@ -135,8 +124,6 @@ class ForgeTools:
         description: str,
         media: list[str] | None = None,
         companion: list[str] | None = None,
-        difficulty: str = "",
-        levels: str = "",
         extends_base: str = "",
         system: str = "",
     ) -> str:
@@ -149,15 +136,6 @@ class ForgeTools:
         Args:
             description: A clear, self-contained description of the scenario to author: setting,
                 premise, the key NPCs/threats involved, and the shape of the mystery/adventure.
-            difficulty: The module's difficulty tier, one of "easy", "standard", "hard" or
-                "deadly" (default standard). Drives the DESIGN of the environment and challenge:
-                easy = mild surroundings, weak sparse threats, plentiful resources; hard =
-                perilous surroundings, strong threats, scarce resources, time pressure; deadly =
-                near-uninhabitable, overwhelming threats, almost no resources. Ask the keeper for
-                a tier when they have one; omit for a default-standard module.
-            levels: The recommended character level range this module is tuned for, e.g. "1-3"
-                or "5-10" (systems with levels like D&D). Saved to the pack manifest and shown on
-                the module page as its difficulty identifier.
             media: Optional illustrations to generate and bundle INTO the pack's assets (travel
                 with the module), chosen from: "cover", "scenes", "npcs", "items".
             companion: Optional companion content to bundle INTO the pack, chosen from: "skills"
@@ -181,8 +159,6 @@ class ForgeTools:
             description,
             media=media,
             companion=companion,
-            difficulty=difficulty,
-            levels=levels,
             extends_base=extends_base,
             system=system,
         )

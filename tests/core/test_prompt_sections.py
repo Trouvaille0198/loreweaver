@@ -215,13 +215,6 @@ async def test_inject_system_expertise_prompt_selects_coc_guidance():
     assert result == load_rulepack("coc7").expertise_text("en")
 
 
-async def test_inject_system_expertise_prompt_selects_dnd5e_guidance():
-    ctx = _Ctx(chat_key="chat1")
-    manager = _FakeCharacterManager(character=_FakeCharacter(name="Rill", system="DnD5e"))
-    result = await inject_system_expertise_prompt(ctx, manager, ZH)
-    assert result == load_rulepack("dnd5e").expertise_text("zh")
-
-
 async def test_inject_system_expertise_prompt_selects_wod_guidance():
     ctx = _Ctx(chat_key="chat1")
     manager = _FakeCharacterManager(character=_FakeCharacter(name="Vex", system="WoD"))
@@ -311,7 +304,7 @@ async def test_inject_game_state_prompt_seeded_state_is_localized_and_nonempty()
         },
         {
             "name": "Bob",
-            "system": "dnd5e",
+            "system": "wod",
             "resources": [{"id": "hp", "label": "HP", "value": 15, "max": 20}],
             "status_effects": [],
         },

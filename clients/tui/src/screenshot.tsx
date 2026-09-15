@@ -211,7 +211,6 @@ if (SCREEN === "game") {
     online: 1,
     systems: [
       { id: "coc7", make_char: "coc" },
-      { id: "dnd5e", make_char: "dnd" },
     ],
   }
   root.render(

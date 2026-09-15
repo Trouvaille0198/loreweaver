@@ -38,13 +38,11 @@ it does not implement the field, or does not implement that corner of the gramma
 evaluation errors — MUST NOT render the block. Ignoring the gate draws content the author
 hid, so the undecidable case fails CLOSED, exactly as an unresolved `$var` does.
 
-**2.9 (additive)** adds two optional fields on the character state frame
-(`CharacterState`): `spells` — the character's known spells as localized
-display names (the sheet's `known_spells` ids resolved server-side) — and
-`race_info` — the pack-resolved race data behind the sheet's free-text race
-field (`id`, localized `name` and `traits`, `speed`, `darkvision`). The
-character page shows what a character knows and is without a command
-round-trip. A pre-2.9 client ignores both fields.
+**2.9 (additive)** added two optional fields on the character state frame
+(`CharacterState`): `spells` and `race_info`. Both were withdrawn again when the
+D&D 5e runtime (levels, classes, spell slots, known spells, races) was removed
+from the engine — the server no longer sends them. They were always optional,
+so a client that predates the withdrawal simply renders without them.
 
 **2.8 (additive)** generalizes narrative `mentions` beyond NPCs: items and
 discovered clues join in. The server annotates `[name](item://<id>)` and
@@ -281,7 +279,7 @@ connections receive `error too_many_connections` before `join` is read.
   simply ignore it:
   `{type:"panel_event", panel:string, payload:any}`
 - `state` — a panel snapshot, sent on `join` and after every turn:
-  `{type:"state", room_system?:string, character?:{name,system,resources:[Resource],attributes:{},skills?:{},secondary_attributes?:{},fields?:{},equipment?:[],background?:string,notes?:string,status_effects:[],avatar?:{hash,mime,size,name?},spells?:[string],race_info?:{id,name,speed,darkvision,traits}}, characters?:[CharacterState], party:[{name,online:boolean,active:boolean,initiative?:int,resources?:[Resource],ai?:boolean,avatar?:{hash,mime,size,name?},system?:string,attributes?:{},skills?:{},secondary_attributes?:{},fields?:{},equipment?:[],background?:string,status_effects?:string[]}], scene?:{name,focus?}, clock?:{time,round?}, initiative:[{name,value:int,current:boolean}], online:int, usage?:{context_tokens:int,context_window:int,input_tokens:int,output_tokens:int,cache_hit_tokens:int,cache_miss_tokens:int}, variables?:[{id:string,label:string,kind:"number"|"bool"|"text"|"enum",value:number|boolean|string,min?:int,max?:int,hidden?:boolean}], pregens?:[{name:string,claimed_by:string}], systems?:[{id:string,make_char?:string}], reset?:boolean}`
+  `{type:"state", room_system?:string, character?:{name,system,resources:[Resource],attributes:{},skills?:{},secondary_attributes?:{},fields?:{},equipment?:[],background?:string,notes?:string,status_effects:[],avatar?:{hash,mime,size,name?}}, characters?:[CharacterState], party:[{name,online:boolean,active:boolean,initiative?:int,resources?:[Resource],ai?:boolean,avatar?:{hash,mime,size,name?},system?:string,attributes?:{},skills?:{},secondary_attributes?:{},fields?:{},equipment?:[],background?:string,status_effects?:string[]}], scene?:{name,focus?}, clock?:{time,round?}, initiative:[{name,value:int,current:boolean}], online:int, usage?:{context_tokens:int,context_window:int,input_tokens:int,output_tokens:int,cache_hit_tokens:int,cache_miss_tokens:int}, variables?:[{id:string,label:string,kind:"number"|"bool"|"text"|"enum",value:number|boolean|string,min?:int,max?:int,hidden?:boolean}], pregens?:[{name:string,claimed_by:string}], systems?:[{id:string,make_char?:string}], reset?:boolean}`
   `Resource = {id:string, label:string, value:number, max?:number}` — the rule
   system's vital meters (HP, sanity, mana, …) as generic data: a client renders
   the list as meters without knowing any system's field names. Entries arrive in
@@ -291,7 +289,7 @@ connections receive `error too_many_connections` before `join` is read.
   `room_system` is the room's resolved rule system: the active character's system, then the room's module pin, then the deployment default. It is separate from `systems`, which remains the complete discoverable system list.
   `character.attributes` (v2.3) is the sheet's CHARACTERISTICS only — the keys the
   rule system's `sheet.attributes` declares, in the pack's own order (`STR CON SIZ …`
-  for CoC 7e, `STR DEX CON …` for D&D 5e, a community pack's own for its system);
+  for CoC 7e, a community pack's own for its system);
   the vitals are NOT repeated here (they are `resources`) and derived values are
   never sent — so a client renders the dict as-is, in wire order, and each key is a
   name `.st <key>=<n>` accepts. A system that declares no sheet spec sends its
@@ -350,7 +348,7 @@ connections receive `error too_many_connections` before `join` is read.
 - `turn_status` — ephemeral room-wide AI-KP activity. `busy` names the actor whose
   action is being resolved; `idle` clears the activity. Clients should animate their
   busy indicator and apply a safety timeout in case an end frame is lost:
-  `{type:"turn_status", status:"busy", actor:string, activity?:"reading"|"dice"|"cast"|"bookkeeping", round?:int}` or
+  `{type:"turn_status", status:"busy", actor:string, activity?:"reading"|"dice"|"bookkeeping", round?:int}` or
   `{type:"turn_status", status:"idle"}`.
   A long turn re-sends `busy` once per tool round with the OPTIONAL `activity` and
   `round` hints (added in 2.3.1): `activity` is the coarse kind of work that round
@@ -731,7 +729,7 @@ Server → client:
 - `admin_skills` — every discoverable skill, `enabled` reflecting the caller's room:
   `{type:"admin_skills", skills:[{id:string, name:string, description:string, content_rating:string, enabled:boolean}]}`
 - `admin_rules` — every discoverable rule system, `built_in` marking a shipped
-  system (`coc7`/`dnd5e`) vs a generated/user-installed one:
+  system (`coc7`/`wod`) vs a generated/user-installed one:
   `{type:"admin_rules", systems:[{id:string, built_in:boolean}]}`
 - `admin_npc_record` — the reply to `admin_npc_detail` (protocol 2.10): the FULL
   keeper projection of one NPC record from the caller's own room, field-complete

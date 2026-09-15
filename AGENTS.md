@@ -61,15 +61,11 @@
 - resources = 资源条（血量/法力/理智等条状数值）
 - equipment / items = 装备 / 物品
 - status effects = 状态效果（中毒、眩晕等）
-- spell slots = 法术位
-- known spells = 已学会的法术
-- level / class / race = 等级 / 职业 / 种族
+- occupation / background = 职业 / 出身（角色创建时选定）
 - check = 检定（掷骰判定）
 - save = 豁免（抵抗判定）
 - critical / fumble = 大成功 / 大失败
-- advantage / disadvantage = 优势 / 劣势
 - initiative = 先攻（战斗出手顺序）
-- rest = 休息（回满短休/长休资源）
 
 房间与会话：
 - member = 房间成员
@@ -97,11 +93,11 @@
 - timeline = 时间线
 
 规则与配置：
-- rulepack / system = 规则系统（D&D 5e / CoC 等）
+- rulepack / system = 规则系统（CoC 7e 等 BRP 系松散规则）
 - house rules = 房规
 - preset = 预设（模型/提示词预设）
 - skill（KP 技能）= 主持人技能（给 AI 的能力插件，可开关）
-- runtime = 规则引擎（战斗/休息/升级这些确定性规则）
+- runtime = 规则引擎（检定/资源/先攻这类确定性规则）
 - capabilities = 能力门控（按规则系统决定 AI 能用哪些工具）
 
 角色操作：
@@ -139,15 +135,11 @@ AI 侧：
 
 命令（点号开头，用户直接输入）：
 - .st / .sheet = 查看/编辑角色卡
-- .cast = 施法（用法术位）
-- .spells = 法术（查看/学习法术）
-- .rest = 休息（恢复法术位/血量）
-- .advance / .level = 升级
 - .roll / .check / .save = 掷骰 / 检定 / 豁免
 - .hroll = 主持人隐藏骰
 - .opposed = 对抗检定（双方比骰）
 - .jrrp = 今日人品骰
-- .combat / .init / .attack = 战斗 / 先攻 / 攻击
+- .init = 先攻（战斗出手顺序）
 - .item = 物品（查看/发放/装备）
 - .party = 队伍与同伴管理
 - .pc = 预生成角色管理（认领/释放/生成新角色）
@@ -158,7 +150,6 @@ AI 侧：
 - .module = 剧本管理（导入/删除/查看）
 - .worldbook = 世界设定库（查看/编辑设定条目）
 - .clue = 线索（查看/揭示）
-- .encounter = 遭遇（设计遭遇战）
 - .map = 地图（绘制/查看）
 - .image = 配图（生成插图）
 - .audio / .bgm = 音频 / 背景音乐
@@ -218,14 +209,14 @@ AI 侧：
   facet 声明 reset_scope，两条路都覆盖。
 - 提出非平凡机制前先检查 `docs/notes/rejected/`；涉及生命周期、锁、provider
   或回放时，还要阅读 `docs/defensive-patterns.md`。
-- 新增用户可操作的机制功能（施法、休息、战斗、升级、资源、法术管理等）必须
+- 新增用户可操作的机制功能（检定变体、资源、状态、物品、先攻这类）必须
   同时提供 AI keeper 工具：在 `agent/kp_tools_*` 给 AI 同一条引擎结算车道
   （复用 `command_router.dispatch` 模式），不得只做玩家命令让 AI 叙事式假装
-  （"休息了""命中了"却没有真实结算）。工具描述必须写明"未经引擎结算不得叙事"。
+  （"检定过了""物品用了"却没有真实结算）。工具描述必须写明"未经引擎结算不得叙事"。
 - 规则包/机制改动必须验证三层接线，缺一不可：命令车道、AI 工具、显示投影
   （`net/state` + web 渲染）与建卡链路（`agent/char_from_persona`）。用最小的
-  Docker 检查验证（不添加 pytest 文件）；验证脚本要覆盖：建卡产出职业/法术位/
-  已知法术、投影能显示等级与资源、AI 工具集包含对应机制工具。
+  Docker 检查验证（不添加 pytest 文件）；验证脚本要覆盖：建卡产出职业/属性/
+  技能、投影能显示资源与状态、AI 工具集包含对应机制工具。
 
 ## 工作流程
 

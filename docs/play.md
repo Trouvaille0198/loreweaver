@@ -140,7 +140,7 @@ projection that keeps every other secret out of your client — keeper annotatio
   > type here
 ```
 
-- The **top bar** carries the in-game clock and scene, the combat round, a connection light, and the
+- The **top bar** carries the in-game clock and scene, the round counter, a connection light, and the
   table's token spend. `ctx` is how full the Keeper's context window is right now — when it climbs,
   the engine folds old history into a summary on its own, so you do not have to care. `cache` is the
   share of the prompt that was served from the provider's prompt cache; higher is cheaper.

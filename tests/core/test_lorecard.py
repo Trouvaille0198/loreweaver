@@ -166,7 +166,7 @@ def test_full_bundle_populates_every_card_field():
 
 
 def test_system_field_declares_built_in_rule_system():
-    assert _parse(system="dnd5e").system == "dnd5e"
+    assert _parse(system="wod").system == "wod"
     assert _parse(system="").system == ""
     # A whitespace-only declaration degrades to empty.
     assert _parse(system="   ").system == ""

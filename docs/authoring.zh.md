@@ -340,8 +340,8 @@ Pack build failed: rulepack bell: rulepack 'bell': resolution.ranks[0].when refe
 **删掉文件就等于删掉系统**——这是“规则即数据”的验收标准，对内置包同样成立：
 
 ```
-with coc7 : ['coc7', 'dnd5e', 'wod']
-deleted   : ['dnd5e', 'wod']
+with coc7 : ['coc7', 'wod']
+deleted   : ['wod']
 load coc7 : ValueError unknown rulepack: coc7
 ```
 

@@ -30,7 +30,6 @@ from agent.context import AgentCtx
 from agent.npc import list_companions
 from agent.services import Services
 from core.character_manager import CharacterSheet, character_resources, has_character, resource_label_map
-from core.combat import CombatManager, project_combat
 from core.documents import (
     CLUE_LOG_ID,
     KEEPER_VIEWER,
@@ -69,14 +68,6 @@ async def build_room_state(
             member["initiative"] = initiative_by_name[member["name"]]
 
     state: dict[str, Any] = {"type": "state", "party": party, "initiative": initiative, "online": 0}
-    combat_manager = CombatManager(services.store, ctx.chat_key)
-    try:
-        combat = await combat_manager.get()
-    except Exception:
-        combat = None
-    if combat is not None:
-        role = (ctx.extra.get("role") if isinstance(ctx.extra, dict) else "") or ""
-        state["combat"] = project_combat(combat, keeper=role == "keeper")
     state["room_system"] = (await services.room_rulepack(ctx)).system
 
     # `.share` publishes a player-facing module link: the public face rides the
@@ -246,19 +237,13 @@ async def _character_payload(
     is final. Labels resolve to ``locale`` here, at the per-viewer boundary (M19)."""
     attrs = _wire_attributes(sheet)
     resources = character_resources(sheet, locale)
-    resource_groups: list[dict[str, Any]] = []
     pack: Any = None
     try:
-        from core.resources import resource_projection
         from core.rulepacks import load_rulepack
 
         pack = load_rulepack(sheet.system)
-        if pack.runtime_spec is not None:
-            resource_groups = [
-                group for group in resource_projection(sheet, pack, locale).get("groups", []) if group.get("id")
-            ]
     except Exception:
-        resource_groups = []
+        pack = None
     status_effects: list[Any] = []
     try:
         roster = await services.characters.get_party_roster(chat_key)
@@ -285,8 +270,6 @@ async def _character_payload(
     # ignore them, while a character page can show the complete card without
     # making a second command round-trip. The portrait rides the same MediaRef
     # shape the party roster uses, so a client's one avatar renderer serves both.
-    if resource_groups:
-        payload["resource_groups"] = resource_groups
     avatar = getattr(sheet, "avatar", None)
     if isinstance(avatar, dict):
         payload["avatar"] = avatar
@@ -303,24 +286,9 @@ async def _character_payload(
     secondary = getattr(sheet, "secondary_attributes", {})
     if isinstance(secondary, dict) and secondary:
         payload["secondary_attributes"] = dict(secondary)
-    fields = sheet.field_values()
-    if fields:
-        payload["fields"] = fields
-    # v2.9 additive: the character's known spells, resolved to localized display
-    # names server-side (the wire carries ids nowhere — the player sees names).
-    # Race data rides resolved, too: the sheet stores free text, the pack's race
-    # table turns it into display facts (localized name/traits, speed, darkvision).
-    known_spell_ids = [str(value) for value in (getattr(sheet, "known_spells", None) or [])]
-    if known_spell_ids and pack is not None:
-        catalog = getattr(pack, "spells", None)
-        if catalog is not None:
-            spell_names = []
-            for spell_id in known_spell_ids:
-                spell = catalog.get(spell_id)
-                if spell is not None:
-                    spell_names.append(spell.display_name(locale or "en"))
-            if spell_names:
-                payload["spells"] = spell_names
+    # v2.9 additive: race data rides resolved, too — the sheet stores free
+    # text, the pack's race table turns it into display facts (localized
+    # name/traits, speed, darkvision).
     race_text = str(getattr(sheet, "race", "") or "").strip()
     if race_text and pack is not None:
         race_entry = pack.resolve_race(race_text)
@@ -425,7 +393,7 @@ def _wire_attributes(sheet: CharacterSheet) -> dict[str, Any]:
     …). Those are not attributes to a table: the vitals ride `resources` as meters, and
     a derived value is computed, not owned. Sending them here forced every client to
     know, per system, which keys to hide and how to order the rest — the TUI kept a
-    CoC table and a D&D table for exactly that. So the wire carries the keys the pack's
+    CoC table and a dice-table for exactly that. So the wire carries the keys the pack's
     `sheet.attributes` declares, in declaration order; a pack that declares none (a
     system with no sheet spec) sends the dict as stored, since nothing else can say
     what it means.
@@ -522,25 +490,6 @@ async def _party(
         system = str(member.get("system", "") or "")
         if system not in label_maps:
             label_maps[system] = resource_label_map(system, locale)
-        # Grouped pools (spell slots, hit dice) ride the same wire shape the
-        # character card uses, so ANY detail view can show them — rebuilt from
-        # the roster's public sheet fields through the pack projection.
-        try:
-            from core.resources import resource_projection
-            from core.rulepacks import load_rulepack
-
-            member_pack = load_rulepack(system) if system else None
-            if member_pack is not None:
-                member_sheet = CharacterSheet.from_dict(dict(member))
-                groups = [
-                    group
-                    for group in resource_projection(member_sheet, member_pack, locale).get("groups", [])
-                    if group.get("id")
-                ]
-                if groups:
-                    payload["resource_groups"] = groups
-        except Exception:
-            pass
         members.append(payload)
     return members
 
@@ -591,21 +540,6 @@ async def _companion_sheet_names(services: Services, chat_key: str) -> set[str]:
 
 
 async def _initiative(services: Services, chat_key: str) -> list[dict[str, Any]]:
-    try:
-        combat = await CombatManager(services.store, chat_key).get()
-    except Exception:
-        combat = None
-    if combat is not None:
-        return [
-            {
-                "name": str(combat.combatants[combatant_id].get("name") or combatant_id),
-                "value": int(combat.combatants[combatant_id].get("initiative", 0) or 0),
-                "current": combatant_id == combat.current,
-            }
-            for combatant_id in combat.order
-        ]
-    # Rooms created before the runtime state contract retain their check-only
-    # initiative display until an explicit runtime migration is requested.
     try:
         raw = await services.store.state_get(chat_key, "initiative")
         entries = json.loads(raw) if raw else []
@@ -731,12 +665,6 @@ async def _clock(services: Services, chat_key: str) -> dict[str, Any] | None:
 
 
 async def _combat_round(services: Services, chat_key: str) -> int | None:
-    try:
-        combat = await CombatManager(services.store, chat_key).get()
-    except Exception:
-        combat = None
-    if combat is not None:
-        return combat.round if combat.round > 0 else None
     try:
         raw = await services.store.state_get(chat_key, "initiative_meta")
         meta = json.loads(raw) if raw else {}
@@ -896,44 +824,12 @@ async def _pregens(
                 value = sheet.get(key)
                 if value not in (None, "", {}):
                     entry[key] = value
-            # Grouped pools (spell slots) so a pregen's detail dialog shows its
-            # caster resources like any claimed character's.
-            try:
-                from core.resources import resource_projection
-                from core.rulepacks import load_rulepack
-
-                system = str(sheet.get("system", "") or "")
-                pack = load_rulepack(system) if system else None
-                if pack is not None:
-                    pregen_sheet = CharacterSheet.from_dict(dict(sheet))
-                    groups = [
-                        group
-                        for group in resource_projection(pregen_sheet, pack, locale).get("groups", [])
-                        if group.get("id")
-                    ]
-                    if groups:
-                        entry["resource_groups"] = groups
-            except Exception:
-                pass
         entries.append(entry)
     return entries
 
 
 async def _usage(services: Services, chat_key: str) -> dict[str, Any] | None:
-    """The room's rolling token/cache usage aggregate (`infra.usage_stats.record_usage_stats`
-    writes it), translated to the wire's snake_case shape -- `None` when unset (a
-    brand-new room, or one that has never completed a real AI-KP turn), so
-    `build_room_state` leaves `state.usage` out entirely rather than sending zeros.
-
-    The stored `last` block also records whether its `prompt` figure was MEASURED by
-    the provider or ESTIMATED by `agent.loop` (an endpoint that reports no usage on a
-    streamed turn). That flag deliberately does NOT cross the wire: describing it
-    would be an additive protocol field, and the version bump that entitles one is a
-    heavier, owner-facing change than the meter warrants. Nothing is lost by keeping
-    it server-side — the only consumer that ACTS on the number is the chronicle fold,
-    which reads the stored payload directly. What the HUD renders is a fullness
-    percentage, and it was already an approximation in both sources: the meter is the
-    previous turn's prompt, and the denominator is a table lookup. Before this, a
+    """The room's rolling token/cache usage aggregate. A pre-usage-stats
     streaming room had NO usage block at all; an approximate meter is what it gains.
     The `session` totals stay measured-only, so a room whose provider never reports
     honestly shows a context figure with zero cumulative tokens beside it.

@@ -13,7 +13,7 @@
 
 Loreweaver 是一个开源的 **AI RPG 引擎与开放标准**。你和朋友出人，AI 守秘人读模组、记世界、扮演每个 NPC、看住每条线索。它和“和 AI 聊天”最大的区别是**骰子是真的**：检定、伤害、理智，以及卡表上的每一个数，都由代码按规则掷出并结算，模型负责把结果讲成故事。**故事归 AI，账归代码。**
 
-一个世界的规则、设定、演员表、界面和演出，都是写成文件的公开格式，而不是写死在引擎里的功能——所以一个世界可以打包带走，也可以交给别人。服务器跑在你自己的电脑上。《克苏鲁的呼唤》7 版和 D&D 5e（SRD）随包发，中英双语都是一等公民。
+一个世界的规则、设定、演员表、界面和演出，都是写成文件的公开格式，而不是写死在引擎里的功能——所以一个世界可以打包带走，也可以交给别人。服务器跑在你自己的电脑上。《克苏鲁的呼唤》7 版随包发，中英双语都是一等公民。
 
 [![CI](https://github.com/1A7432/loreweaver/actions/workflows/ci.yml/badge.svg)](https://github.com/1A7432/loreweaver/actions/workflows/ci.yml) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![clients](https://img.shields.io/badge/clients-TypeScript%20%2F%20Bun-black) [![protocol](https://img.shields.io/badge/protocol-2.3-informational)](docs/protocol.zh.md)
 
@@ -153,7 +153,7 @@ loreweaver
 
 ## 有什么
 
-**规则是数据，不是代码。** 一个规则系统就是一个 YAML 文件：卡表长什么样、衍生属性怎么算、检定分几档、有哪些子系统、认哪些点命令、各语言怎么显示。随包发的 CoC 7e / D&D 5e / WoD 就是普通的规则包——把 `rulepacks/coc7.yaml` 从一个部署里删掉，CoC 就干净消失、不留残渣。检定结算是骰子引擎之上的一小段声明式 DSL：
+**规则是数据，不是代码。** 一个规则系统就是一个 YAML 文件：卡表长什么样、衍生属性怎么算、检定分几档、有哪些子系统、认哪些点命令、各语言怎么显示。随包发的 CoC 7e / WoD 就是普通的规则包——把 `rulepacks/coc7.yaml` 从一个部署里删掉，CoC 就干净消失、不留残渣。检定结算是骰子引擎之上的一小段声明式 DSL：
 
 ```yaml
 resolution:
@@ -264,7 +264,7 @@ net/    Iroh p2p + 会话核心     adapters/ CLI          clients/ protocol（n
 
 ## 参与贡献
 
-欢迎 PR 和 issue。提交前请把这些跑绿：`uv run ruff check …`、`uv run python scripts/i18n_lint.py`、`uv run pytest -q`，以及相关的 `bun test`。遵守 [AGENTS.md](AGENTS.md) 里的铁律——最重要的两条是：每一句用户可见的文案都走 i18n，信息隔离一次都不能破。规则内容必须是开放授权的（SRD / Miskatonic Repository）；模组请自己在运行时带。最缺人手的地方列在[路线图](docs/roadmap.zh.md)里。
+欢迎 PR 和 issue。提交前请把这些跑绿：`uv run ruff check …`、`uv run python scripts/i18n_lint.py`、`uv run pytest -q`，以及相关的 `bun test`。遵守 [AGENTS.md](AGENTS.md) 里的铁律——最重要的两条是：每一句用户可见的文案都走 i18n，信息隔离一次都不能破。规则内容必须是开放授权的（Miskatonic Repository）；模组请自己在运行时带。最缺人手的地方列在[路线图](docs/roadmap.zh.md)里。
 
 ## 安全
 
@@ -278,6 +278,6 @@ Provider 的 API key 和 OAuth 授权**以明文存在本地 SQLite** 里，好�
 
 ## 许可与致谢
 
-MIT——见 [`LICENSE`](LICENSE) 和 [`NOTICE`](NOTICE)。包含 **D&D 5e SRD 5.1**（CC-BY-4.0）材料；克苏鲁内容仅限开放 / Miskatonic Repository 授权范围。gateway 层脱胎于 **hermes-agent**（MIT，© 2025 Nous Research）；骰子引擎是 **avrae/d20**（MIT）；中文指令写法、CoC 成功等级函数与技能别名表参考 **SealDice**（MIT）重写；终端客户端基于 **OpenTUI**。本仓库不包含任何有版权的模组正文。
+MIT——见 [`LICENSE`](LICENSE) 和 [`NOTICE`](NOTICE)。克苏鲁内容仅限开放 / Miskatonic Repository 授权范围。gateway 层脱胎于 **hermes-agent**（MIT，© 2025 Nous Research）；骰子引擎是 **avrae/d20**（MIT）；中文指令写法、CoC 成功等级函数与技能别名表参考 **SealDice**（MIT）重写；终端客户端基于 **OpenTUI**。本仓库不包含任何有版权的模组正文。
 
 社区：[LINUX DO](https://linux.do/)。

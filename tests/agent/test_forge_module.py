@@ -1424,7 +1424,7 @@ def test_pack_module_schema_and_prompts_advertise_pregen_skills() -> None:
     # The budget rule lives in the per-system skill guidance now (percent-scale
     # systems like CoC), injected with the target system's skill names; the
     # static system prompt points the model at that appended guidance instead
-    # of hardcoding CoC numbers for every system (the dnd5e percent-skills bug).
+    # of hardcoding CoC numbers for every system (the old percent-skills bug).
     for locale, needle in (("en", "skill-point budget"), ("zh", "技能点预算")):
         data = json.loads((root / "locales" / locale / "agent.json").read_text(encoding="utf-8"))
         assert needle in data["agent.forge.pack_module_skill_scale_percent"]

@@ -45,7 +45,7 @@ isn't rejected either way — it's decomposed.
   AI draft, or **import a card**. Whichever path, the resulting sheet is validated
   against the rule system; a card whose numbers don't fit the rulepack gets fixed
   numbers, not a free pass.
-- **By command:** `.import <card file> [coc7|dnd5e] [pc|companion|world]`.
+- **By command:** `.import <card file> [coc7] [pc|companion|world]`.
   - `pc` (any player, via a room attachment) and `companion` (Keeper-only) take the
     **character half**. If the card also carries world machinery, the import strips
     it and tells you exactly what was stripped — the card still works as a
@@ -121,7 +121,7 @@ that:
   through rules code. A card cannot pre-write an outcome ("the attack hits") into
   being — the engine rolls first, the model narrates the result.
 - **Character numbers validate.** An imported card becomes a real sheet in the
-  active rule system (CoC 7e or D&D 5e SRD), checked against the rulepack and held to its limits.
+  active rule system (CoC 7e), checked against the rulepack and held to its limits.
 - **`{{char}}` is bound at import** — a card's character identity doesn't drift.
   `{{user}}` stays dynamic (whoever the active PC is at render time).
 - **`{{time}}` / `{{date}}` are the game clock**, not the wall clock. Your

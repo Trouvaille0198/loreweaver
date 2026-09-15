@@ -258,16 +258,6 @@ def _improvement_check_spec(pack: Any) -> Any:
     )
 
 
-def _settlement_attributes_supported(pack: Any) -> bool:
-    """Whether this pack permits free-standing settlement attribute changes.
-
-    A runtime advancement declaration owns mechanical character growth. In
-    particular, D&D 5e ability-score improvements occur at class-declared
-    levels and cannot be invented by the settlement model.
-    """
-    runtime = None if pack is None else getattr(pack, "runtime_spec", None)
-    return runtime is None or not bool(getattr(runtime, "advancement", None))
-
 
 async def _sheet_lines(services: Services, chat_key: str) -> tuple[list[str], dict[str, str]]:
     """One summary line per sheet, and the sheet-name -> system map. A sheet's
@@ -294,7 +284,7 @@ async def _sheet_lines(services: Services, chat_key: str) -> tuple[list[str], di
         except Exception:  # noqa: BLE001 — an unreadable pack is not a growth mechanic
             pack = None
         improvement_checks = "available" if _improvement_check_spec(pack) is not None else "unavailable"
-        attribute_changes = "available" if _settlement_attributes_supported(pack) else "unavailable"
+        attribute_changes = "available"
         attrs = {key: value for key, value in (data.get("attributes") or {}).items() if isinstance(value, int)}
         skills = {key: value for key, value in (data.get("skills") or {}).items() if isinstance(value, int) and value}
         background = str(data.get("background") or "").strip()

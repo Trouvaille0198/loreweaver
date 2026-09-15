@@ -71,10 +71,10 @@ async def test_two_players_kp_history_names_each_speaker_echo_stays_raw():
     ctx_keeper = AgentCtx(chat_key=ROOM, user_id=keeper.id, platform="tui", locale="en")
     ctx_hpeter = AgentCtx(chat_key=ROOM, user_id=hpeter.id, platform="tui", locale="en")
     await services.characters.save_character(
-        ctx_keeper.uid(), ROOM, CharacterSheet(name="Tim Cook", system="dnd5e")
+        ctx_keeper.uid(), ROOM, CharacterSheet(name="Tim Cook", system="coc7")
     )
     await services.characters.save_character(
-        ctx_hpeter.uid(), ROOM, CharacterSheet(name="morle", system="dnd5e")
+        ctx_hpeter.uid(), ROOM, CharacterSheet(name="morle", system="coc7")
     )
 
     await run_turn(

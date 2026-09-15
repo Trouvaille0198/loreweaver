@@ -83,13 +83,13 @@ GOLDEN_SURVIVING_KEYS = frozenset(
     }
 )
 
-# The one place this file is NOT a copy of the pre-M23 tables. The first three survived
+# The one place this file is NOT a copy of the pre-M23 tables. The first few survived
 # every reset before M23 only because no cleanup list had ever named them; the WS1
-# write-surface scan surfaced them, and the owner ruled on 2026-08-14 that all three go
+# write-surface scan surfaced them, and the owner ruled on 2026-08-14 that they go
 # with the story. `media_history` joined them on 2026-08-29: the broadcast-media index
 # is narrative session (a fresh story must not replay the old pictures), while the blob
 # files it points at stay with the `room_media` facet at `all` — pregen portraits must
-# outlive the story their characters do. The last four are facets that landed after the
+# outlive the story their characters do. The rest are facets that landed after the
 # tables were written without ever syncing back (found by diffing the registry against
 # the tables on 2026-08-29).
 POST_M23_STORY_KEYS = frozenset(
@@ -98,7 +98,6 @@ POST_M23_STORY_KEYS = frozenset(
         "director_images",
         "director_pregen",
         "media_history",
-        "combat_state",
         "hook_injections",
         "module_share",
         "settle_pending",
@@ -111,16 +110,11 @@ POST_M23_STORY_KEYS = frozenset(
 # broadcast-media index) — so every scope now wipes it — a post-M23 behaviour increment,
 # pinned explicitly rather than folded into the golden tables.
 POST_M23_STORY_DOC_TYPES = frozenset({"media"})
-# `action_result:` is the combat facet's story-slice of the prefix space (a battle's dice
-# log goes with the story it belongs to).
-POST_M23_STORY_PREFIXES = frozenset({"action_result:"})
 # Everything below was added to the registry after the tables were written and never
 # synced back — found by diffing the registry against the tables on 2026-08-29. All-scope
-# module-content families (items, encounters, statblocks, the module brief and its import
-# bookkeeping) and the media/index keys that ride with them.
-POST_M23_ALL_DOC_TYPES = frozenset(
-    {"clue_log", "encounter", "item", "item_catalog", "module_brief", "statblock"}
-)
+# module-content families (items, the module brief and its import bookkeeping) and the
+# media/index keys that ride with them.
+POST_M23_ALL_DOC_TYPES = frozenset({"clue_log", "item", "item_catalog", "module_brief"})
 POST_M23_ALL_KEYS = frozenset(
     {
         "active_module",

@@ -2066,8 +2066,6 @@ async def _generate(
                 description,
                 media=_option_list(frame.get("options"), "media"),
                 companion=_option_list(frame.get("options"), "companion"),
-                difficulty=str(_option_value(frame.get("options"), "difficulty") or ""),
-                levels=str(_option_value(frame.get("options"), "levels") or ""),
                 progress=_progress,
                 auto_import=False,
                 extends_base=str(_option_value(frame.get("options"), "extends") or ""),
@@ -2079,8 +2077,6 @@ async def _generate(
             description,
             media=_option_list(frame.get("options"), "media"),
             companion=_option_list(frame.get("options"), "companion"),
-            difficulty=str(_option_value(frame.get("options"), "difficulty") or ""),
-            levels=str(_option_value(frame.get("options"), "levels") or ""),
             progress=_progress,
             auto_import=False,
         )

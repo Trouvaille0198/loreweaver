@@ -497,16 +497,16 @@ async def test_sheet_explicit_assignment_stores_an_absolute_negative(tmp_path):
     services = build_services(settings, llm=FakeLLM(script=[]), embeddings=FakeEmbeddings(64))
     router = CommandRouter(services)
     ctx = AgentCtx(chat_key="cli:dm:st-negative", user_id="u1", locale="en")
-    await services.characters.save_character(ctx.user_id, ctx.chat_key, CharacterSheet("Fighter", "DnD5e"))
+    await services.characters.save_character(ctx.user_id, ctx.chat_key, CharacterSheet("Fighter", "coc7"))
 
-    # A d20 ability modifier is legitimately negative; the legacy form could only
+    # A damage bonus is legitimately negative; the legacy form could only
     # ever subtract from the current value, never assign minus three.
-    reply = await router.dispatch(ctx, ".st 力量调整值=-3")
+    reply = await router.dispatch(ctx, ".st DB=-3")
 
     assert reply is not None
     character = await services.characters.get_character(ctx.user_id, ctx.chat_key)
-    pack = load_rulepack("dnd5e")
-    assert sheet_value(character, pack, "力量调整值") == -3
+    pack = load_rulepack("coc7")
+    assert sheet_value(character, pack, "DB") == -3
 
 
 # ---------------------------------------------------------------------------

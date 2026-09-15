@@ -633,11 +633,9 @@ async def _run_kp_turn_body(
     phase = await room_phase(services.store, ctx.chat_key)
     # …and what this ROOM actually has behind those tools: a world-card room has no
     # module knowledge pool, so the five pool-backed tools could only ever fail there.
-    # The room's rulepack adds its deterministic runtime capabilities (rest/combat/
-    # spells) so a non-D&D room never sees D&D's cast/rest/advance tooling.
     # Same filter family, same once-per-turn threading (see `agent.tool_phase`).
     room_pack = await services.room_rulepack(ctx)
-    capabilities = await room_capabilities(services.documents, ctx.chat_key, pack=room_pack)
+    capabilities = await room_capabilities(services.documents, ctx.chat_key)
     # Stage D tool materialization: the room's rulepack declares which subsystem
     # tools exist here (a system that declares none materializes none), and their
     # schemas ride alongside the static toolset for this turn.

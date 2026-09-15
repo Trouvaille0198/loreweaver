@@ -1,7 +1,7 @@
 """Integration test for dice notation: `CharacterManager.generate_character`
 must work end-to-end with the REAL `core.dice_engine.DiceRoller` — i.e. `d20.roll`
 must actually understand the SealDice-style formulas the packs declare in
-`creation_constraints.attributes[*].roll` (`"3d6x5"`, `"(2d6+6)x5"`, `"4d6kh3"`).
+`creation_constraints.attributes[*].roll` (`"3d6x5"`, `"(2d6+6)x5"`).
 
 `tests/core/test_character.py` exercises generation against a *faked* DiceRoller,
 so it can't catch a `d20`-parser regression; this test deliberately uses the
@@ -18,8 +18,6 @@ from infra.store import Store
 # "3d6x5" (STR/CON/DEX/APP/POW/LUC) or "(2d6+6)x5" (SIZ/INT/EDU).
 COC7_CHARACTERISTICS = ["STR", "CON", "SIZ", "DEX", "APP", "INT", "POW", "EDU", "LUC"]
 
-# The six DnD5e ability scores, all generated via "4d6kh3".
-DND5E_ABILITIES = ["STR", "DEX", "CON", "INT", "WIS", "CHA"]
 
 
 def test_coc7_pack_declares_creation_rolls_for_every_characteristic():
@@ -63,21 +61,3 @@ def test_generate_character_coc7_end_to_end_with_real_dice_roller():
     # A derived skill should likewise have evaluated against the rolled DEX.
     assert sheet_value(character, pack, "闪避") == character.attributes["DEX"] // 2
 
-
-def test_generate_character_dnd5e_end_to_end_uses_keep_highest_three_of_four():
-    """Same end-to-end proof for the bare-keep notation: "4d6kh3" must behave as
-    "keep the highest 3 of 4" (3-18 per ability), not a face-match reading which
-    would frequently zero out an ability score.
-    """
-    seed_dice(2026)
-    manager = CharacterManager(Store(":memory:"))
-
-    character = manager.generate_character("dnd5e", "Tester")
-
-    assert isinstance(character, CharacterSheet)
-    assert character.system == "dnd5e"
-
-    for ability in DND5E_ABILITIES:
-        value = character.attributes[ability]
-        assert isinstance(value, int)
-        assert 3 <= value <= 18, f"{ability} outside the 4d6-keep-highest-3 range (got {value!r})"

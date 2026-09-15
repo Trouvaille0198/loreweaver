@@ -45,7 +45,7 @@ def test_doctor_source_mode_exits_zero_and_reports_builtins():
 
     assert returncode == 0, output
     assert "coc7" in output, output
-    assert "dnd5e" in output, output
+    assert "wod" in output, output
     assert "en" in output, output
     assert "zh" in output, output
 

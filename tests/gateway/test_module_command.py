@@ -238,11 +238,11 @@ async def test_forge_command_pack_extends(tmp_path, monkeypatch):
     services = _services()
     router = CommandRouter(services)
     ctx = AgentCtx(chat_key="cli:dm:forge", user_id="keeper", platform="cli", locale="en", fs=LocalFs(tmp_path))
-    reply = await router.dispatch(ctx, ".forge a den --pack --extends dnd5e")
+    reply = await router.dispatch(ctx, ".forge a den --pack --extends coc7")
     assert reply == "pack done"
     call = _FakeForge.calls[0]
     assert call["kind"] == "pack"
-    assert call["extends_base"] == "dnd5e"
+    assert call["extends_base"] == "coc7"
     assert call["system"] == ""
 
 

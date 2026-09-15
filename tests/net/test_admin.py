@@ -74,7 +74,7 @@ Track scarcity relentlessly: ammunition, food, and light sources are real, finit
 """
 
 # A minimal valid rulepack YAML (mirrors `tests/agent/test_forge_rulepack.py`'s fixture); its
-# id/names don't collide with either built-in system (coc7/dnd5e).
+# id/names don't collide with either built-in system (coc7/wod).
 _VALID_RULEPACK_YAML = """
 names: [pulp-adventure, pulp]
 set_keys: [pulp]
@@ -2783,7 +2783,7 @@ async def test_admin_list_rules_returns_the_built_in_systems():
         assert reply["type"] == "admin_rules"
         by_id = {system["id"]: system["built_in"] for system in reply["systems"]}
         assert by_id.get("coc7") is True
-        assert by_id.get("dnd5e") is True
+        assert by_id.get("wod") is True
 
         await ws.close()
     finally:

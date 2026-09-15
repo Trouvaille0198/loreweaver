@@ -200,7 +200,7 @@ An imported module is not one large message pasted into chat. It adds two groups
 ### Campaign data produced by play
 
 - claims, player sheets, and resource changes;
-- game clock, scene, combat order, relationships, and module-variable state;
+- game clock, scene, initiative order, relationships, and module-variable state;
 - Scribe proposals derived from narration and accepted through engine validation;
 - turn chronicles, campaign summary, open threads, and recalled history;
 - learned habits of this particular table;

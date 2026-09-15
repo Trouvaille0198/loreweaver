@@ -19,7 +19,7 @@ async def test_characters_command_lists_only_the_callers_sheets():
     services = _services()
     room = "characters-command"
     await services.characters.save_character("player-a", room, CharacterSheet("Alice", "coc7"))
-    await services.characters.save_character("player-a", room, CharacterSheet("Bob", "dnd5e"))
+    await services.characters.save_character("player-a", room, CharacterSheet("Bob", "wod"))
     await services.characters.save_character("player-b", room, CharacterSheet("Other", "coc7"))
     router = CommandRouter(services)
     ctx = AgentCtx(chat_key=room, user_id="player-a", locale="en")
@@ -29,7 +29,7 @@ async def test_characters_command_lists_only_the_callers_sheets():
     assert reply is not None
     assert "Your characters (2)" in reply
     assert "Alice [coc7]" in reply
-    assert "Bob [dnd5e]" in reply
+    assert "Bob [wod]" in reply
     assert "Other" not in reply
 
 

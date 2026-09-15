@@ -113,7 +113,7 @@ Version: 1.0.1.dev17+g74c9efa
 Mode: source
 Locales: en (29 files), zh (29 files)
 Rulepacks: coc7 (resolution: dsl +6 variants; subsystems: sanity_check, skill_growth, spend_luck,
-opposed_check, random_madness), dnd5e (resolution: dsl; subsystems: opposed_check), wod (resolution: dsl)
+opposed_check, random_madness), wod (resolution: dsl)
 KP skills: image-gen, mature-mode, module-forge, romance-relationships, rule-forge, skill-forge, svg-mapmaker (7)
 Data dir: ./data
 NOTE: the Scribe is paying flagship prices for ledger work (xai / grok-4.5). It runs one extra call

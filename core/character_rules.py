@@ -250,7 +250,7 @@ def normalize_pregen_skills(
 
     Numbers: percent-scale systems (the pack declares a parts-based skill
     budget, e.g. CoC) keep their raw percent values; additive-scale systems
-    (no budget, e.g. dnd5e) fold a percent-looking value into a d20-style
+    (no budget) fold a percent-looking value into a die-style
     modifier — 50 is an ordinary person (0), every 5 points is +1, floor at 0.
     Values already in additive range (<= ADDITIVE_SCALE_THRESHOLD) pass through
     untouched, so re-importing an already-normalized card is idempotent.

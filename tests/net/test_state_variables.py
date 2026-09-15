@@ -91,7 +91,7 @@ async def test_build_room_state_lists_the_rule_systems_and_how_to_create_in_them
     """v2.3: what a client needs to offer character creation WITHOUT knowing a system.
 
     Studio's character screen was read-only and the TUI's was not — because the TUI
-    hard-codes CoC's and D&D's attribute tables, point-buy budgets and command words,
+    hard-codes per-system attribute tables, point-buy budgets and command words,
     which is precisely the per-system knowledge M16 deleted from the engine. A client
     that reads this list offers a pack's own system without a client release.
     """
@@ -102,10 +102,11 @@ async def test_build_room_state_lists_the_rule_systems_and_how_to_create_in_them
 
     by_id = {entry["id"]: entry for entry in state["systems"]}
     assert state["room_system"] == "coc7"
-    assert {"coc7", "dnd5e"} <= set(by_id)
+    assert {"coc7", "wod"} <= set(by_id)
     # The word to SEND, read off the pack's own `commands:` declaration.
     assert by_id["coc7"]["make_char"] == "coc"
-    assert by_id["dnd5e"]["make_char"] == "dnd"
+    # A pack with no make_char binding still lists, just wordless (import-only).
+    assert "make_char" not in by_id["wod"]
     # Nothing but the id and the word: a rule system's contents are not room state.
     assert set(by_id["coc7"]) <= {"id", "make_char"}
 

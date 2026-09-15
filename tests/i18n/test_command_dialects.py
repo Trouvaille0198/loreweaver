@@ -58,11 +58,8 @@ def test_rulepack_aliases_resolve_en_and_zh_to_same_canonical():
 
 def test_rulepacks_expose_creation_constraints():
     coc = load_rulepack("coc7").creation_constraints
-    dnd = load_rulepack("dnd5e").creation_constraints
 
     assert coc["attributes"]["STR"] == {"min": 15, "max": 90, "roll": "3d6x5"}
     parts = coc["budgets"]["skill_points"]["parts"]
     assert parts[0] == "智力 * 2"
     assert "教育 * 4" in parts[1]["max"]
-    assert dnd["methods"]["point_buy"]["budget"] == 27
-    assert dnd["methods"]["standard_array"]["values"] == [15, 14, 13, 12, 10, 8]

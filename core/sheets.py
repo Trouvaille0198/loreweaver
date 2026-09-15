@@ -425,7 +425,7 @@ def projected_skills(sheet: Any, pack: Any) -> dict[str, Any]:
     Derived skills are deliberately never persisted — `refresh_sheet` drops the
     untrained slots so reads recompute through the DAG — so a display projection
     must fold the recomputed values back in, or a fully-derived skill system
-    (D&D 5e's 18 skills are ability modifiers) shows an empty skills panel.
+    (all skills derived) shows an empty skills panel.
     Stored values win over the derivation (a trained skill differs from its base).
 
     Accepts a CharacterSheet OR a plain dict (party-roster / pregen rows carry
@@ -457,31 +457,13 @@ def projected_skills(sheet: Any, pack: Any) -> dict[str, Any]:
 def wire_resources(sheet: Any, pack: Any, locale: str | None = None) -> list[dict[str, Any]]:
     """The generic ``resources`` meter list for the wire/panels.
 
-    Packs that opt into the runtime contract (`runtime.resources.pools`) feed
-    this from their ungrouped pools — the top-level vitals, HP/temp-HP style —
-    while grouped pools ride the `resource_groups` wire lane; legacy packs keep
-    their `sheet.resources` declaration. ``locale`` is the VIEWER's, not the
-    process's: labels are resolved here, at the wire boundary, so the same
-    room can serve an ``en`` and a ``zh`` client their own reading of one
-    pack's bars. Omitting it keeps the pack's ``en`` label."""
+    Fed from the pack's ``sheet.resources`` declaration; ``locale`` is the
+    VIEWER's, not the process's: labels are resolved here, at the wire
+    boundary, so the same room can serve an ``en`` and a ``zh`` client their
+    own reading of one pack's bars. Omitting it keeps the pack's ``en`` label."""
     spec = pack.sheet_spec
     if spec is None:
         return []
-    if getattr(pack, "runtime_spec", None) is not None:
-        from core.resources import resource_projection
-
-        projection = resource_projection(sheet, pack, locale)
-        grouped = {
-            item["id"]
-            for group in projection.get("groups", [])
-            for item in group.get("resources", [])
-            if group.get("id")
-        }
-        return [
-            {"id": item["id"], "label": item["label"], "value": item["value"], "max": item["max"]}
-            for item in projection.get("resources", [])
-            if item["id"] not in grouped
-        ]
     out: list[dict[str, Any]] = []
     for resource in spec.resources:
         if resource.source == "hit_points":

@@ -1,6 +1,5 @@
 from core.character_manager import CharacterSheet
-from core.character_rules import render_validation_notice, validate_sheet
-from infra.i18n import get_i18n
+from core.character_rules import validate_sheet
 
 
 def test_validate_coc_characteristics_clamps_to_roll_ranges_and_recomputes_maxima():
@@ -101,46 +100,3 @@ def test_validate_coc_skills_clamps_and_marks_budget_overrun():
     assert any(violation.code == "skill_above_max" and violation.path == "skills.侦查" for violation in violations)
     budget = next(violation for violation in violations if violation.code == "skill_points_exceeded")
     assert budget.original > budget.limit
-
-
-def test_validate_dnd_rolled_array_clamps_ranges_without_point_buy_budget_check():
-    sheet = CharacterSheet("Roller", "DnD5e")
-    sheet.attributes.update({"STR": 20, "DEX": 15, "CON": 15, "INT": 15, "WIS": 15, "CHA": 15})
-
-    clamped, violations = validate_sheet(sheet, "dnd5e", creation_method="rolled")
-
-    assert clamped.attributes["STR"] == 18
-    assert any(violation.code == "attribute_above_max" and violation.path == "attributes.STR" for violation in violations)
-    assert not any(violation.code == "point_buy_budget_exceeded" for violation in violations)
-
-
-def test_validate_dnd_marks_point_buy_budget_overrun_when_all_scores_are_point_buy_scores():
-    sheet = CharacterSheet("Buyer", "DnD5e")
-    sheet.attributes.update({key: 15 for key in ("STR", "DEX", "CON", "INT", "WIS", "CHA")})
-
-    clamped, violations = validate_sheet(sheet, "dnd5e", creation_method="point_buy")
-
-    assert all(clamped.attributes[key] == 15 for key in ("STR", "DEX", "CON", "INT", "WIS", "CHA"))
-    budget = next(violation for violation in violations if violation.code == "point_buy_budget_exceeded")
-    assert budget.original == 54
-    assert budget.limit == 27
-
-
-def test_validate_dnd_does_not_infer_point_buy_for_unspecified_creation_method():
-    sheet = CharacterSheet("Unknown Method", "DnD5e")
-    sheet.attributes.update({key: 15 for key in ("STR", "DEX", "CON", "INT", "WIS", "CHA")})
-
-    _, violations = validate_sheet(sheet, "dnd5e")
-
-    assert not any(violation.code == "point_buy_budget_exceeded" for violation in violations)
-
-
-def test_validation_notice_does_not_claim_uncorrected_budget_warning_adjusted_sheet():
-    sheet = CharacterSheet("Buyer", "DnD5e")
-    sheet.attributes.update({key: 15 for key in ("STR", "DEX", "CON", "INT", "WIS", "CHA")})
-    _, violations = validate_sheet(sheet, "dnd5e", creation_method="point_buy")
-
-    notice = render_validation_notice(get_i18n("en"), violations)
-
-    assert "was not changed" in notice
-    assert "adjusted the sheet" not in notice

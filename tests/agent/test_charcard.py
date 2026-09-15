@@ -120,8 +120,8 @@ async def test_build_sheet_from_description_wraps_text_as_minimal_persona_card()
             assistant_text(
                 json.dumps(
                     {
-                        "class": "Rogue",
-                        "attribute_emphasis": ["DEX", "INT"],
+                        "occupation": "Courier",
+                        "attribute_emphasis": ["INT", "EDU"],
                         "signature_skills": ["Stealth"],
                         "backstory": "A streetwise courier with too many secrets.",
                     }
@@ -132,13 +132,10 @@ async def test_build_sheet_from_description_wraps_text_as_minimal_persona_card()
     services = SimpleNamespace(characters=manager, llm=llm)
     description = "She is a careful rooftop courier who survives by stealth and quick study."
 
-    sheet = await build_sheet_from_description(services, description, "dnd5e", name="Mira")
+    sheet = await build_sheet_from_description(services, description, "coc7", name="Mira")
 
     assert sheet.name == "Mira"
-    assert sheet.system == "dnd5e"
-    assert sheet.character_class == "rogue"  # normalized to the pack's class id
-    assert sheet.attributes["DEX"] == 15
-    assert sheet.attributes["INT"] == 14
+    assert sheet.system == "coc7"
     assert sheet.background == "A streetwise courier with too many secrets."
     assert description in sheet.notes
 
@@ -275,22 +272,6 @@ async def test_attribute_tweaks_do_not_leak_into_rolled_creation():
 
 
 @pytest.mark.asyncio
-async def test_attribute_tweaks_require_a_pack_tweak_policy():
-    """dnd5e declares a standard array but no tweak policy: array placement still
-    happens, tweaks are ignored outright."""
-    sheet = await _pregen_sheet(
-        {
-            "class": "Rogue",
-            "attribute_emphasis": ["DEX", "INT"],
-            "attribute_tweaks": {"DEX": 5, "INT": -5},
-        },
-        system="dnd5e",
-    )
-
-    assert sheet.attributes["DEX"] == 15
-    assert sheet.attributes["INT"] == 14
-
-@pytest.mark.asyncio
 async def test_pregen_skill_allocations_apply_within_budget():
     """Concept-proposed skill targets land verbatim when they fit the sheet's real
     budget (scholar placement INT=80/EDU=70 -> 智力*2 + 教育*4 = 440)."""
@@ -352,17 +333,6 @@ async def test_pregen_skill_allocations_drop_unknown_skill_names():
 
 
 @pytest.mark.asyncio
-async def test_skill_allocations_require_a_declared_budget():
-    """dnd5e declares no skill-point budget: allocations are ignored outright —
-    the prompt never advertises the field there either."""
-    sheet = await _pregen_sheet(
-        {"class": "Rogue", "attribute_emphasis": ["DEX", "INT"], "skill_allocations": {"Stealth": 15}},
-        system="dnd5e",
-    )
-    assert sheet.skills.get("Stealth", 0) == 0
-
-
-@pytest.mark.asyncio
 async def test_concept_prompt_advertises_the_skill_budget_rules():
     """The concept call hears the allocation contract up front (value range plus
     the nominal budget), so the model's proposal lands inside what the engine
@@ -385,46 +355,3 @@ async def test_concept_prompt_advertises_the_skill_budget_rules():
     assert "{system}" not in system_prompt  # the template actually rendered
 
 
-@pytest.mark.asyncio
-async def test_dnd_creation_chain_fills_class_slots_and_known_spells() -> None:
-    """The full D&D creation chain, locked end-to-end: the AI concept's class
-    lands on the sheet, the level table fills spell slots, the class spellbook
-    seeds known spells, and the AI toolset carries every mechanics tool — so a
-    freshly forged D&D character always has a class, slots and spells."""
-    from agent.kp_tools import build_kp_toolset
-    from core.resources import resource_values
-    from core.rulepacks import load_rulepack
-
-    concept = json.dumps(
-        {
-            "class": "wizard",
-            "attribute_emphasis": ["INT", "CON", "DEX"],
-            "signature_skills": ["Arcana"],
-            "backstory": "An academy-trained wizard.",
-        }
-    )
-    manager = CharacterManager(Store(":memory:"))
-    llm = FakeLLM(script=[assistant_text(concept)])
-    services = SimpleNamespace(characters=manager, llm=llm)
-    card = parse_card_bytes(
-        json.dumps({"name": "Mage", "description": "an apprentice wizard"}).encode(),
-        filename="mage.json",
-    )
-
-    sheet = await build_sheet_from_persona(services, card, "dnd5e")
-
-    # 1. The concept's class lands on the sheet's identity field.
-    assert sheet.character_class == "wizard"
-    # 2. Spell slots follow the full-caster level table (level 1 → 2 slots).
-    values = resource_values(sheet, load_rulepack("dnd5e"))
-    assert values["spell_slot_1"].maximum == 2
-    assert values["spell_slot_1"].current == 2  # topped like after a long rest
-    # 3. The class spellbook seeds known spells.
-    assert "magic_missile" in sheet.known_spells
-    assert "fire_bolt" in sheet.known_spells
-    # 4. The AI keeper toolset exposes every mechanics lane (no more narrating
-    #    without resolving: cast/rest/attack/advance/resource/spells).
-    toolset = build_kp_toolset(services)
-    names = set(toolset.names())
-    for tool in ("cast_spell", "rest_manager", "attack_target", "advance_level", "manage_resource", "manage_spells"):
-        assert tool in names, f"AI toolset missing {tool}"

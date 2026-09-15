@@ -1147,21 +1147,20 @@ async def test_a_party_member_on_another_system_keeps_their_seat_and_their_meter
     THAT member's own pack, and a client renders each row on its own — so nobody is
     dropped for their system, and nobody loses their meters for it either."""
     services = _services()
-    ctx = _room_ctx("mixed-system-state", user_id="dnd-player")
+    ctx = _room_ctx("mixed-system-state", user_id="wod-player")
     coc = services.characters.generate_character("coc7", "Nora Vance")
-    dnd = services.characters.generate_character("dnd5e", "Kael Thorn")
+    wod = services.characters.generate_character("wod", "Kael Thorn")
     await services.characters.save_character("coc-player", ctx.chat_key, coc)
-    await services.characters.save_character(ctx.user_id, ctx.chat_key, dnd)
+    await services.characters.save_character(ctx.user_id, ctx.chat_key, wod)
 
     state = await build_room_state(services, ctx)
 
-    assert state["character"]["system"] == "dnd5e"
+    assert state["character"]["system"] == "wod"
     party = {member["name"]: member for member in state["party"]}
     assert set(party) == {"Nora Vance", "Kael Thorn"}
-    assert party["Kael Thorn"].get("resources"), "the viewer's own system renders meters"
     nora = party["Nora Vance"]["resources"]
     assert nora, "a member on another system keeps their meters too"
-    # …labelled from HER pack, not the viewer's: CoC's vitals, not a d20 sheet's.
+    # …labelled from HER pack, not the viewer's: CoC's vitals, not a pool sheet's.
     assert {entry["id"] for entry in nora} >= {"hp", "san"}
     assert all(set(entry) == {"id", "label", "value", "max"} for entry in nora)
     roster = await services.characters.get_party_roster(ctx.chat_key)

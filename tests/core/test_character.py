@@ -186,26 +186,8 @@ def test_sheet_meta_fields_round_trip_via_fields_dict():
     assert restored.age == 34
 
 
-def test_hp_field_system_migrates_legacy_current_and_max():
-    legacy = CharacterSheet("Fighter", "DnD5e").to_dict()
-    legacy.pop("hp_current", None)
-    legacy.pop("hp_max", None)
-    legacy["secondary_attributes"]["生命值"] = 8
-    legacy["secondary_attributes"]["生命值上限"] = 12
-
-    restored = CharacterSheet.from_dict(legacy)
-
-    assert restored.hp_current == 8
-    assert restored.hp_max == 12
-    assert "生命值" not in restored.secondary_attributes
-    assert "生命值上限" not in restored.secondary_attributes
-    serialized = restored.to_dict()
-    assert serialized["hp_current"] == 8
-    assert serialized["hp_max"] == 12
-
-
 def test_set_hit_points_preserves_max_through_damage_heal_and_explicit_raise():
-    character = CharacterSheet("Fighter", "DnD5e")
+    character = CharacterSheet("Fighter", "coc7")
     character_manager.set_hit_points(character, current=12, maximum=12, allow_raise_max=True)
 
     assert character_manager.set_hit_points(character, delta=-4) == (8, 12)
@@ -217,12 +199,12 @@ def test_set_hit_points_preserves_max_through_damage_heal_and_explicit_raise():
 async def test_hp_field_party_roster_keeps_current_and_max_hp_distinct():
     store = Store(":memory:")
     manager = CharacterManager(store)
-    character = CharacterSheet("Fighter", "DnD5e")
+    character = CharacterSheet("Fighter", "coc7")
     character_manager.set_hit_points(character, current=8, maximum=12, allow_raise_max=True)
 
-    await manager.sync_party_roster("chat-dnd", character)
+    await manager.sync_party_roster("chat-coc", character)
 
-    roster = (await manager.get_party_roster("chat-dnd"))[0]
+    roster = (await manager.get_party_roster("chat-coc"))[0]
     meters = {entry["id"]: entry for entry in roster["resources"]}
     assert meters["hp"]["value"] == 8
     assert meters["hp"]["max"] == 12
@@ -283,7 +265,6 @@ def test_generate_character_rolls_creation_constraints_and_defaults_name(monkeyp
 
 def test_generate_character_accepts_display_style_system_names():
     manager = CharacterManager(Store(":memory:"))
-    character = manager.generate_character("DnD5e", "Kael")
-    assert character.system == "dnd5e"
-    assert set(character.attributes) >= {"STR", "DEX", "CON", "INT", "WIS", "CHA"}
-    assert all(3 <= character.attributes[key] <= 18 for key in ("STR", "DEX", "CON", "INT", "WIS", "CHA"))
+    character = manager.generate_character("Call of Cthulhu", "Kael")
+    assert character.system == "coc7"
+    assert set(character.attributes) >= {"STR", "CON", "SIZ", "DEX", "APP", "INT", "POW", "EDU"}

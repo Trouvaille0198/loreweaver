@@ -59,7 +59,7 @@ def _undefaulted(pack):
 def test_every_bundled_pack_can_roll_its_check_with_no_caller_params():
     """A shipped pack whose check cannot be rolled without caller-supplied
     params is broken for every lane that does not wire them (all but one)."""
-    for system in ("coc7", "dnd5e", "wod"):
+    for system in ("coc7", "wod"):
         resolver = load_rulepack(system).resolver
         assert resolver is not None
         missing = [spec.id for spec in resolver.params if spec.default is None]
@@ -162,102 +162,8 @@ async def test_subsystem_lane_still_runs_when_the_param_has_a_default():
 
 
 # ---------------------------------------------------------------------------
-# F08 — dc-target opposed checks grade against a real number
-# ---------------------------------------------------------------------------
-
-
-async def _dnd_router():
-    services = _services(default_rulepack="dnd5e")
-    router = CommandRouter(services)
-    ctx = AgentCtx(chat_key="tui:group:dnd-opposed", user_id="u1", platform="tui", locale="en")
-    await router.dispatch(ctx, ".dnd Hero")
-    return services, router, ctx
-
-
-async def test_dnd5e_opposed_reports_the_side_with_the_higher_total():
-    services, router, ctx = await _dnd_router()
-    i18n = services.i18n.with_locale("en")
-
-    # seed 1 rolls 5 then 19: 5+9 = 14 loses to 19+1 = 20.
-    seed_dice(1)
-    reply = await router.dispatch_reply(ctx, ".rav 察觉 9, 隐匿 1")
-    assert i18n.t("commands.opposed.right") in reply.text
-    assert i18n.t("commands.opposed.tie") not in reply.text
-
-    # seed 4 rolls 8 then 10: 8+9 = 17 beats 10+1 = 11.
-    seed_dice(4)
-    reply = await router.dispatch_reply(ctx, ".rav 察觉 9, 隐匿 1")
-    assert i18n.t("commands.opposed.left") in reply.text
-    assert i18n.t("commands.opposed.tie") not in reply.text
-
-
-async def test_dnd5e_opposed_wire_frame_agrees_with_the_grading():
-    services, router, ctx = await _dnd_router()
-
-    seed_dice(1)
-    reply = await router.dispatch_reply(ctx, ".rav 察觉 9, 隐匿 1")
-    frame = next(event for event in reply.events if event.kind == "dice")
-
-    assert frame.data["detail"]["winner"] == "right"
-    # Each side's reported total is the number that actually decided the contest.
-    assert frame.data["detail"]["left"]["total"] == 5 + 9
-    assert frame.data["detail"]["right"]["total"] == 19 + 1
-    # The grading target is a real number, never a silent 0.
-    assert frame.data["detail"]["left"]["target"] == 19 + 1
-    assert frame.data["detail"]["right"]["target"] == 5 + 9
-
-
-async def test_dnd5e_opposed_still_reports_a_genuine_tie():
-    """Positive control: equal ranks AND equal totals really is a tie."""
-    services, router, ctx = await _dnd_router()
-    i18n = services.i18n.with_locale("en")
-
-    # seed 0 rolls 13 then 14: 13+3 == 14+2.
-    seed_dice(0)
-    reply = await router.dispatch_reply(ctx, ".rav 察觉 3, 隐匿 2")
-
-    assert i18n.t("commands.opposed.tie") in reply.text
-    frame = next(event for event in reply.events if event.kind == "dice")
-    assert frame.data["detail"]["winner"] == "tie"
-
-
-async def test_dnd5e_opposed_rank_tier_outranks_the_totals():
-    """Positive control: a natural-20 crit beats a bigger total that only
-    reached plain success — tier is compared first, totals only break ties."""
-    services, router, ctx = await _dnd_router()
-    i18n = services.i18n.with_locale("en")
-
-    # seed 5 rolls 20 then 9: left totals 20, right totals 39 — and left wins.
-    seed_dice(5)
-    reply = await router.dispatch_reply(ctx, ".rav 察觉 0, 隐匿 30")
-
-    assert i18n.t("commands.opposed.left") in reply.text
-    frame = next(event for event in reply.events if event.kind == "dice")
-    assert frame.data["detail"]["left"]["total"] == 20
-    assert frame.data["detail"]["right"]["total"] == 39
-    assert frame.data["detail"]["left"]["outcome"]["critical"] is True
-
-
-# ---------------------------------------------------------------------------
 # F08 — `interpret` never invents a target
 # ---------------------------------------------------------------------------
-
-
-def test_interpret_refuses_to_grade_a_target_reading_ladder_without_a_target():
-    resolver = load_rulepack("dnd5e").resolver
-
-    with pytest.raises(ResolutionError):
-        resolver.interpret(RollDetail("1d20", (5,), 5), None)
-
-
-def test_interpret_still_grades_dnd5e_against_a_real_target():
-    """Positive control for the guard above."""
-    resolver = load_rulepack("dnd5e").resolver
-
-    assert resolver.interpret(RollDetail("1d20", (5,), 5), 15).rank.id == "fail"
-    assert resolver.interpret(RollDetail("1d20", (18,), 18), 15).rank.id == "success"
-    assert resolver.interpret(RollDetail("1d20", (1,), 1), 5).rank.id == "fumble"
-
 
 def test_targetless_pack_still_grades_without_a_target():
     """Positive control: a `target: none` pool system never reads `target`, so

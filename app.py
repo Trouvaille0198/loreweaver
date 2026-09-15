@@ -381,7 +381,7 @@ def _run_doctor(settings: Settings, i18n: I18n) -> int:
     for locale in ("en", "zh"):
         if locale not in available_locales:
             missing.append(i18n.t("tui.doctor.missing_locale", locale=locale))
-    for rulepack in ("coc7", "dnd5e"):
+    for rulepack in ("coc7",):
         if rulepack not in rulepack_ids:
             missing.append(i18n.t("tui.doctor.missing_rulepack", rulepack=rulepack))
     if not skill_ids:

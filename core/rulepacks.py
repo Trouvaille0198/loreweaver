@@ -33,7 +33,6 @@ from typing import Any
 
 from core.condexpr import CondExprError, compile_expression
 from core.resolution import CheckResolver, compile_resolution
-from core.runtime import RuntimeSpec, parse_runtime_section
 from core.sheets import SheetSpec, parse_sheet_section
 from core.subsystems import SubsystemSpec, parse_subsystems
 from core.yaml_safety import safe_load_no_aliases
@@ -343,12 +342,6 @@ class RulePack:
     # code, so `agent.turn_checks` is what resolves it, drops an unknown one, and clamps
     # the round caps against the per-turn model-call budget.
     turn_checks: tuple[dict[str, Any], ...] = ()
-    # Optional deterministic runtime contract. Packs without it retain their
-    # check/sheet behavior and receive an explicit unsupported-runtime result.
-    runtime_spec: RuntimeSpec | None = None
-    # The pack's spell catalog (loaded from `runtime.spells_file`, a sibling
-    # YAML in the pack's own directory). None when the pack declares none.
-    spells: Any = None
     # Playable races (`races:` block): creation-time ability bonuses plus display
     # facts (speed/darkvision/traits) resolvable from the sheet's race field.
     races: dict[str, RaceEntry] = field(default_factory=dict)
@@ -375,13 +368,6 @@ class RulePack:
                 cut = key.find(open_c)
                 if cut > 0:
                     key = key[:cut].rstrip()
-        runtime = self.runtime_spec
-        if runtime is not None:
-            if key in runtime.spell_slot_class:
-                return key
-            for canonical, names in runtime.class_aliases.items():
-                if key in {str(alias).casefold() for alias in names}:
-                    return canonical
         return text
 
     def resolve_skill(self, name: str) -> str | None:
@@ -541,39 +527,12 @@ def _dir_script_loader(pack_id: str, directory: Path | None) -> Callable[[str], 
     return _load
 
 
-def _load_pack_spells(
-    pack_id: str, runtime_spec: RuntimeSpec | None, script_loader: Callable[[str], str] | None
-) -> Any:
-    """Load the pack's spell catalog from `runtime.spells_file` (a sibling YAML
-    in the pack's own directory), through the same directory-confined loader as
-    resolver scripts. None when the pack declares no spells_file or no file
-    loader is available (an in-memory parse, e.g. `agent.forge` validating text
-    before it exists on disk) — discovery always has the loader, so a broken
-    catalog fails the pack loudly instead of silently disabling spell casting.
-    """
-    from core.spells import SpellError, parse_spells_yaml
-    from core.yaml_safety import safe_load_no_aliases
-
-    if runtime_spec is None or not runtime_spec.spells_file or script_loader is None:
-        return None
-    try:
-        text = script_loader(runtime_spec.spells_file)
-    except Exception as exc:
-        raise ValueError(f"rulepack '{pack_id}': cannot read spells_file {runtime_spec.spells_file!r}: {exc}") from exc
-    try:
-        raw = safe_load_no_aliases(text) or {}
-        return parse_spells_yaml(pack_id, raw)
-    except SpellError as exc:
-        raise ValueError(str(exc)) from exc
-
-
 def _build_rulepack(
     pack_id: str, data: Mapping[str, Any], *, script_loader: Callable[[str], str] | None = None
 ) -> RulePack:
     alias = data.get("alias") or {}
     derived = data.get("derived") or {}
     defaults = dict(data.get("defaults") or {})
-    runtime_spec = parse_runtime_section(pack_id, data.get("runtime"))
     genre_raw = data.get("genre")
     if isinstance(genre_raw, dict):
         genre = {str(key): str(value).strip() for key, value in genre_raw.items() if str(value).strip()}
@@ -604,8 +563,6 @@ def _build_rulepack(
         sheet_spec=parse_sheet_section(pack_id, data.get("sheet")),
         initiative_roll=_parse_initiative_section(pack_id, data.get("initiative")),
         turn_checks=_parse_turn_checks_section(pack_id, data.get("turn_checks")),
-        runtime_spec=runtime_spec,
-        spells=_load_pack_spells(pack_id, runtime_spec, script_loader),
         races=_parse_races_section(pack_id, data.get("races")),
         genre=genre,
     )
@@ -1076,8 +1033,6 @@ def available_systems() -> list[str]:
 RULE_DISPLAY_NAMES: dict[str, str] = {
     "coc7": "CoC 7e",
     "coc": "CoC",
-    "dnd5e": "DnD 5e",
-    "dnd": "DnD",
     "wod": "WoD",
 }
 

@@ -13,7 +13,7 @@ Neither of you knows the script — **you create the story together.**
 
 Loreweaver is an open-source **engine and open standard for AI-run tabletop RPGs**. You and your friends bring the characters; an AI Keeper reads the module, remembers the world, plays every NPC and guards every clue. What separates it from "chatting with an AI" is that **the dice are real**: checks, damage, sanity and every number on a sheet are rolled and resolved by code, and the model's job is to tell you what that meant. **The AI tells the story. The code keeps the score.**
 
-A world's rules, lore, cast, interface and staging are all plain files in documented formats rather than features baked into the engine, so a world can be packed up and handed to someone else. The server runs on your own machine. Call of Cthulhu 7e and D&D 5e (SRD) ship with it, and English and Chinese are both first-class.
+A world's rules, lore, cast, interface and staging are all plain files in documented formats rather than features baked into the engine, so a world can be packed up and handed to someone else. The server runs on your own machine. Call of Cthulhu 7e ships with it, and English and Chinese are both first-class.
 
 [![CI](https://github.com/1A7432/loreweaver/actions/workflows/ci.yml/badge.svg)](https://github.com/1A7432/loreweaver/actions/workflows/ci.yml) ![license](https://img.shields.io/badge/license-MIT-green) ![python](https://img.shields.io/badge/python-3.11%2B-blue) ![clients](https://img.shields.io/badge/clients-TypeScript%20%2F%20Bun-black) [![protocol](https://img.shields.io/badge/protocol-2.3-informational)](docs/protocol.md)
 
@@ -215,7 +215,7 @@ it can run the mystery, never says it out loud. That is behaviour, and it is
 **Rule systems are data, not code.** A rule system is one YAML file: what a character sheet looks
 like, how derived stats are computed, which tiers a check can land on, what subsystems exist, which
 dot-commands it answers to, and what all of it is called in each language. The bundled
-CoC 7e / D&D 5e / WoD packs are ordinary packs — delete `rulepacks/coc7.yaml` from a deployment and
+CoC 7e / WoD packs are ordinary packs — delete `rulepacks/coc7.yaml` from a deployment and
 CoC is simply gone, with no residue. Check resolution is a small declarative DSL over the dice
 engine:
 
@@ -387,7 +387,7 @@ Every page above except `AGENTS.md` and the design-history records has a Chinese
 PRs and issues welcome. Before submitting, get these green: `uv run ruff check …`,
 `uv run python scripts/i18n_lint.py`, `uv run pytest -q`, plus the relevant `bun test`. Respect the
 iron rules in [AGENTS.md](AGENTS.md) — above all, every user-facing string goes through i18n, and
-information isolation is never broken. Rules content must be openly licensed (SRD / Miskatonic
+information isolation is never broken. Rules content must be openly licensed (Miskatonic
 Repository); bring your own modules at runtime. Where help is needed most is listed in the
 [roadmap](docs/roadmap.md).
 
@@ -415,9 +415,8 @@ Found a vulnerability? Open a private security advisory on GitHub, not a public 
 
 ## License & credits
 
-MIT — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). Includes **D&D 5e SRD 5.1** (CC-BY-4.0)
-material; Cthulhu content only within open / Miskatonic Repository licensing. The gateway layer
-derives from **hermes-agent** (MIT, © 2025 Nous Research); the dice engine is **avrae/d20** (MIT);
+MIT — see [`LICENSE`](LICENSE) and [`NOTICE`](NOTICE). Cthulhu content only within open / Miskatonic
+Repository licensing. The gateway layer derives from **hermes-agent** (MIT, © 2025 Nous Research); the dice engine is **avrae/d20** (MIT);
 the Chinese command style, CoC success function and skill alias table are rewritten with reference
 to **SealDice** (MIT); the terminal client is built on **OpenTUI**. No copyrighted adventure text
 ships in this repository.

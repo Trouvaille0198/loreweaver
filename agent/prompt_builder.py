@@ -320,12 +320,6 @@ async def build_system_prompt_parts(
     # Placed BEFORE the skill bodies: P1 pins skills as the LAST stable-head
     # section (the strongest standing directive), so nothing may follow them.
     stable.append(i18n.t("prompt.settlement_notice"))
-    # Progression is Keeper-owned during play. The model must issue a real award
-    # through the advancement tool when a challenge or declared milestone resolves;
-    # the engine then enforces the rule pack's thresholds, choices, HP and features.
-    if getattr(room_rulepack, "runtime_spec", None) is not None and getattr(room_rulepack.runtime_spec, "advancement", None):
-        stable.append(i18n.t("prompt.advancement_notice"))
-
     skill_bodies = await _enabled_skill_bodies(ctx, services)
     if skill_bodies:
         stable.append(i18n.t("prompt.skills_header") + "\n\n" + "\n\n".join(skill_bodies))

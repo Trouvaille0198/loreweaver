@@ -27,7 +27,7 @@ def test_graded_roll_grades_against_the_target_and_reports_the_effective_one():
 
 
 def test_graded_roll_without_a_target_is_ungraded():
-    pack = load_rulepack("dnd5e")
+    pack = load_rulepack("wod")  # target: none — a roll with no target stays ungraded
     dice = DiceRoller()
     seed_dice(3)
     graded = graded_roll(dice, pack.resolver, modifiers={}, target=None, modifier=4)

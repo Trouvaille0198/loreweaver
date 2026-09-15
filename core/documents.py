@@ -346,46 +346,6 @@ def _validate_item_catalog(doc: Document, services: Any) -> list[str]:
     return violations
 
 
-def _project_statblock(doc: Document, viewer: Viewer) -> dict[str, Any] | None:
-    """Stat blocks expose only public identity outside the keeper view."""
-    from core.statblocks import parse_statblock, project_statblock
-
-    try:
-        statblock = parse_statblock("document", doc.data, statblock_id=doc.id)
-    except Exception:
-        return None
-    return project_statblock(statblock, keeper=viewer.is_keeper)
-
-
-def _validate_statblock(doc: Document, services: Any) -> list[str]:
-    from core.statblocks import parse_statblock
-
-    try:
-        parse_statblock("document", doc.data, statblock_id=doc.id)
-    except Exception as exc:
-        return [str(exc)]
-    return []
-
-
-def _project_encounter(doc: Document, viewer: Viewer) -> dict[str, Any] | None:
-    from core.encounters import parse_encounter
-
-    try:
-        encounter = parse_encounter(doc.data, encounter_id=doc.id)
-    except Exception:
-        return None
-    return encounter.to_dict(keeper=viewer.is_keeper)
-
-
-def _validate_encounter(doc: Document, services: Any) -> list[str]:
-    from core.encounters import parse_encounter
-
-    try:
-        parse_encounter(doc.data, encounter_id=doc.id)
-    except Exception as exc:
-        return [str(exc)]
-    return []
-
 
 # Singleton document ids.
 MODVARS_ID = "modvars"
@@ -410,22 +370,6 @@ for _name, _project_fn, _singleton in (
     register_document_type(
         DocumentType(name=_name, schema_version=1, project=_project_fn, singleton_id=_singleton)
     )
-register_document_type(
-    DocumentType(
-        name="statblock",
-        schema_version=1,
-        project=_project_statblock,
-        validate_write=_validate_statblock,
-    )
-)
-register_document_type(
-    DocumentType(
-        name="encounter",
-        schema_version=1,
-        project=_project_encounter,
-        validate_write=_validate_encounter,
-    )
-)
 
 # Item types carry write-validation (registered separately from the schema-less
 # loop above). `item` is the first PLURAL type (many instances per room); its

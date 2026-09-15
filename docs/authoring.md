@@ -382,8 +382,8 @@ Pack build failed: rulepack bell: rulepack 'bell': resolution.ranks[0].when refe
 holds for the bundled packs too:
 
 ```
-with coc7 : ['coc7', 'dnd5e', 'wod']
-deleted   : ['dnd5e', 'wod']
+with coc7 : ['coc7', 'wod']
+deleted   : ['wod']
 load coc7 : ValueError unknown rulepack: coc7
 ```
 

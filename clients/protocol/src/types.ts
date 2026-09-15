@@ -847,6 +847,7 @@ export interface CharacterState {
   name: string
   system: string
   resources: ResourceState[]
+  /** Retired with the D&D runtime removal; kept optional for older clients. */
   resource_groups?: ResourceGroupState[]
   attributes: Record<string, unknown>
   /** v2.4: the sheet's trained skills, name → current value. A long, secondary
@@ -870,9 +871,8 @@ export interface CharacterState {
   /** The relationship tracks THIS character holds toward each named entity —
    * non-default values only. Additive; absent when the server predates it. */
   relationships?: RelationshipEntry[]
-  /** v2.9 additive: the character's known spells, localized display names in
-   * viewer order (the sheet's `known_spells` ids resolved server-side). Absent
-   * when the server predates it or the character knows none. */
+  /** Retired with the D&D runtime removal: the engine no longer sends known
+   * spells. Kept as an optional field so older clients keep parsing. */
   spells?: string[]
   /** v2.9 additive: the pack-resolved race data behind the sheet's free-text
    * race field — localized name/traits, speed and darkvision. Absent when the
@@ -1056,9 +1056,9 @@ export interface PregenEntry {
   blurb?: string
 }
 
-/** v2.3: one discoverable rule system. `make_char` is the dot-command word that
- * creates a sheet in it (`.coc`, `.dnd`, a pack's own) — absent when the pack
- * declares none, which means the system can be imported into but not created in. */
+/** Systems the room can create a character in (`.coc`, a pack's own). The server
+ * builds this summary from the pack registry — absent when the pack declares
+ * none, which means the system can be imported into but not created in. */
 export interface RuleSystemEntry {
   id: string
   make_char?: string
@@ -1077,7 +1077,7 @@ export interface StateFrame {
   scene?: SceneState
   clock?: ClockState
   initiative: InitiativeEntry[]
-  /** Runtime combat projection; mechanics fields are keeper-filtered server-side. */
+  /** Retired with the D&D runtime removal; kept optional for older clients. */
   combat?: CombatState
   online: number
   usage?: UsageState

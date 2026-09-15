@@ -14,8 +14,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from agent.context import AgentCtx
 from agent.kp_tools_mechanics import CharacterTools, DiceTools, InitiativeTools
+from core.character_manager import get_hit_points, set_hit_points
 from agent.kp_tools_subsystems import dispatch_subsystem, subsystem_schemas
 from agent.services import Services, build_services
 from agent.tools import Toolset
@@ -41,7 +41,7 @@ def _build() -> tuple[Services, AgentCtx]:
 
 
 # ---------------------------------------------------------------------------
-# Toolset integration — 18 tools, none keeper_only, valid schemas
+# Toolset integration — 23 tools, none keeper_only, valid schemas
 # ---------------------------------------------------------------------------
 
 
@@ -59,10 +59,12 @@ def test_toolset_collects_all_static_tools_and_none_are_keeper_only():
         "switch_character",
         "delete_character",
         "update_character_status",
+        "list_item_catalog",
         "grant_item",
         "improvise_item",
         "transfer_item",
         "remove_item",
+        "update_item",
         "reveal_clue",
         "use_item",
         "equip_item",
@@ -71,18 +73,12 @@ def test_toolset_collects_all_static_tools_and_none_are_keeper_only():
         "skill_check",
         "hp_manager",
         "initiative_tracker",
-        "cast_spell",
-        "rest_manager",
-        "attack_target",
-        "advance_level",
-        "manage_resource",
-        "manage_spells",
     }
-    assert len(expected_names) == 27
+    assert len(expected_names) == 23
     assert set(toolset.names()) == expected_names
 
     schemas = toolset.schemas()
-    assert len(schemas) == 27
+    assert len(schemas) == 23
     for name in expected_names:
         assert toolset.is_keeper_only(name) is False
 
@@ -117,17 +113,17 @@ async def test_create_character_then_get_character_sheet_returns_the_sheet():
     assert "SAN" in sheet
 
 
-async def test_create_character_dnd5e_auto_generate_false_uses_defaults():
+async def test_create_character_wod_auto_generate_false_uses_defaults():
     services, ctx = _build()
     char_tools = CharacterTools(services)
 
-    created = await char_tools.create_character(ctx, name="Thorin", system="dnd5e", auto_generate=False)
+    created = await char_tools.create_character(ctx, name="Thorin", system="wod", auto_generate=False)
     assert "Thorin" in created
-    assert "dnd5e" in created
+    assert "wod" in created
 
     sheet = await char_tools.get_character_sheet(ctx)
     assert "Thorin" in sheet
-    assert "dnd5e" in sheet
+    assert "wod" in sheet
 
 
 async def test_get_character_sheet_without_a_character_returns_localized_error():
@@ -182,26 +178,21 @@ async def test_update_character_tools_clamp_rule_violations_before_saving():
     assert character.skills["侦查"] == 90
 
 
-async def test_update_dnd_attribute_recomputes_derived_fields_and_routes_hp_edits():
+async def test_update_attribute_hp_edit_leaves_other_vitals_alone():
     services, ctx = _build()
     char_tools = CharacterTools(services)
-    await char_tools.create_character(ctx, name="Fighter", system="dnd5e", auto_generate=False)
+    await char_tools.create_character(ctx, name="Vera", system="coc7", auto_generate=False)
     character = await services.characters.get_character(ctx.uid(), ctx.chat_key)
-    character.hp_current = 8
-    character.hp_max = 12
+    set_hit_points(character, current=4)  # wounded: 4 of 10
     await services.characters.save_character(ctx.uid(), ctx.chat_key, character)
 
-    await char_tools.update_character_attribute(ctx, attribute="DEX", value=14)
     await char_tools.update_character_attribute(ctx, attribute="HP", value=10)
 
     updated = await services.characters.get_character(ctx.uid(), ctx.chat_key)
-    dnd_pack = load_rulepack("dnd5e")
-    assert sheet_value(updated, dnd_pack, "先攻修正") == 2
-    assert sheet_value(updated, dnd_pack, "护甲等级") == 12
-    assert sheet_value(updated, dnd_pack, "体操") == 2
-    assert (updated.hp_current, updated.hp_max) == (10, 12)
-    assert "HP" not in updated.attributes
-
+    assert get_hit_points(updated) == (10, 10)
+    # The edit routed to the hit-point authority: MP and SAN never moved.
+    assert updated.attributes["MP"] == 10
+    assert updated.attributes["SAN"] == 50
 
 async def test_list_switch_and_delete_characters():
     services, ctx = _build()
@@ -443,58 +434,6 @@ async def test_roll_dice_records_into_battle_report_when_session_active():
     assert record.dice_rolls[0]["expression"] == "1d6"
 
 
-async def test_skill_check_dnd5e_uses_get_dnd_skill_modifier_against_dc():
-    services, ctx = _build()
-    char_tools = CharacterTools(services)
-    dice_tools = DiceTools(services)
-    # Default DnD5e attributes are all 10 -> ability modifier 0 for every skill.
-    await char_tools.create_character(ctx, name="Thorin", system="dnd5e", auto_generate=False)
-
-    seed_dice(9)
-    expected = DiceRoller().roll_expression("1d20", is_check=True)
-
-    seed_dice(9)
-    result = await dice_tools.skill_check(ctx, skill_name="运动", dc=10)
-
-    assert "Thorin" in result
-    assert f"{expected.total}" in result
-    assert "target 10" in result
-
-
-async def test_dnd_skill_check_records_structured_advantage_and_critical_fields():
-    services, ctx = _build()
-    char_tools = CharacterTools(services)
-    dice_tools = DiceTools(services)
-    await char_tools.create_character(ctx, name="Thorin", system="dnd5e", auto_generate=False)
-
-    seed_dice(19)
-    await dice_tools.skill_check(ctx, skill_name="运动", bonus=1, dc=10, proficient=True)
-
-    record = await services.battles.generator.get_current_session(ctx.chat_key)
-    assert record is not None
-    check = record.skill_checks[0]
-    assert check["target"] == 10
-    assert isinstance(check["success"], bool)
-    # Advantage rolled 2d20kh1: every candidate face is recorded, one was kept.
-    assert len(check["dice_all"]) == 2
-    assert check["advantage"] == 1
-    assert check["modifier"] == 2  # proficiency bonus on a 10-ability sheet
-    assert isinstance(check["critical"], bool)
-    assert isinstance(check["fumble"], bool)
-    assert check["rank_id"] in {"crit", "success", "fail", "fumble"}
-    payload = ctx.dice_payloads[-1]
-    assert payload["kind"] == "check"
-    assert payload["expr"] == "Athletics"
-    assert payload["rolls"] == check["dice_all"]
-    assert payload["target"] == 10
-    assert payload["effective_target"] == 10
-    assert payload["outcome"]["success"] == check["success"]
-    assert payload["outcome"]["id"] == check["rank_id"]
-    assert payload["outcome"]["label"]
-    assert payload["detail"]["bonus"] == 1
-    assert payload["detail"]["penalty"] == 0
-
-
 async def test_coc_npc_skill_check_requires_and_uses_explicit_target_without_player_sheet_leak():
     services, ctx = _build()
     char_tools = CharacterTools(services)
@@ -521,35 +460,7 @@ async def test_coc_npc_skill_check_requires_and_uses_explicit_target_without_pla
     assert record.skill_checks[0]["target"] == 73
 
 
-async def test_dnd_npc_skill_check_uses_explicit_total_modifier():
-    services, ctx = _build()
-    await CharacterTools(services).create_character(ctx, name="Kael", system="dnd5e", auto_generate=False)
-    dice_tools = DiceTools(services)
-
-    seed_dice(91)
-    natural = DiceRoller().roll_expression("1d20", is_check=True)
-    seed_dice(91)
-    await dice_tools.skill_check(
-        ctx,
-        skill_name="Perception",
-        dc=14,
-        actor="Goblin Scout",
-        npc_target=6,
-    )
-
-    payload = ctx.dice_payloads[-1]
-    assert payload["detail"]["modifier"] == 6
-    assert payload["total"] == natural.total + 6
-    record = await services.battles.generator.get_current_session(ctx.chat_key)
-    assert record is not None
-    assert record.skill_checks[0]["user_id"] == "__npc__"
-    # The record keeps the natural roll and the modifier separately (their sum
-    # is the compared value, mirrored by outcome margin vs the DC).
-    assert record.skill_checks[0]["roll"] == natural.total
-    assert record.skill_checks[0]["modifier"] == 6
-
-
-@pytest.mark.parametrize("system", ["coc7", "dnd5e"])
+@pytest.mark.parametrize("system", ["coc7", "wod"])
 async def test_actor_without_npc_target_errors_before_rolling(system: str):
     services, ctx = _build()
     await CharacterTools(services).create_character(ctx, name="Kael Thorn", system=system, auto_generate=False)
@@ -597,12 +508,12 @@ async def test_subsystem_tools_materialize_only_from_the_declaring_pack():
     services, ctx = _build()
 
     coc_names = {schema["function"]["name"] for schema in subsystem_schemas(load_rulepack("coc7"))}
-    dnd_names = {schema["function"]["name"] for schema in subsystem_schemas(load_rulepack("dnd5e"))}
+    wod_names = {schema["function"]["name"] for schema in subsystem_schemas(load_rulepack("wod"))}
     assert {"sanity_check", "skill_growth", "spend_luck", "opposed_check", "random_madness"} <= coc_names
-    assert "sanity_check" not in dnd_names and "random_madness" not in dnd_names
+    assert not wod_names
 
     undeclared = await dispatch_subsystem(
-        services, ctx, load_rulepack("dnd5e"), "sanity_check", {"success_loss": "1", "failure_loss": "1d6"}
+        services, ctx, load_rulepack("wod"), "sanity_check", {"success_loss": "1", "failure_loss": "1d6"}
     )
     assert undeclared is None  # the loop falls through to the static toolset (unknown tool)
 
@@ -887,11 +798,11 @@ async def test_spend_luck_rejects_overspend_that_would_push_roll_below_one():
 
     other_services, other_ctx = _build()
     await CharacterTools(other_services).create_character(
-        other_ctx, name="Thorin", system="dnd5e", auto_generate=False
+        other_ctx, name="Thorin", system="wod", auto_generate=False
     )
     # A system that declares no luck-family subsystem simply has no such tool.
     assert (
-        await dispatch_subsystem(other_services, other_ctx, load_rulepack("dnd5e"), "spend_luck", {"points": 1})
+        await dispatch_subsystem(other_services, other_ctx, load_rulepack("wod"), "spend_luck", {"points": 1})
         is None
     )
 
@@ -1075,27 +986,6 @@ async def test_hp_manager_add_sub_and_show():
 
     unknown_result = await dice_tools.hp_manager(ctx, action="bogus")
     assert "❌" in unknown_result
-
-
-async def test_dnd_hp_manager_preserves_max_through_damage_and_heal():
-    services, ctx = _build()
-    char_tools = CharacterTools(services)
-    dice_tools = DiceTools(services)
-    await char_tools.create_character(ctx, name="Fighter", system="dnd5e", auto_generate=False)
-    character = await services.characters.get_character(ctx.uid(), ctx.chat_key)
-    character.hp_current = 12
-    character.hp_max = 12
-    await services.characters.save_character(ctx.uid(), ctx.chat_key, character)
-
-    damaged = await dice_tools.hp_manager(ctx, action="sub", value=4)
-    assert "8/12" in damaged
-    healed = await dice_tools.hp_manager(ctx, action="add", value=3)
-    assert "11/12" in healed
-
-    persisted = await services.characters.get_character(ctx.uid(), ctx.chat_key)
-    assert (persisted.hp_current, persisted.hp_max) == (11, 12)
-    assert "生命值" not in persisted.secondary_attributes
-    assert "生命值上限" not in persisted.secondary_attributes
 
 
 async def test_hp_manager_without_a_character_returns_localized_error():

@@ -11,7 +11,7 @@
 >
 > | Layer | State |
 > |---|---|
-> | **A — data plugins** | rule systems, cards, lorebooks, module variables. `core/rulepacks.py` is a discovery-based data loader; since M16 a rulepack also owns **the tiers a check lands on, the sheet shape, the subsystems, the dot-commands it answers to and what to tell the Keeper**, so coc7/dnd5e/wod are ordinary packs and deleting a file removes the system |
+> | **A — data plugins** | rule systems, cards, lorebooks, module variables. `core/rulepacks.py` is a discovery-based data loader; since M16 a rulepack also owns **the tiers a check lands on, the sheet shape, the subsystems, the dot-commands it answers to and what to tell the Keeper**, so coc7/wod are ordinary packs and deleting a file removes the system |
 > | **B.1 — KP skills** | `SKILL.md` loader, prompt-section binding, per-room `.skill enable`, mature-mode content gate |
 > | **B.2 — `allowed-tools`** | extra tools that stay hidden until a skill asks for them (`@tool(gated=…)`); `romance-relationships` ships on it |
 > | **B.3 — self-extension forges** | `generate_skill` / `generate_rulepack` / `generate_module`, each invisible until its forge skill is enabled. The rulepack forge writes the M16 `resolution:` / `subsystems:` / `expertise:` fields |
@@ -121,7 +121,7 @@ an exotic one *may* use code):
   <stat>}`, `{floor_div: {of: <stat>, by: N}}`, `{sum_ranges: {of: [<stats>],
   ranges: [[lo, hi, value], ...], else: <value>}}`.
 
-The three bundled systems (`coc7`, `dnd5e`, `wod`) are ordinary packs in this format and serve as
+The bundled systems (`coc7`, `wod`) are ordinary packs in this format and serve as
 the reference for what the format can express. "Rules are data" has a literal acceptance test: remove
 `rulepacks/coc7.yaml` from a deployment and CoC is gone, with no residue in the engine.
 

@@ -352,16 +352,6 @@ def test_roll_for_check_applies_pack_declared_tens_modifiers():
     assert "extra_tens" not in plain.modifiers
 
 
-def test_roll_for_check_roll_override_modifier_swaps_the_expression():
-    resolver = load_rulepack("dnd5e").resolver
-    roller = DiceRoller()
-    seed_dice(5)
-    rolled = roller.roll_for_check(resolver, modifiers={"advantage": 1})
-    assert rolled.expression == "2d20kh1"
-    assert len(rolled.dice) == 1  # kept face only
-    assert rolled.modifiers["advantage"] == 1
-
-
 # ---------------------------------------------------------------------------
 # Explode / Fate / repeat
 # ---------------------------------------------------------------------------

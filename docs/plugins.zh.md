@@ -8,7 +8,7 @@
 >
 > | 层 | 状态 |
 > |---|---|
-> | **A——数据插件** | 规则系统、卡、世界书、模组变量。`core/rulepacks.py` 是基于发现的数据加载器；M16 之后，一个规则包还拥有自己的**检定档位、卡表形状、子系统、命令写法和守秘人须知**，所以 coc7/dnd5e/wod 就是普通的包，删掉文件就删掉了系统 |
+> | **A——数据插件** | 规则系统、卡、世界书、模组变量。`core/rulepacks.py` 是基于发现的数据加载器；M16 之后，一个规则包还拥有自己的**检定档位、卡表形状、子系统、命令写法和守秘人须知**，所以 coc7/wod 就是普通的包，删掉文件就删掉了系统 |
 > | **B.1——KP 技能** | `SKILL.md` 加载器、提示段绑定、按房间 `.skill enable`、成人内容开关 |
 > | **B.2——`allowed-tools`** | `@tool(gated=…)`：技能没要就看不见的额外工具；`romance-relationships` 跑在这套上 |
 > | **B.3——自扩展 forge** | `generate_skill` / `generate_rulepack` / `generate_module` 三个工具，各自在对应的 forge 技能启用之前完全不可见。规则包 forge 说的是 M16 的 `resolution:` / `subsystems:` / `expertise:` 词汇 |
@@ -89,7 +89,7 @@ sheet:                                   # 卡表形状（属性／生命／资�
 - `{computer_group: <system_id>}`——直接复用另一个系统整套生成结果。
 - 声明式写法（安全，不 eval）：`{copy_of: <stat>}`、`{half_of: <stat>}`、`{floor_div: {of: <stat>, by: N}}`、`{sum_ranges: {of: [<stats>], ranges: [[lo, hi, value], ...], else: <value>}}`。
 
-随包发的三个系统（`coc7`、`dnd5e`、`wod`）就是这个格式的普通包，也是参考词汇。“规则即数据”有一条字面意义上的验收标准：把 `rulepacks/coc7.yaml` 从一个部署里删掉，CoC 就没了，引擎里不留残渣。
+随包发的两个系统（`coc7`、`wod`）就是这个格式的普通包，也是参考词汇。“规则即数据”有一条字面意义上的验收标准：把 `rulepacks/coc7.yaml` 从一个部署里删掉，CoC 就没了，引擎里不留残渣。
 
 **规则的行为也是包数据（M16）。** 规则外化之后，一个包不只声明卡表：它声明检定怎么结算、有哪些子系统、响应哪些点命令、以及要告诉守秘人什么。`agent/` 从不点名系统，也从不比较 rank id——它只读语义标志——所以一个包可以自造词汇而不碰代码。
 

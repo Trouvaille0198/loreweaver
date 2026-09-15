@@ -372,7 +372,7 @@ async def test_display_name_prefers_active_character_with_nickname_in_parens_whe
 
 
 async def test_echoed_name_after_coc_command_creation_matches_what_state_reports() -> None:
-    # BUG C (playtest feedback): a character created via the `.coc`/`.dnd` command must make the
+    # BUG C (playtest feedback): a character created via the `.coc` command must make the
     # NEXT turn's `player_action` echo lead with the character's name (matching `net.state`'s
     # `state.character`/`party[].active`), not fall back to the bare platform nickname.
     hub = RoomHub()

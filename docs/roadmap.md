@@ -115,7 +115,6 @@ What sets this apart is the world *underneath* the adventure, not a chat with di
 - **A deeply customizable UI extension layer.** The reason the chat adapters died: modules and hooks should be able to DRAW their interface — declarative `ui` frames today (meters, badges, choices), richer module-defined panels and client-side extension points next — so a world ships not just rules and lore but its own table dressing. Protocol clients (the TUI, the companion desktop client) are the rendering targets.
 - **Deeper worldbook:** a generative world (not only keyword/vector-retrieved lore), a **living causal timeline** where events have consequences that propagate, and **canon consistency** so the Keeper can't contradict established facts.
 - **Catching up a late arrival:** someone who joins halfway through gets told what their character *would* already know — and nothing their character wouldn't.
-- **D&D Beyond sheet import**, alongside the existing SillyTavern-card path.
 - **Prebuilt binaries for more platforms** than today's Windows x64, macOS arm64 and Linux x64/arm64.
 
 ## A question we closed, and how

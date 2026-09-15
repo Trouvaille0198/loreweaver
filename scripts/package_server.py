@@ -16,7 +16,7 @@ on Windows). The actual PyInstaller build is driven by the committed `loreweaver
 
 Flow: PyInstaller build -> smoke the built binary -> archive. The smoke test is what makes a
 green build here trustworthy on a machine with none of this repo's Python/uv/toolchain:
-    (a) `<binary> --doctor` exits 0 and names coc7 + dnd5e + >=4 skills + en/zh locales
+    (a) `<binary> --doctor` exits 0 and names coc7 + >=4 skills + en/zh locales
         (a bundle missing datas or hitting a frozen-`__file__` path bug fails LOUD here,
         not silently at first real use);
     (b) unless `--skip-serve-smoke`, `<binary> --serve` actually binds the Iroh p2p transport
@@ -174,7 +174,7 @@ def _smoke_doctor(binary: Path) -> None:
     if result.returncode != 0:
         raise PackagingError(f"--doctor exited {result.returncode}:\n{output}")
 
-    required_tokens = ["coc7", "dnd5e", "en", "zh"]
+    required_tokens = ["coc7", "en", "zh"]
     missing = [token for token in required_tokens if token not in output]
     if missing:
         raise PackagingError(f"--doctor output is missing expected tokens {missing}:\n{output}")

@@ -105,7 +105,7 @@ class PrepScriptTools:
         # …and the room's real capability set, for the same reason (a pool tool in a
         # world-card room is unreachable for a script exactly as it is for the model).
         room_pack = await self._services.room_rulepack(ctx)
-        capabilities = await room_capabilities(self._services.documents, ctx.chat_key, pack=room_pack)
+        capabilities = await room_capabilities(self._services.documents, ctx.chat_key)
 
         unreachable = self._unreachable(toolset, plan.operations, unlocked, capabilities)
         if unreachable:

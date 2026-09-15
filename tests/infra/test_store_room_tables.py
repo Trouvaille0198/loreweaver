@@ -6,8 +6,8 @@ file pins the raw room_state behaviors backup/reset/CAS consumers rely on.)
 
 from __future__ import annotations
 
+import json
 import sqlite3
-
 from infra.store import Store
 
 ROOM = "tui:group:alpha"
@@ -110,3 +110,23 @@ async def test_state_delete_room_wipes_only_that_room():
     assert await store.state_delete_room(ROOM) == 2
     assert await store.state_list(ROOM) == []
     assert await store.state_get(OTHER, "a") == "keep"
+
+
+async def test_room_cas_commits_state_and_documents_together():
+    store = Store(":memory:")
+    assert await store.compare_and_swap_room(
+        "room",
+        expected_state=[("marker", None)],
+        state_updates=[("marker", "1")],
+        expected_documents=[("sheet", "Hero", None)],
+        document_updates=[{"type": "sheet", "id": "Hero", "data": {"name": "Hero"}}],
+    )
+    assert not await store.compare_and_swap_room(
+        "room",
+        expected_state=[("marker", "wrong")],
+        state_updates=[("marker", "2")],
+        document_updates=[{"type": "sheet", "id": "Hero", "data": {"name": "Changed"}}],
+    )
+    assert await store.state_get("room", "marker") == "1"
+    assert json.loads((await store.doc_get("room", "sheet", "Hero"))["data"])["name"] == "Hero"
+    store.close()

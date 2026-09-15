@@ -75,7 +75,6 @@ async def build_sheet_from_persona(
     _bias_sheet(manager, sheet, pack, concept, creation=creation)
     _apply_persona_text(sheet, card, concept, pack)
     _apply_race_data(sheet, pack)
-    _fill_initial_spells(sheet, pack)
     return sheet
 
 
@@ -546,7 +545,7 @@ def _apply_race_data(sheet: CharacterSheet, pack: RulePack) -> None:
     (AC, HP, skills) then recomputes through the normal refresh lane. This is
     the race's only mechanical footprint; speed/darkvision/traits stay pack
     display data resolved at read time. Unknown or empty race names are a
-    silent no-op, so homebrew and non-D&D systems are untouched.
+    silent no-op, so homebrew systems are untouched.
     """
     race = pack.resolve_race(str(getattr(sheet, "race", "") or ""))
     if race is None or not race.bonuses:
@@ -570,37 +569,6 @@ def _apply_race_data(sheet: CharacterSheet, pack: RulePack) -> None:
         # Re-derive vitals from the boosted constitution (a fresh sheet has
         # nothing to preserve — same semantics as the creation refresh above).
         refresh_sheet(sheet, pack, initialize_vitals=True)
-
-
-def _fill_initial_spells(sheet: CharacterSheet, pack: RulePack) -> None:
-    """Fill a caster's starting known_spells from the pack's class spellbook.
-
-    Deterministic pack data: the AI only wrote the character's class, the
-    engine picks the default spells for it (iron rule: spell lists are sheet
-    data, never model-generated). No spellbook match leaves the list as-is.
-    """
-    catalog = getattr(pack, "spells", None)
-    if catalog is None or not catalog.spellbook:
-        return
-    class_name = str(getattr(sheet, "character_class", "") or "").strip().casefold()
-    defaults = catalog.spellbook.get(class_name)
-    if not defaults:
-        return
-    known = [str(value) for value in (sheet.known_spells or [])]
-    for spell_id in defaults:
-        if spell_id not in known:
-            known.append(spell_id)
-    sheet.known_spells = known
-    # A fresh caster starts with their slot pools topped to the level table's
-    # maximums (like after a long rest); locked rings stay at 0 and hide.
-    from core.resources import resource_values, set_resource
-
-    try:
-        for pool_id, value in resource_values(sheet, pack).items():
-            if pool_id.startswith("spell_slot_") and value.maximum and value.maximum > 0:
-                set_resource(sheet, pack, pool_id, value.maximum)
-    except Exception:
-        pass
 
 
 def _apply_persona_text(sheet: CharacterSheet, card: CharacterCard, concept: dict[str, Any], pack: RulePack) -> None:

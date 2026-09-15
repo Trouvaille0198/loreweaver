@@ -198,11 +198,9 @@ def character_resources(character: CharacterSheet, locale: str | None = None) ->
     """The pack-declared generic resource meters (`{id,label,value,max}`) for
     `character` — the wire/panel/roster vitals shape. Empty when no pack.
 
-    Packs that opt into the runtime contract (`runtime.resources.pools`) feed
-    this from their ungrouped pools (the top-level vitals, HP/temp-HP style);
-    legacy packs fall back to their `sheet.resources` declaration. `locale`
-    picks the label a pack declared per language (M19 item 8); callers on a
-    per-VIEWER wire path pass the viewer's, persistence paths leave it unset."""
+    Fed from the pack's ``sheet.resources`` declaration; `locale` picks the
+    label a pack declared per language (M19 item 8); callers on a per-VIEWER
+    wire path pass the viewer's, persistence paths leave it unset."""
     from core.sheets import wire_resources
 
     pack = _pack_for(character)
@@ -230,10 +228,6 @@ def resource_label_map(system: str, locale: str | None) -> dict[str, str]:
     spec = getattr(pack, "sheet_spec", None)
     if spec is not None:
         labels.update({resource.id: resource.label_for(locale) for resource in spec.resources})
-    runtime = getattr(pack, "runtime_spec", None)
-    if runtime is not None:
-        for pool_id, pool in runtime.pools.items():
-            labels[pool_id] = pool.display_label(locale)
     return labels
 
 
@@ -259,23 +253,7 @@ class CharacterSheet:
         # every read (checks, dice, sheet) sees the same bonuses without re-aggregating
         # from the document store on each call.
         self.equipped_bonuses: dict[str, int] = {}
-        # Runtime-declared pools are the authoritative mutable counters for
-        # packs that opt into the runtime contract. Non-runtime sheets keep
-        # their existing field-backed meters unchanged.
-        self.resources: dict[str, dict[str, Any]] = {}
-        self.rest_state: dict[str, Any] = {}
-        # Spells this character knows — spell-catalog ids (the pack's `spells`
-        # dictionary, resolvable by localized display name too). The engine
-        # enforces membership at cast time; this is deterministic sheet data,
-        # never model-generated mid-turn.
-        self.known_spells: list[str] = []
-        self.features: list[Any] = []
-        self.advancement: dict[str, Any] = {}
-        self.subclass = ""
-        self.class_levels: dict[str, int] = {}
         self.background = ""
-        self.notes = ""
-        self.avatar: dict[str, Any] | None = None
         # Retired = stepped out of this scenario's party (kept off the party
         # roster and out of the active slot) while the SHEET survives, so the
         # owner can re-join the table from the character library at any time.
@@ -320,16 +298,6 @@ class CharacterSheet:
             "skills": self.skills,
             "equipment": getattr(self, "equipment", []),
             "items": list(getattr(self, "items", [])),
-            "resources": {str(key): dict(value) for key, value in getattr(self, "resources", {}).items() if isinstance(value, dict)},
-            "rest_state": dict(getattr(self, "rest_state", {})),
-            "xp": getattr(self, "xp", 0),
-            "features": list(getattr(self, "features", [])),
-            "advancement": copy.deepcopy(getattr(self, "advancement", {})),
-            "subclass": getattr(self, "subclass", ""),
-            "class_levels": dict(getattr(self, "class_levels", {})),
-            "known_spells": list(getattr(self, "known_spells", [])),
-            "equipped_bonuses": dict(getattr(self, "equipped_bonuses", {})),
-            "background": getattr(self, "background", ""),
             "notes": getattr(self, "notes", ""),
             "avatar": getattr(self, "avatar", None),
             "retired": bool(getattr(self, "retired", False)),
@@ -345,32 +313,6 @@ class CharacterSheet:
         character.secondary_attributes = data.get("secondary_attributes", {})
         character.skills = data.get("skills", {})
         character.equipment = data.get("equipment", [])
-        resources = data.get("resources", {})
-        if isinstance(resources, dict):
-            character.resources = {
-                str(key): dict(value) for key, value in resources.items() if isinstance(value, dict)
-            }
-        rest_state = data.get("rest_state", {})
-        if isinstance(rest_state, dict):
-            character.rest_state = dict(rest_state)
-        character.xp = int(data.get("xp", 0) or 0)
-        features = data.get("features", [])
-        if isinstance(features, list):
-            character.features = list(features)
-        advancement = data.get("advancement", {})
-        if isinstance(advancement, dict):
-            character.advancement = dict(advancement)
-        character.subclass = str(data.get("subclass") or "")
-        class_levels = data.get("class_levels", {})
-        if isinstance(class_levels, dict):
-            character.class_levels = {
-                str(key).casefold(): int(value)
-                for key, value in class_levels.items()
-                if isinstance(value, (int, float)) and not isinstance(value, bool)
-            }
-        known_spells = data.get("known_spells", [])
-        if isinstance(known_spells, list):
-            character.known_spells = [str(value) for value in known_spells]
         items = data.get("items", [])
         if isinstance(items, list):
             character.items = [i for i in items if isinstance(i, dict)]
@@ -540,10 +482,6 @@ class CharacterManager:
         if pack is not None:
             from core.sheets import refresh_sheet
 
-            if getattr(pack, "runtime_spec", None) is not None and pack.runtime_spec.advancement:
-                from core.advancement import synchronize_progression
-
-                synchronize_progression(character, pack)
             refresh_sheet(character, pack)
         character.last_updated = time.time()
         await self.documents.put(
@@ -557,10 +495,7 @@ class CharacterManager:
     async def sync_party_roster(
         self, chat_key: str, character: CharacterSheet, status_effects: list | None = None
     ) -> None:
-        """Sync `character`'s status into the shared party roster (`party_roster.{chat_key}`)
-        for the battle-status panel.
-
-        The summary is pack-shaped: the declared resource meters plus the
+        """Sync the party roster row for `character` from the sheet's pack-
         declared meta fields — no engine knowledge of any system's vitals.
         When `status_effects` is omitted (`None`), the character's previously
         recorded `status_effects` in the roster are preserved rather than

@@ -191,7 +191,7 @@ async def test_initiative_subcommands_share_tracker_and_next_never_rolls():
     router = CommandRouter(services)
     ctx = AgentCtx(chat_key="cli:dm:init-command", user_id="u1", locale="en")
 
-    await router.dispatch(ctx, ".dnd Kael")
+    await router.dispatch(ctx, ".coc Kael")
     from agent.kp_tools_mechanics import InitiativeTools
 
     tracker = InitiativeTools(services)
@@ -1999,85 +1999,22 @@ async def test_coc_st_migrates_legacy_luc_skill_on_the_next_sheet_write():
     assert "LUC" not in updated.skills
 
 
-async def test_dnd_st_recomputes_persisted_skill_initiative_and_ac():
+async def test_coc_st_explicit_derived_override_wins_regardless_of_order():
     services = _services()
     router = CommandRouter(services)
-    ctx = AgentCtx(chat_key="cli:dm:dnd-derived", user_id="u1", locale="en")
-    await services.characters.save_character("u1", ctx.chat_key, CharacterSheet("Fighter", "DnD5e"))
+    ctx = AgentCtx(chat_key="cli:dm:coc-dodge", user_id="u1", locale="en")
+    await services.characters.save_character("u1", ctx.chat_key, CharacterSheet("Fighter", "coc7"))
 
-    await router.dispatch(ctx, ".st STR16 DEX14")
-
-    character = await services.characters.get_character("u1", ctx.chat_key)
-    # Untrained derived slots are never persisted; they recompute on read.
-    from core.rulepacks import load_rulepack
-    from core.sheets import sheet_value
-
-async def test_dnd_sheet_display_shows_level_and_derived_skills():
-    services = _services()
-    router = CommandRouter(services)
-    ctx = AgentCtx(chat_key="cli:dm:dnd-show", user_id="u1", locale="en")
-    await services.characters.save_character("u1", ctx.chat_key, CharacterSheet("Fighter", "DnD5e"))
-
-    await router.dispatch(ctx, ".st STR16 DEX14 等级3")
-
-    shown = await router.dispatch(ctx, ".st")
-    assert shown is not None
-    # Level is a sheet field and the 18 derived skills are folded back into the
-    # display — a D&D card must show them even though none is persisted.
-    assert "等级" in shown and "3" in shown
-    assert "运动" in shown and "3" in shown  # STR 16 → +3
-    assert "体操" in shown and "2" in shown  # DEX 14 → +2
-
-
-async def test_dnd_same_st_explicit_ac_override_wins_regardless_of_order():
-    services = _services()
-    router = CommandRouter(services)
-    ctx = AgentCtx(chat_key="cli:dm:dnd-ac", user_id="u1", locale="en")
-    await services.characters.save_character("u1", ctx.chat_key, CharacterSheet("Fighter", "DnD5e"))
-
-    await router.dispatch(ctx, ".st AC18 STR16 DEX14")
+    await router.dispatch(ctx, ".st 闪避30 敏捷70")
 
     character = await services.characters.get_character("u1", ctx.chat_key)
     from core.rulepacks import load_rulepack
     from core.sheets import sheet_value
 
-    pack = load_rulepack("dnd5e")
-    # The explicit AC override survives (a stored value differing from its
-    # derivation is a manual override); untrained slots recompute on read.
-    assert character.secondary_attributes["护甲等级"] == 18
-    assert sheet_value(character, pack, "护甲等级") == 18
-    assert sheet_value(character, pack, "先攻修正") == 2
-
-
-async def test_dnd_sheet_hp_edit_uses_authoritative_current_and_max_fields():
-    services = _services()
-    router = CommandRouter(services)
-    ctx = AgentCtx(chat_key="cli:dm:dnd-hp", user_id="u1", locale="en")
-    await services.characters.save_character("u1", ctx.chat_key, CharacterSheet("Fighter", "DnD5e"))
-
-    await router.dispatch(ctx, ".st HP12")
-    raised = await services.characters.get_character("u1", ctx.chat_key)
-    assert (raised.hp_current, raised.hp_max) == (12, 12)
-
-    await router.dispatch(ctx, ".st HP-4")
-    damaged = await services.characters.get_character("u1", ctx.chat_key)
-    assert (damaged.hp_current, damaged.hp_max) == (8, 12)
-    assert "生命值" not in damaged.secondary_attributes
-    assert "生命值上限" not in damaged.secondary_attributes
-
-
-async def test_dnd_auto_rolled_creation_does_not_render_point_buy_warning():
-    services = _services()
-    router = CommandRouter(services)
-    ctx = AgentCtx(chat_key="cli:dm:dnd-create", user_id="u1", locale="en")
-    seed_dice(1)
-
-    reply = await router.dispatch(ctx, ".dnd Rolled Hero")
-
-    assert reply is not None
-    assert "point_buy" not in reply
-    character = await services.characters.get_character("u1", ctx.chat_key)
-    assert character.system == "dnd5e"
+    pack = load_rulepack("coc7")
+    # The explicit override survives (a stored value differing from its
+    # derivation is a manual override; 敏捷70 alone would derive 闪避35).
+    assert sheet_value(character, pack, "闪避") == 30
 
 
 async def test_manual_create_flow_leaves_stale_vitals_until_finalize_word():

@@ -2,8 +2,8 @@
 
 The oracle is an INDEPENDENT reference implementation transcribed from the
 rulebooks' own wording (CoC7e RAW for the default rule, the SealDice `.setcoc`
-rule table for the house variants, D&D5e SRD, oWoD pools) — NOT the legacy
-`result_check_base` port. The d100/d20 interpretation spaces are small enough
+rule table for the house variants, oWoD pools) — NOT the legacy
+`result_check_base` port. The d100/pool interpretation spaces are small enough
 to assert cell by cell: every roll × every target × every difficulty × every
 house variant. No sampling.
 
@@ -153,31 +153,6 @@ def test_coc_semantic_flags_and_margin_are_consistent(coc_resolver):
 def test_coc_tier_order_is_the_ladder_order(coc_resolver):
     ladder = {rule.rank.id: rule.rank.tier for rule in coc_resolver.ladders[""]}
     assert ladder["crit"] > ladder["extreme"] > ladder["hard"] > ladder["regular"] > ladder["fail"] > ladder["fumble"]
-
-
-# ---------------------------------------------------------------------------
-# D&D5e — d20 vs DC with natural-die crits (SRD)
-# ---------------------------------------------------------------------------
-
-
-def test_dnd_ladder_matches_the_srd_exhaustively():
-    resolver = load_rulepack("dnd5e").resolver
-    for natural in range(1, 21):
-        for modifier in range(-5, 16):
-            for dc in range(1, 31):
-                outcome = resolver.interpret(
-                    RollDetail("1d20", (natural,), natural), dc, modifier=modifier
-                )
-                if natural == 20:
-                    expected = "crit"
-                elif natural == 1:
-                    expected = "fumble"
-                elif natural + modifier >= dc:
-                    expected = "success"
-                else:
-                    expected = "fail"
-                assert outcome.rank.id == expected, (natural, modifier, dc, outcome.rank.id)
-                assert outcome.margin == (natural + modifier) - dc
 
 
 # ---------------------------------------------------------------------------

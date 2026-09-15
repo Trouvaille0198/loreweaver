@@ -44,7 +44,6 @@ EXAMPLE_ARGS = {
     "growth": "侦查",
     "init": "",
     "coc": "",
-    "dnd": "",
     "setcoc": "2",
     "rename": "阿岚",
     "jrrp": "",
