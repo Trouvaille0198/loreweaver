@@ -1,8 +1,8 @@
 """Deterministic D&D-style advancement transactions.
 
 The rule pack owns progression tables. This module owns the transaction:
-the keeper grants an eligible level, the character owner supplies choices, and
-the keeper applies one complete plan atomically.
+the keeper grants an eligible level, the authorized advancement lane supplies
+validated choices, and the keeper applies one complete plan atomically.
 """
 
 from __future__ import annotations
@@ -235,6 +235,50 @@ def grant_advancement(sheet: Any, pack: Any, *, mode: str, xp: int | None = None
     state["pending"] = plan.to_dict()
     sheet.advancement = state
     return plan
+
+
+def _append_award(sheet: Any, *, mode: str, amount: int = 0, reason: str = "") -> dict[str, Any]:
+    """Record a keeper-authorized progression award on the sheet."""
+    state = dict(getattr(sheet, "advancement", {}) or {})
+    awards = list(state.get("awards") or [])
+    before = int(getattr(sheet, "xp", 0) or 0)
+    entry = {
+        "id": str(uuid.uuid4()),
+        "mode": str(mode),
+        "amount": int(amount),
+        "xp_before": before,
+        "reason": str(reason or "").strip(),
+    }
+    awards.append(entry)
+    state["awards"] = awards[-100:]
+    return state
+
+
+def award_experience(sheet: Any, pack: Any, *, amount: int, reason: str = "") -> dict[str, Any]:
+    """Award positive XP through the keeper-owned progression lane.
+
+    This changes only the XP ledger. Level eligibility and level application remain
+    separate deterministic transactions, so a missing class choice can never be
+    silently guessed by the engine.
+    """
+    _runtime(pack)
+    if isinstance(amount, bool) or int(amount) <= 0:
+        raise AdvancementError("experience award must be a positive integer")  # i18n-exempt: internal validation diagnostic
+    before = int(getattr(sheet, "xp", 0) or 0)
+    after = before + int(amount)
+    state = _append_award(sheet, mode="xp", amount=int(amount), reason=reason)
+    state["awards"][-1]["xp_after"] = after
+    sheet.xp = after
+    sheet.advancement = state
+    return state["awards"][-1]
+
+
+def award_milestone(sheet: Any, pack: Any, *, reason: str = "") -> dict[str, Any]:
+    """Record one keeper-declared milestone without inventing party-wide leveling."""
+    _runtime(pack)
+    state = _append_award(sheet, mode="milestone", reason=reason)
+    sheet.advancement = state
+    return state["awards"][-1]
 
 
 def _parse_asi(value: Any) -> list[tuple[str, int]]:

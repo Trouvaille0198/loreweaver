@@ -84,6 +84,7 @@ from core.combat import CombatManager, claim_turn, create_combat, end_combat, en
 from core.dice_engine import DiceResult
 from core.rulepacks import RulePack, load_rulepack
 from core.sheets import check_value, has_check_value, set_sheet_value, sheet_value
+from core.advancement import AdvancementError, apply_advancement, award_experience, award_milestone, choose_advancement, eligible_level, grant_advancement
 from infra.i18n import I18n
 from infra.room_facets import STORAGE_ROOM_STATE, RoomStateFacet
 
@@ -1700,23 +1701,156 @@ class InitiativeTools:
             ctx, f".attack {action} {target}".rstrip(), "kp_tools.cast.unavailable"
         )
 
-    @tool(read_only=False, needs="runtime")
-    async def advance_level(self, ctx: AgentCtx, *, mode: str = "", choice: str = "", target: str = "") -> str:
-        """Drive character advancement (leveling up) through the engine.
+    @tool(
+        keeper_only=True,
+        read_only=False,
+        needs="runtime",
+        params={
+            "mode": "status, grant, choose, apply, xp_reward, or milestone",
+            "choice": "space-separated choices such as subclass=moon asi=WIS+2",
+            "target": "current party character name; required for Keeper awards",
+            "amount": "positive XP award for xp_reward",
+            "reason": "brief in-fiction evidence for the award or milestone",
+            "hp_mode": "fixed (D&D average) or rolled",
+            "auto_apply": "apply eligible levels immediately when true",
+        },
+    )
+    async def advance_level(
+        self,
+        ctx: AgentCtx,
+        *,
+        mode: str = "",
+        choice: str = "",
+        target: str = "",
+        amount: int = 0,
+        reason: str = "",
+        hp_mode: str = "fixed",
+        auto_apply: bool = True,
+    ) -> str:
+        """Own the complete D&D-style advancement lane as Keeper.
 
-        `mode` is "status" to inspect, "grant" (with `choice` naming milestone or
-        xp) to open an advancement, or "apply" to commit a pending one. `target`
-        names the character when the keeper is advancing another player. The
-        engine raises the level, grows HP, applies ASI/class features, and lets the
-        resource ledger recompute spell slots — never narrate a level-up first."""
-        command = ".advance"
-        if mode:
-            command += f" {mode}"
+        Use `mode="xp_reward"` after a real, overcome challenge and provide the
+        positive `amount`, explicit `target`, and a short `reason`; use
+        `mode="milestone"` only when a declared story milestone was achieved.
+        The engine records the award, checks the real threshold, opens each eligible
+        level, validates `choice` (for example `subclass=moon asi=WIS+2`), rolls or
+        takes fixed HP, applies features/ASI, and recomputes resources. If a choice
+        is required, the pending plan is saved and this tool returns what is missing;
+        call it again with the choice. Do not narrate a level-up before this returns.
+
+        Existing `status`, `grant`, `choose`, and `apply` modes remain available for
+        inspection/recovery. `target` must name a current party member for Keeper
+        awards; `auto_apply=false` records the award and leaves eligible levels pending.
+        """
+        i18n = self.services.i18n.with_locale(ctx.locale)
+        normalized = str(mode or "status").strip().casefold()
+        if normalized not in {"xp_reward", "award_xp", "milestone"}:
+            command = ".advance"
+            if mode:
+                command += f" {mode}"
+                if choice:
+                    command += f" {choice}"
+            if target:
+                command += f" --on {target}"
+            return await self._dispatch_command(ctx, command, "kp_tools.cast.unavailable")
+
+        target_name = str(target or "").strip()
+        if not target_name:
+            return i18n.t("kp_tools.advance.target_required")
+        roster = await self.services.characters.get_party_roster(ctx.chat_key)
+        roster_names = {
+            str(member.get("name") or "").strip()
+            for member in roster
+            if isinstance(member, Mapping) and member.get("name")
+        }
+        if target_name not in roster_names:
+            return i18n.t("kp_tools.advance.not_in_party", target=target_name)
+        owner_uid = await self.services.characters.get_character_owner(ctx.chat_key, target_name)
+        if not owner_uid:
+            return i18n.t("kp_tools.advance.not_found", target=target_name)
+        character = await self.services.characters.get_character(owner_uid, ctx.chat_key, target_name)
+        if not has_character(character) or bool(getattr(character, "retired", False)):
+            return i18n.t("kp_tools.advance.not_in_party", target=target_name)
+        pack = await _sheet_pack(self.services, ctx, character)
+        try:
+            parsed_choices: dict[str, str] = {}
             if choice:
-                command += f" {choice}"
-        if target:
-            command += f" --on {target}"
-        return await self._dispatch_command(ctx, command, "kp_tools.cast.unavailable")
+                for item in str(choice).split():
+                    if "=" not in item:
+                        return i18n.t("kp_tools.advance.choice_usage")
+                    key, value = item.split("=", 1)
+                    if not key.strip() or not value.strip():
+                        return i18n.t("kp_tools.advance.choice_usage")
+                    parsed_choices[key.strip()] = value.strip()
+            pending = (getattr(character, "advancement", {}) or {}).get("pending")
+            # A previous call may have created a plan that needs an ASI/subclass
+            # choice. Resubmitting this tool with that choice resumes the pending
+            # transaction; it never awards the XP a second time.
+            resuming = isinstance(pending, Mapping) and bool(choice)
+            if not resuming and not str(reason or "").strip():
+                return i18n.t("kp_tools.advance.reason_required")
+            if resuming:
+                award = dict(((getattr(character, "advancement", {}) or {}).get("awards") or [{}])[-1])
+                award_mode = str(pending.get("mode") or "xp")
+            elif isinstance(pending, Mapping):
+                return i18n.t("kp_tools.advance.choice_required", target=target_name, award="-", plan=json.dumps(pending, ensure_ascii=False), error="a choice is still required")
+            elif normalized in {"xp_reward", "award_xp"}:
+                award = award_experience(character, pack, amount=int(amount), reason=reason)
+                award_mode = "xp"
+            else:
+                award = award_milestone(character, pack, reason=reason)
+                award_mode = "milestone"
+            await self.services.characters.save_character(owner_uid, ctx.chat_key, character)
+            summaries: list[dict] = []
+            if not auto_apply:
+                return i18n.t("kp_tools.advance.awarded", target=target_name, award=json.dumps(award, ensure_ascii=False))
+
+            # XP may cross more than one threshold in a single award. A milestone is
+            # intentionally one level only: one declared milestone never means "level
+            # the whole party" or an unbounded chain.
+            first_iteration = True
+            for _ in range(20):
+                # On a resume, consume the already-granted plan before looking for
+                # another XP threshold. A milestone never chains to a second level.
+                if first_iteration and resuming:
+                    plan = dict((getattr(character, "advancement", {}) or {}).get("pending") or {})
+                    first_iteration = False
+                else:
+                    first_iteration = False
+                    if eligible_level(character, pack, mode=award_mode) is None:
+                        break
+                    plan = grant_advancement(character, pack, mode=award_mode)
+                    await self.services.characters.save_character(owner_uid, ctx.chat_key, character)
+                if not plan:
+                    break
+                try:
+                    # Both a resumed plan and a newly granted plan go through the
+                    # same validator, which persists the Keeper's choices.
+                    choose_advancement(character, pack, parsed_choices, hp_mode=hp_mode)
+                except AdvancementError as exc:
+                    await self.services.characters.save_character(owner_uid, ctx.chat_key, character)
+                    plan_payload = plan.to_dict() if hasattr(plan, "to_dict") else plan
+                    return i18n.t(
+                        "kp_tools.advance.choice_required",
+                        target=target_name,
+                        award=json.dumps(award, ensure_ascii=False),
+                        plan=json.dumps(plan_payload, ensure_ascii=False),
+                        error=str(exc),
+                    )
+                await self.services.characters.save_character(owner_uid, ctx.chat_key, character)
+                result = apply_advancement(character, pack, roller=self.services.dice)
+                await self.services.characters.save_character(owner_uid, ctx.chat_key, character)
+                summaries.append(result.to_dict())
+                if award_mode == "milestone":
+                    break
+            return i18n.t(
+                "kp_tools.advance.completed",
+                target=target_name,
+                award=json.dumps(award, ensure_ascii=False),
+                levels=json.dumps(summaries, ensure_ascii=False),
+            )
+        except (AdvancementError, ValueError) as exc:
+            return i18n.t("kp_tools.advance.failed", error=str(exc))
 
     @tool(read_only=False, needs="runtime")
     async def manage_resource(self, ctx: AgentCtx, *, pool: str = "", action: str = "show", amount: int = 0) -> str:
