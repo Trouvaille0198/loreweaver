@@ -21,6 +21,7 @@ import yaml
 
 from agent.scenario_bundle import ScenarioBundle
 from core.pack import BuiltPack, build_pack
+from core.module_runtime import DEFAULT_ACTOR_STATUSES, condition_error
 
 
 MAX_IR_BYTES = 4 * 1024 * 1024
@@ -88,6 +89,8 @@ class NativeCardCompileReport:
     card: dict[str, Any]
     warnings: tuple[str, ...] = ()
     blocked_rules: tuple[str, ...] = ()
+    blocked_endings: tuple[str, ...] = ()
+    blocked_conditions: tuple[str, ...] = ()
     selected_assets: tuple[str, ...] = ()
 
     @property
@@ -96,7 +99,9 @@ class NativeCardCompileReport:
 
     @property
     def mechanics_complete(self) -> bool:
-        return not self.blocked_rules
+        rules = self.card.get("module", {}).get("rules", [])
+        non_native_rules = any(isinstance(rule, Mapping) and rule.get("support") != "native" for rule in rules)
+        return not (non_native_rules or self.blocked_endings or self.blocked_conditions)
 
 
 @dataclass(frozen=True)
@@ -234,6 +239,37 @@ def normalize_scenario_ir(raw: Any, bundle: ScenarioBundle | None = None) -> Sce
         if len(raw_entries) > MAX_ENTITIES:
             warnings.append(f"{collection}: truncated to {MAX_ENTITIES} entries")
 
+    blueprint = {key: data[key] for key in ("scenes", "clues", "objectives", "npcs", "trackers")}
+    blueprint["actors"] = data.get("actors") or data["npcs"]
+    for collection in ("scenes", "clues", "objectives", "endings", "rewards"):
+        for entity in data[collection]:
+            condition = entity.get("condition")
+            error = condition_error(
+                condition,
+                blueprint=blueprint,
+                required=collection == "endings",
+            )
+            if not error and collection == "endings":
+                error = _ending_requirement_error(entity, blueprint)
+            if error:
+                entity["condition_error"] = error
+                if collection == "endings":
+                    entity["support"] = "blocked"
+                    entity["reason"] = f"No executable ending condition: {error}."
+                warnings.append(f"{collection}:{entity['id']}: condition is not executable ({error})")
+            elif collection == "endings" and entity.get("support") != "native":
+                previous_support = entity.get("support")
+                entity["support"] = "blocked"
+                entity["reason"] = _text(entity.get("reason"), 1_000) or "No deterministic ending execution mapping is registered."
+                warnings.append(f"endings:{entity['id']}: support={previous_support}; ending remains blocked")
+    for rule in data["rules"]:
+        if rule.get("support") == "native":
+            rule["support"] = "blocked"
+            rule["reason"] = "No deterministic execution mapping is registered for converted rule records."
+            warnings.append(f"rules:{rule['id']}: claimed native support without an executable mapping; marked blocked")
+        elif rule.get("support") != "blocked":
+            warnings.append(f"rules:{rule['id']}: support={rule['support']}; not included in native-mechanics support")
+
     data["assets"] = _normalize_assets(raw.get("assets"), bundle, warnings)
     for warning in _string_list(raw.get("warnings"), MAX_WARNINGS, 1_000):
         warnings.append(warning)
@@ -285,16 +321,42 @@ def compile_native_card(ir: ScenarioIR, *, selected_asset_names: Mapping[str, st
         for rule in ir.data.get("rules", [])
         if isinstance(rule, dict) and rule.get("support") == "blocked"
     )
+    condition_blueprint = dict(ir.data)
+    condition_blueprint["actors"] = ir.data.get("actors") or ir.data.get("npcs", [])
+    blocked_endings = tuple(
+        str(ending.get("id") or ending.get("name") or "ending")
+        for ending in ir.data.get("endings", [])
+        if isinstance(ending, dict)
+        and (
+            ending.get("support") != "native"
+            or condition_error(ending.get("condition"), blueprint=condition_blueprint, required=True)
+        )
+    )
+    blocked_conditions = tuple(
+        f"{collection}:{entry.get('id') or entry.get('name') or 'entry'}"
+        for collection in ("scenes", "clues", "objectives", "rewards")
+        for entry in ir.data.get(collection, [])
+        if isinstance(entry, dict)
+        and entry.get("condition") not in (None, "", [], {})
+        and condition_error(entry.get("condition"), blueprint=condition_blueprint)
+    )
     selected = tuple(
         str(asset.get("output_name") or asset.get("path"))
         for asset in ir.data.get("assets", [])
         if isinstance(asset, dict) and asset.get("priority") in {"essential", "useful"}
     )
-    warnings = _dedupe([*ir.warnings, *[f"blocked rule: {item}" for item in blocked]])
+    warnings = _dedupe([
+        *ir.warnings,
+        *[f"blocked rule: {item}" for item in blocked],
+        *[f"blocked ending: {item}" for item in blocked_endings],
+        *[f"blocked condition: {item}" for item in blocked_conditions],
+    ])
     return NativeCardCompileReport(
         card=card,
         warnings=tuple(warnings),
         blocked_rules=blocked,
+        blocked_endings=blocked_endings,
+        blocked_conditions=blocked_conditions,
         selected_assets=selected,
     )
 
@@ -352,7 +414,7 @@ def _normalize_entity(collection: str, raw: Any, index: int, seen_ids: set[str],
         "clues": _string_list(raw.get("clues"), 32, 160),
         "leads_to": _string_list(raw.get("leads_to"), 32, 160),
         "discovery_method": _text(raw.get("discovery_method"), 2_000),
-        "condition": _text(raw.get("condition") or raw.get("when"), 500),
+        "condition": _condition_value(raw.get("condition") if "condition" in raw else raw.get("when"), warnings, f"{collection}:{entity_id}"),
         "summary": _text(raw.get("summary"), 2_000),
         "stats": _bounded_mapping(raw.get("stats"), 64, 120),
         "attacks": _string_list(raw.get("attacks"), 16, 300),
@@ -364,6 +426,7 @@ def _normalize_entity(collection: str, raw: Any, index: int, seen_ids: set[str],
         "source_quote": _text(raw.get("source_quote"), MAX_SOURCE_QUOTE),
         "confidence": _confidence(raw.get("confidence")),
         "support": _support(raw.get("support"), collection, warnings, entity_id),
+        "reason": _text(raw.get("reason"), 1_000),
         "kind": _text(raw.get("kind"), 40),
         "visibility": _text(raw.get("visibility"), 20),
         "actor_id": _text(raw.get("actor_id"), 80),
@@ -385,6 +448,45 @@ def _normalize_entity(collection: str, raw: Any, index: int, seen_ids: set[str],
     if collection == "rules" and not result["summary"]:
         result["summary"] = result["description"]
     return result
+
+
+def _condition_value(raw: Any, warnings: list[str], entity: str) -> Any:
+    if raw is None or raw == "":
+        return None
+    try:
+        encoded = json.dumps(raw, ensure_ascii=False, allow_nan=False)
+    except (TypeError, ValueError):
+        warnings.append(f"{entity}: condition is not valid JSON; it will remain blocked")
+        return {"invalid_condition": True}
+    if len(encoded) > 4_096:
+        warnings.append(f"{entity}: condition exceeds 4096 characters; it will remain blocked")
+        return {"invalid_condition": True}
+    if not isinstance(raw, (str, Mapping)):
+        warnings.append(f"{entity}: condition must be text or a condition object; it will remain blocked")
+        return {"invalid_condition": True}
+    return json.loads(encoded)
+
+
+def _ending_requirement_error(ending: Mapping[str, Any], blueprint: Mapping[str, Any]) -> str | None:
+    objective_ids = {str(item.get("id")) for item in blueprint.get("objectives", []) if isinstance(item, Mapping)}
+    clue_ids = {str(item.get("id")) for item in blueprint.get("clues", []) if isinstance(item, Mapping)}
+    actors = {str(item.get("id")): item for item in blueprint.get("actors", []) if isinstance(item, Mapping)}
+    if any(str(value) not in objective_ids for value in ending.get("required_objectives", [])):
+        return "required objective reference is unknown"
+    if any(str(value) not in clue_ids for value in ending.get("required_clues", [])):
+        return "required clue reference is unknown"
+    for required in ending.get("required_actors", []):
+        if isinstance(required, Mapping):
+            actor_id = str(required.get("id") or required.get("actor_id") or "")
+            status = str(required.get("status") or "")
+        else:
+            actor_id, status = str(required), ""
+        actor = actors.get(actor_id)
+        if not actor:
+            return "required actor reference is unknown"
+        if status and status not in (actor.get("statuses") or DEFAULT_ACTOR_STATUSES):
+            return "required actor status is not declared"
+    return None
 
 
 def _append_worldbook_entries(target: list[dict[str, Any]], collection: str, entry: dict[str, Any]) -> None:

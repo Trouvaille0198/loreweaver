@@ -35,17 +35,17 @@ _CONVERSION_SCHEMA = """{
     \"pregens\": [],
     \"provenance\": {\"authors\": [], \"license\": \"\"}
   },
-  \"scenes\": [{\"id\": \"stable-id\", \"name\": \"\", \"description\": \"\", \"keeper_notes\": \"\", \"npcs_present\": [], \"clues\": [], \"source_pages\": [1], \"source_files\": [\"file.pdf\"], \"source_quote\": \"verbatim evidence\", \"confidence\": 0.0}],
+  \"scenes\": [{\"id\": \"stable-id\", \"name\": \"\", \"description\": \"\", \"keeper_notes\": \"\", \"condition\": null, \"npcs_present\": [], \"clues\": [], \"source_pages\": [1], \"source_files\": [\"file.pdf\"], \"source_quote\": \"verbatim evidence\", \"confidence\": 0.0}],
   \"npcs\": [{\"id\": \"stable-id\", \"name\": \"\", \"aliases\": [], \"description\": \"public appearance and behavior\", \"secret\": \"keeper-only truth\", \"role\": \"\", \"stats\": {}, \"attacks\": [], \"source_pages\": [1], \"source_files\": [\"file.pdf\"], \"source_quote\": \"verbatim evidence\", \"confidence\": 0.0}],
-  \"clues\": [{\"id\": \"stable-id\", \"name\": \"\", \"description\": \"\", \"location\": \"\", \"discovery_method\": \"\", \"leads_to\": [], \"source_pages\": [1], \"source_files\": [\"file.pdf\"], \"source_quote\": \"verbatim evidence\", \"confidence\": 0.0}],
+  \"clues\": [{\"id\": \"stable-id\", \"name\": \"\", \"description\": \"\", \"location\": \"\", \"discovery_method\": \"\", \"condition\": null, \"leads_to\": [], \"source_pages\": [1], \"source_files\": [\"file.pdf\"], \"source_quote\": \"verbatim evidence\", \"confidence\": 0.0}],
   \"items\": [],
   \"threats\": [],
   \"timeline\": [],
-  \"objectives\": [],
+  \"objectives\": [{\"id\": \"stable-id\", \"name\": \"\", \"description\": \"\", \"condition\": null, \"initial_status\": \"pending\", \"source_pages\": [1], \"source_files\": [\"file.pdf\"], \"source_quote\": \"verbatim evidence\", \"confidence\": 0.0}],
   \"trackers\": [{\"id\": \"stable-id\", \"name\": \"\", \"kind\": \"number\", \"default\": 0, \"minimum\": 0, \"maximum\": 10, \"visibility\": \"player\", \"actor_id\": \"\", \"source_pages\": [1], \"source_files\": [\"file.pdf\"], \"source_quote\": \"verbatim evidence\", \"confidence\": 0.0}],
-  \"endings\": [],
+  \"endings\": [{\"id\": \"stable-id\", \"name\": \"\", \"description\": \"\", \"condition\": {\"all\": [{\"path\": \"objective.objective-id.status\", \"op\": \"==\", \"value\": \"complete\"}, {\"clue\": \"clue-id\"}]}, \"required_objectives\": [], \"required_clues\": [], \"required_actors\": [], \"support\": \"native|blocked\", \"source_pages\": [1], \"source_files\": [\"file.pdf\"], \"source_quote\": \"verbatim evidence\", \"confidence\": 0.0}],
   \"rewards\": [],
-  \"rules\": [{\"id\": \"stable-id\", \"name\": \"\", \"summary\": \"\", \"support\": \"native|keeper_judgment|manual|blocked\", \"source_pages\": [1], \"source_files\": [\"file.pdf\"], \"source_quote\": \"verbatim evidence\", \"confidence\": 0.0}],
+  \"rules\": [{\"id\": \"stable-id\", \"name\": \"\", \"summary\": \"\", \"support\": \"blocked\", \"reason\": \"No deterministic execution mapping is registered for converted rule records.\", \"source_pages\": [1], \"source_files\": [\"file.pdf\"], \"source_quote\": \"verbatim evidence\", \"confidence\": 0.0}],
   \"assets\": [],
   \"conflicts\": [],
   \"warnings\": []
@@ -94,6 +94,16 @@ resources, status, objectives, endings or rewards must be represented as a rule/
 candidate. Set support=blocked when the current engine cannot express it; do not replace it with
 an instruction for the Keeper to pretend it happened. Use stable ids when the source provides
 one, otherwise provide a readable id candidate; the validator will make it deterministic.
+
+Conditions must be JSON objects in the closed condition language shown in the schema, never prose.
+They may reference only declared ids using clue.<id>, scene.<id>, objective.<id>.status or
+.progress, actor.<id>.status, tracker.<id>, or actor.<id>.trackers.<tracker-id>. A condition that
+cannot be expressed exactly from cited source text must be null and reported as a warning; never
+guess a predicate. Every ending requires a non-empty, executable condition. Missing, prose, or
+unknown-reference ending conditions will be blocked and cannot be resolved in play. The current
+converter has no executable mapping for records in the rules collection: mark every such record
+blocked, even if its prose resembles a familiar rule. Never claim native support without a
+registered deterministic action.
 
 The output must be one JSON object matching this shape. JSON only, no Markdown fences:
 {_CONVERSION_SCHEMA}

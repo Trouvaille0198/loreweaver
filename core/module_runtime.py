@@ -47,6 +47,8 @@ ACTION_TYPES = frozenset(
 _LOCKS: dict[str, asyncio.Lock] = {}
 _COMPARE_RE = re.compile(r"^\s*([^\s]+)\s*(==|!=|>=|<=|>|<)\s*(.*?)\s*$")
 _ID_RE = re.compile(r"[^a-z0-9_-]+")
+_CONDITION_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_CONDITION_OPERATORS = frozenset({"==", "!=", ">=", "<=", ">", "<"})
 _MISSING = object()
 
 
@@ -246,6 +248,28 @@ def normalize_runtime(raw: Any, *, blueprint: Any = None, module_id: str = "") -
     normalized["module_id"] = _text(module_id or source.get("module_id"), 160)
     normalized["blueprint"] = normalize_blueprint(source.get("blueprint", {}))
     normalized["actions"] = _list(normalized.get("actions"), MAX_ACTIONS)
+    for key in ("objectives", "actors", "trackers"):
+        if not isinstance(normalized.get(key), dict):
+            normalized[key] = {}
+    for objective in normalized["blueprint"]["objectives"]:
+        normalized["objectives"].setdefault(str(objective["id"]), {"status": objective.get("initial_status", "pending"), "progress": 0})
+    for actor in normalized["blueprint"]["actors"]:
+        actor_id = str(actor["id"])
+        current = normalized["actors"].get(actor_id)
+        if not isinstance(current, Mapping):
+            current = {"status": actor.get("initial_status", "active"), "trackers": {}}
+        else:
+            current = dict(current)
+        if not isinstance(current.get("trackers"), dict):
+            current["trackers"] = {}
+        normalized["actors"][actor_id] = current
+    for tracker in normalized["blueprint"]["trackers"]:
+        tracker_id = str(tracker["id"])
+        owner = _text(tracker.get("actor_id"), 64)
+        if owner and owner in normalized["actors"]:
+            normalized["actors"][owner]["trackers"].setdefault(tracker_id, _initial_tracker(tracker))
+        elif not owner:
+            normalized["trackers"].setdefault(tracker_id, _initial_tracker(tracker))
     return normalized
 
 
@@ -275,8 +299,176 @@ def _path_value(runtime: Mapping[str, Any], path: str) -> Any:
     return root
 
 
+def condition_error(condition: Any, *, blueprint: Mapping[str, Any] | None = None, required: bool = False) -> str | None:
+    """Return why a condition cannot be evaluated safely, or ``None`` if valid.
+
+    This is intentionally a small expression language, not a best-effort parser.
+    Unknown fields and references must fail closed, especially when negated.
+    """
+    if condition is None or condition == "" or condition == [] or condition == {}:
+        return "condition is required" if required else None
+
+    def path_error(path: Any) -> str | None:
+        if not isinstance(path, str) or len(path) > 160:
+            return "condition path is invalid"
+        bits = path.split(".")
+        if any(not bit for bit in bits):
+            return "condition path is invalid"
+        root = bits[0]
+        if root in {"scene", "clue"}:
+            if len(bits) != 2 or not _CONDITION_ID_RE.fullmatch(bits[1]):
+                return "condition path is invalid"
+            collection = "scenes" if root == "scene" else "clues"
+        elif root == "tracker":
+            if len(bits) != 2 or not _CONDITION_ID_RE.fullmatch(bits[1]):
+                return "condition path is invalid"
+            collection = "trackers"
+        elif root == "objective":
+            if len(bits) != 3 or not _CONDITION_ID_RE.fullmatch(bits[1]) or bits[2] not in {"status", "progress"}:
+                return "condition path is invalid"
+            collection = "objectives"
+        elif root == "actor":
+            if len(bits) < 2 or not _CONDITION_ID_RE.fullmatch(bits[1]):
+                return "condition path is invalid"
+            if len(bits) == 3 and bits[2] == "status":
+                collection = "actors"
+            elif len(bits) == 4 and bits[2] == "trackers" and _CONDITION_ID_RE.fullmatch(bits[3]):
+                collection = "actors"
+            else:
+                return "condition path is invalid"
+        else:
+            return "condition path is invalid"
+        if blueprint is not None:
+            entries = blueprint.get(collection, [])
+            if not any(isinstance(item, Mapping) and str(item.get("id")) == bits[1] for item in entries):
+                return "condition references an unknown entity"
+            if root == "tracker":
+                match = next((item for item in entries if isinstance(item, Mapping) and str(item.get("id")) == bits[1]), None)
+                if match and match.get("actor_id"):
+                    return "condition references an actor-owned tracker without its actor"
+            if root == "actor" and len(bits) == 4:
+                actor_trackers = blueprint.get("trackers", [])
+                owned = next((item for item in actor_trackers if isinstance(item, Mapping) and str(item.get("id")) == bits[3]), None)
+                if owned is None or str(owned.get("actor_id") or "") != bits[1]:
+                    return "condition references a tracker not owned by that actor"
+        return None
+
+    def inspect(value: Any, depth: int = 0) -> str | None:
+        if depth > 8:
+            return "condition is too deeply nested"
+        if isinstance(value, str):
+            text = value.strip()
+            if not text or len(text) > 500:
+                return "condition text is invalid"
+            if text.casefold().startswith("not "):
+                return inspect(text[4:].strip(), depth + 1)
+            for connector in (" or ", " and "):
+                if connector in text.casefold():
+                    parts = re.split(re.escape(connector), text, flags=re.IGNORECASE)
+                    if len(parts) < 2 or any(not part.strip() for part in parts):
+                        return "condition expression is invalid"
+                    for part in parts:
+                        error = inspect(part, depth + 1)
+                        if error:
+                            return error
+                    return None
+            match = _COMPARE_RE.fullmatch(text)
+            path = match.group(1) if match else text
+            if match:
+                raw_expected = match.group(3).strip()
+                if not raw_expected or len(raw_expected) > 160:
+                    return "condition comparison value is invalid"
+                if raw_expected[:1] in {"'", '"'}:
+                    if len(raw_expected) < 2 or raw_expected[-1:] != raw_expected[:1]:
+                        return "condition comparison value is invalid"
+                elif any(char.isspace() or char in "'\"[](){}" for char in raw_expected):
+                    return "condition comparison value is invalid"
+            return path_error(path)
+        if not isinstance(value, Mapping) or not all(isinstance(key, str) for key in value):
+            return "condition must be text or a condition object"
+        if "all" in value or "any" in value:
+            if len(value) != 1:
+                return "condition group has unexpected fields"
+            group = value.get("all", value.get("any"))
+            if not isinstance(group, list) or not group or len(group) > 32:
+                return "condition group must contain 1 to 32 conditions"
+            for child in group:
+                error = inspect(child, depth + 1)
+                if error:
+                    return error
+            return None
+        if "not" in value:
+            return inspect(value["not"], depth + 1) if len(value) == 1 else "condition negation has unexpected fields"
+        if "clue" in value or "scene" in value:
+            if len(value) != 1:
+                return "condition reference has unexpected fields"
+            key = "clue" if "clue" in value else "scene"
+            entity_id = value[key]
+            if not isinstance(entity_id, str) or not _CONDITION_ID_RE.fullmatch(entity_id):
+                return "condition reference is invalid"
+            return path_error(f"{key}.{entity_id}")
+        if "path" in value or "field" in value:
+            if not set(value).issubset({"path", "field", "op", "value"}) or ("path" in value) == ("field" in value):
+                return "condition comparison has unexpected fields"
+            if "value" not in value or not isinstance(value["value"], (str, int, bool)):
+                return "condition comparison value is invalid"
+            op = value.get("op", "==")
+            if not isinstance(op, str) or op not in _CONDITION_OPERATORS:
+                return "condition comparison operator is invalid"
+            if op not in {"==", "!="} and isinstance(value["value"], bool):
+                return "ordered comparison requires a number or text value"
+            return path_error(value.get("path", value.get("field")))
+        shorthand = [(key, op) for key, op in (("gte", ">="), ("lte", "<="), ("gt", ">"), ("lt", "<"), ("equals", "==")) if key in value]
+        if len(shorthand) == 1 and len(value) == 1 and isinstance(value[shorthand[0][0]], Mapping):
+            item = value[shorthand[0][0]]
+            if not set(item).issubset({"path", "tracker", "value"}) or "value" not in item:
+                return "condition comparison is invalid"
+            path = item.get("path") or item.get("tracker")
+            if not isinstance(item["value"], (str, int, bool)):
+                return "condition comparison value is invalid"
+            if shorthand[0][1] not in {"==", "!="} and isinstance(item["value"], bool):
+                return "ordered comparison requires a number or text value"
+            return path_error(path)
+        return "condition object has an unsupported shape"
+
+    error = inspect(condition)
+    if error or blueprint is None:
+        return error
+
+    def check_refs(value: Any) -> str | None:
+        if isinstance(value, Mapping):
+            if "all" in value or "any" in value:
+                return next((err for child in value.get("all", value.get("any", [])) if (err := check_refs(child))), None)
+            if "not" in value:
+                return check_refs(value["not"])
+            if "clue" in value:
+                return path_error(f"clue.{value['clue']}")
+            if "scene" in value:
+                return path_error(f"scene.{value['scene']}")
+            if "path" in value or "field" in value:
+                return path_error(value.get("path", value.get("field")))
+            for key in ("gte", "lte", "gt", "lt", "equals"):
+                if key in value:
+                    item = value[key]
+                    return path_error(item.get("path") or item.get("tracker"))
+        elif isinstance(value, str):
+            text = value.strip()
+            if text.casefold().startswith("not "):
+                return check_refs(text[4:].strip())
+            for connector in (" or ", " and "):
+                if connector in text.casefold():
+                    return next((err for part in re.split(re.escape(connector), text, flags=re.IGNORECASE) if (err := check_refs(part))), None)
+            match = _COMPARE_RE.fullmatch(text)
+            return path_error(match.group(1) if match else text)
+        return None
+
+    return check_refs(condition)
+
+
 def evaluate_condition(condition: Any, runtime: Mapping[str, Any]) -> bool:
     """Evaluate the closed condition format used by converted module entities."""
+    if condition_error(condition):
+        return False
     if condition in (None, "", [], {}):
         return True
     if isinstance(condition, Mapping):
@@ -327,8 +519,14 @@ def _compare(actual: Any, op: str, expected: Any) -> bool:
     if actual is _MISSING:
         return False
     try:
-        if op == "==": return actual == expected or str(actual).casefold() == str(expected).casefold()
-        if op == "!=": return not (actual == expected or str(actual).casefold() == str(expected).casefold())
+        if op in {"==", "!="}:
+            if isinstance(actual, str) and isinstance(expected, str):
+                equal = actual.casefold() == expected.casefold()
+            else:
+                equal = type(actual) is type(expected) and actual == expected
+            return equal if op == "==" else not equal
+        if type(actual) is not type(expected) or type(actual) not in {int, str}:
+            return False
         if op == ">=": return actual >= expected
         if op == "<=": return actual <= expected
         if op == ">": return actual > expected
@@ -356,7 +554,7 @@ def apply_action(raw: Any, action: Mapping[str, Any], *, actor: str = "keeper", 
         scene = _find(blueprint, "scenes", scene_id)
         if scene is None:
             raise ModuleRuntimeError("scene not found")
-        if not evaluate_condition(action.get("condition") or scene.get("condition"), runtime):
+        if condition_error(scene.get("condition"), blueprint=blueprint) or not evaluate_condition(scene.get("condition"), runtime):
             raise ModuleRuntimeError("scene condition is not satisfied")
         runtime["current_scene"] = str(scene["id"])
         if runtime["scene_history"][-1:] != [scene["id"]]:
@@ -366,7 +564,7 @@ def apply_action(raw: Any, action: Mapping[str, Any], *, actor: str = "keeper", 
         clue = _find(blueprint, "clues", clue_id)
         if clue is None:
             raise ModuleRuntimeError("clue not found")
-        if not evaluate_condition(action.get("condition") or clue.get("condition"), runtime):
+        if condition_error(clue.get("condition"), blueprint=blueprint) or not evaluate_condition(clue.get("condition"), runtime):
             raise ModuleRuntimeError("clue condition is not satisfied")
         if not any(str(item.get("id")) == str(clue["id"]) for item in runtime["revealed_clues"] if isinstance(item, Mapping)):
             runtime["revealed_clues"] = [*runtime["revealed_clues"], {key: clue.get(key) for key in ("id", "name", "description", "summary", "image") if clue.get(key)}][-MAX_REVEALED_CLUES:]
@@ -378,7 +576,7 @@ def apply_action(raw: Any, action: Mapping[str, Any], *, actor: str = "keeper", 
         status = _text(action.get("status"), 20)
         if status not in OBJECTIVE_STATUSES:
             raise ModuleRuntimeError("invalid objective status")
-        if status == "complete" and not evaluate_condition(objective.get("condition"), runtime):
+        if status == "complete" and (condition_error(objective.get("condition"), blueprint=blueprint) or not evaluate_condition(objective.get("condition"), runtime)):
             raise ModuleRuntimeError("objective condition is not satisfied")
         previous = runtime["objectives"].setdefault(str(objective["id"]), {"status": "pending", "progress": 0})
         old_status = str(previous.get("status", "pending"))
@@ -430,7 +628,11 @@ def apply_action(raw: Any, action: Mapping[str, Any], *, actor: str = "keeper", 
             raise ModuleRuntimeError("ending not found")
         if runtime.get("ending") is not None:
             raise ModuleRuntimeError("an ending has already been resolved")
-        if not evaluate_condition(action.get("condition") or ending.get("condition"), runtime):
+        if ending.get("support") not in {None, "", "native"}:
+            raise ModuleRuntimeError("ending is not marked as deterministically supported")
+        if condition_error(ending.get("condition"), blueprint=blueprint, required=True):
+            raise ModuleRuntimeError("ending has no valid deterministic condition")
+        if not evaluate_condition(ending.get("condition"), runtime):
             raise ModuleRuntimeError("ending condition is not satisfied")
         for objective_id in ending.get("required_objectives", []):
             if runtime["objectives"].get(str(objective_id), {}).get("status") != "complete":
@@ -457,7 +659,7 @@ def apply_action(raw: Any, action: Mapping[str, Any], *, actor: str = "keeper", 
             raise ModuleRuntimeError("reward not found")
         if runtime.get("ending") is None and not bool(reward.get("available_before_ending")):
             raise ModuleRuntimeError("resolve an ending before granting this reward")
-        if not evaluate_condition(reward.get("condition"), runtime):
+        if condition_error(reward.get("condition"), blueprint=blueprint) or not evaluate_condition(reward.get("condition"), runtime):
             raise ModuleRuntimeError("reward condition is not satisfied")
         if any(str(item.get("reward_id")) == str(reward["id"]) and str(item.get("recipient")) == _text(action.get("recipient"), 120) for item in runtime["rewards"] if isinstance(item, Mapping)):
             raise ModuleRuntimeError("reward already granted to this recipient")

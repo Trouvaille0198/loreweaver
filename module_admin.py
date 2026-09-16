@@ -1317,6 +1317,7 @@ class ModuleAdminService:
                         "files": len(bundle.sources),
                         "assets": len(bundle.selected_assets),
                         "entities": sum(len(ir.data.get(key, [])) for key in ir.data if key in {"scenes", "npcs", "clues", "items", "threats", "timeline", "objectives", "endings", "rewards"}),
+                        "incomplete": bool(report.card_report.warnings) or not report.card_report.mechanics_complete,
                         "warnings": list(report.card_report.warnings),
                         "blocked_rules": list(report.card_report.blocked_rules),
                         "receipt": imported.get("detail", ""),
