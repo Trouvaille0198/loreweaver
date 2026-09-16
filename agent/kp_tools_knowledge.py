@@ -112,6 +112,7 @@ _IMAGE_MIME_BY_SUFFIX = {
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
     ".gif": "image/gif",
+    ".svg": "image/svg+xml",
 }
 _DOC_TYPE_EMOJI = {
     "module": "\U0001f4d8",  # 📘
@@ -981,8 +982,14 @@ class DocumentTools(_KnowledgeToolsBase):
         attached module) is silently skipped; a bad file just skips that file. Returns how
         many were registered."""
         stem = Path(host_path.name).stem
-        assets_dir = host_path.parent / f"{stem}.assets"
-        if not assets_dir.is_dir():
+        # Forge-generated modules use ``<stem>.assets``. Uploaded source bundles
+        # use a separate directory so editing/deleting a flattened bundle cannot
+        # remove unrelated generated artwork with the same module stem.
+        assets_dirs = (
+            host_path.parent / f"{stem}.assets",
+            host_path.parent / f"{stem}.source-assets",
+        )
+        if not any(path.is_dir() for path in assets_dirs):
             return 0
         tui = self._services.settings.tui
         store = MediaStore(
@@ -995,29 +1002,33 @@ class DocumentTools(_KnowledgeToolsBase):
         existing = {record.name for record in await store.list_room_records(ctx.chat_key)}
         registered = 0
         try:
-            for path in sorted(assets_dir.iterdir()):
-                if not path.is_file():
+            for assets_dir in assets_dirs:
+                if not assets_dir.is_dir():
                     continue
-                if path.name in existing:
-                    continue
-                mime = _IMAGE_MIME_BY_SUFFIX.get(path.suffix)
-                if mime is None:
-                    continue
-                try:
-                    data = path.read_bytes()
-                except OSError:
-                    continue
-                try:
-                    await store.register_blob(
-                        room=ctx.chat_key,
-                        data=data,
-                        mime=mime,
-                        name=path.name,
-                        uploader=ctx.uid(),
-                    )
-                    registered += 1
-                except Exception:  # noqa: BLE001 — one bad asset must not sink the module import
-                    continue
+                for path in sorted(assets_dir.iterdir()):
+                    if not path.is_file():
+                        continue
+                    if path.name in existing:
+                        continue
+                    mime = _IMAGE_MIME_BY_SUFFIX.get(path.suffix.casefold())
+                    if mime is None:
+                        continue
+                    try:
+                        data = path.read_bytes()
+                    except OSError:
+                        continue
+                    try:
+                        await store.register_blob(
+                            room=ctx.chat_key,
+                            data=data,
+                            mime=mime,
+                            name=path.name,
+                            uploader=ctx.uid(),
+                        )
+                        existing.add(path.name)
+                        registered += 1
+                    except Exception:  # noqa: BLE001 — one bad asset must not sink the module import
+                        continue
         except OSError:
             return registered
         return registered

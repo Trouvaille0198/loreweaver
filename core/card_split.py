@@ -53,10 +53,15 @@ class WorldPayloads:
     # Keeper-only (`secret: true`) worldbook entries — a native bundle (M14) can carry
     # them; stock ST cards never do. Keeper-only lore IS world machinery.
     secret_entries: int = 0
+    # A native scenario blueprint changes the whole table even when it happens to
+    # contain no secret lore, hooks or variable declarations. Keep it in the
+    # structural card split so a module card can never be self-imported as a
+    # harmless character card merely because its public content is clean.
+    module_entries: int = 0
 
     @property
     def any(self) -> bool:
-        return bool(self.hooks or self.initvar_entries or self.ejs_blocks or self.secret_entries)
+        return bool(self.hooks or self.initvar_entries or self.ejs_blocks or self.secret_entries or self.module_entries)
 
 
 def card_hook_codes(card: CharacterCard) -> list[str]:
@@ -152,6 +157,8 @@ def split_card(card: CharacterCard) -> tuple[CharacterCard, WorldPayloads]:
         entries.append(entry)
 
     hooks = card_hook_codes(card)
+    raw_module = card.raw.get("module") if isinstance(card.raw, dict) else None
+    module_entries = 1 if isinstance(raw_module, dict) and raw_module else 0
     character = replace(
         card,
         description=_clean(card.description),
@@ -161,13 +168,14 @@ def split_card(card: CharacterCard) -> tuple[CharacterCard, WorldPayloads]:
         mes_example=_clean(card.mes_example),
         creator_notes=_clean(card.creator_notes),
         character_book=entries,
-        raw=_raw_without_hooks(card.raw) if hooks else card.raw,
+        raw=_raw_without_world_payloads(card.raw) if (hooks or module_entries) else card.raw,
     )
     return character, WorldPayloads(
         hooks=len(hooks),
         initvar_entries=initvar_entries,
         ejs_blocks=ejs_blocks,
         secret_entries=secret_entries,
+        module_entries=module_entries,
     )
 
 
@@ -191,4 +199,19 @@ def _raw_without_hooks(raw: Any) -> Any:
                 clean = holder
             else:
                 clean[holder_key] = holder
+    return clean
+
+
+def _raw_without_world_payloads(raw: Any) -> Any:
+    """Remove native module machinery from a player-importable card half.
+
+    The module blueprint is data, not executable code, but it still describes
+    shared-room behavior and keeper-only structure. A character import must not
+    carry it forward as an accidental second source of truth.
+    """
+    clean = _raw_without_hooks(raw)
+    if not isinstance(clean, dict):
+        return clean
+    clean.pop("module", None)
+    clean.pop("provenance", None)
     return clean

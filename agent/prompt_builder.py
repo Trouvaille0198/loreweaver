@@ -95,6 +95,7 @@ from core.dice_engine import DiceRoller
 from core.ejs_full import create_full_engine
 from core.ejs_lite import MacroContext
 from core.modvars import describe_modvars, load_modvars
+from core.module_runtime import MODULE_RUNTIME_DOC_TYPE, project_runtime
 from core.mvu_compat import apply_set, flatten_leaves, load_mvu, save_mvu
 from core.preset import style_bands
 from core.preset_store import load_preset
@@ -152,6 +153,18 @@ async def habit_index(services, chat_key: str) -> list[str]:
     except Exception:  # noqa: BLE001 — a missing/broken habits doc simply contributes nothing
         return []
     return index_lines(document.data) if document is not None else []
+
+
+async def _module_runtime_prompt(services: Services, ctx: AgentCtx, i18n) -> str:
+    """Keeper-only runtime context; no player projection or model-written state."""
+    try:
+        document = await services.documents.get_singleton(ctx.chat_key, MODULE_RUNTIME_DOC_TYPE)
+        if document is None:
+            return ""
+        view = project_runtime(document.data, keeper=True)
+        return i18n.t("prompt.module_runtime_header") + "\n" + json.dumps(view, ensure_ascii=False)
+    except Exception:  # a broken optional runtime must not take down a normal turn
+        return ""
 
 async def _character_memory_lines(services, chat_key: str) -> list[str]:
     """One recent experience line per PC, newest first (`[]` when none). Best-effort:
@@ -341,6 +354,7 @@ async def build_system_prompt_parts(
             world_lore,
             preset_bands.get("post_lore", ""),
             await inject_game_state_prompt(ctx, services.characters, services.store, i18n),
+            await _module_runtime_prompt(services, ctx, i18n),
         ]
     )
 

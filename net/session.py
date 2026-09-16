@@ -61,6 +61,7 @@ from net.room_backup import room_rows, room_vector_points
 
 logger = logging.getLogger(__name__)
 
+# v2.11 adds the player-safe `state.module_runtime` projection for native scenario progress.
 # v2.10 adds the keeper-gated `admin_npc_detail` request and its `admin_npc_record`
 # reply — the full keeper projection of one NPC record (persona, private knowledge,
 # secret agenda) so the mention card's keeper-only section can fetch it per requester;
@@ -82,7 +83,7 @@ logger = logging.getLogger(__name__)
 # `panel_intent` client frame, and pack-asset resolution on the media byte channel.
 # v1.7 added declarative hook-emitted `ui` frames (core.hooks emitUI); v1.6 added
 # player-visible module variables on the state frame.
-_PROTOCOL_VERSION = "2.10"
+_PROTOCOL_VERSION = "2.11"
 # Public alias for out-of-band consumers (the `.lwpack` engine-minimum check in app.py).
 PROTOCOL_VERSION = _PROTOCOL_VERSION
 _SERVER_BANNER = "loreweaver/1"

@@ -23,7 +23,21 @@ ACTIVE_MODULE_KEY = "active_module"
 ACTIVE_MODULE_SCHEMA = 1
 
 MODULE_DOCUMENT_TYPES = frozenset(
-    {"lore", "media", "module_pool", "module_brief", "modvars", "mvu_tree", "pregen", "npc"}
+    {
+        "lore",
+        "media",
+        "module_pool",
+        "module_brief",
+        "modvars",
+        "mvu_tree",
+        "module_runtime",
+        "item_catalog",
+        "clue_log",
+        "scene",
+        "note",
+        "pregen",
+        "npc",
+    }
 )
 MODULE_STATE_KEYS = frozenset(
     {
@@ -248,7 +262,7 @@ async def purge_active_module(services: Any, chat_key: str) -> dict[str, Any] | 
     for source in lore_sources:
         await services.worldbook.remove_by_source(chat_key, str(source))
 
-    for doc_type in ("module_pool", "module_brief", "modvars", "mvu_tree"):
+    for doc_type in ("module_pool", "module_brief", "modvars", "mvu_tree", "module_runtime"):
         await services.documents.delete_type(chat_key, doc_type)
     # The item CATALOG, the discovered-clue log, the player-visible scene singleton
     # and the keeper's scene notes ship with the module's world and leave with it: a

@@ -331,5 +331,16 @@
   "kp_tools.item.field_bonus": "bonus",
   "kp_tools.item.field_common": "common mark",
   "kp_tools.item.merged_updated": "✅ Merged {character}'s {item} into a single entry ({qty} total){changed} — quantities stacked.",
-  "kp_tools.initiative.conditions": "   ↳ {name}: {conditions}"
+  "kp_tools.initiative.conditions": "   ↳ {name}: {conditions}",
+  "kp_tools.runtime.none": "No native scenario runtime is installed.",
+  "kp_tools.runtime.refused": "❌ Native scenario action refused: {error}",
+  "kp_tools.runtime.failed": "❌ Native scenario action failed: {error}",
+  "kp_tools.runtime.scene_entered": "✅ Entered authored scene {scene} (action {sequence}).",
+  "kp_tools.runtime.clue_revealed": "✅ Revealed authored clue {clue} (action {sequence}).",
+  "kp_tools.runtime.objective_updated": "✅ Objective {objective} is now {status} (action {sequence}).",
+  "kp_tools.runtime.actor_updated": "✅ Actor {actor} is now {status} (action {sequence}).",
+  "kp_tools.runtime.tracker_set": "✅ Tracker {tracker} set (action {sequence}).",
+  "kp_tools.runtime.tracker_adjusted": "✅ Tracker {tracker} adjusted by {delta} (action {sequence}).",
+  "kp_tools.runtime.ending_resolved": "✅ Resolved authored ending {ending} (action {sequence}).",
+  "kp_tools.runtime.reward_granted": "✅ Recorded reward {reward} for {recipient} ×{quantity} (action {sequence})."
 }

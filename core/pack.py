@@ -725,7 +725,8 @@ def _enforce_card_kind(path: str, stored: str, payloads: WorldPayloads) -> None:
         raise PackError(
             f"card {path}: manifest says kind={stored!r} but the payload detects {detected!r} "
             f"({payloads.hooks} hook script(s), {payloads.initvar_entries} variable declaration(s), "
-            f"{payloads.ejs_blocks} EJS block(s), {payloads.secret_entries} secret entr(ies))"
+            f"{payloads.ejs_blocks} EJS block(s), {payloads.secret_entries} secret entr(ies), "
+            f"{payloads.module_entries} native module blueprint(s))"
         )
 
 

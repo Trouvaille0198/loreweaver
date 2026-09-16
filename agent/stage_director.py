@@ -56,6 +56,7 @@ from agent.context import AgentCtx
 from agent.services import Services
 from agent.tool_trace import active_module_id, trace_event
 from core.documents import PLAYER_VIEWER, SCENE_ID
+from core.module_runtime import MODULE_RUNTIME_DOC_TYPE, project_runtime
 from core.hooks import sanitize_ui_emissions
 from core.modvars import MODVARS_DOC_ID, MODVARS_DOC_TYPE, wire_entries
 from infra.llm import LLMClient
@@ -209,10 +210,22 @@ async def _player_context(services: Services, ctx: AgentCtx) -> tuple[str, str]:
         entries = []
     trackers = "\n".join(f"- {entry.get('label')}: {entry.get('value')}" for entry in entries) or "(none)"
     try:
-        scene_view = await services.documents.get_view(ctx.chat_key, "scene", SCENE_ID, PLAYER_VIEWER) or {}
+        runtime_doc = await services.documents.get_singleton(ctx.chat_key, MODULE_RUNTIME_DOC_TYPE)
+        runtime = project_runtime(runtime_doc.data, keeper=False) if runtime_doc is not None else None
     except Exception:  # noqa: BLE001
-        scene_view = {}
-    scene = " · ".join(str(scene_view.get(key)) for key in ("name", "focus") if scene_view.get(key)) or "(unset)"
+        runtime = None
+    runtime_scene = (runtime or {}).get("scene") or {}
+    if runtime_scene.get("name"):
+        scene = " · ".join(str(runtime_scene.get(key)) for key in ("name", "summary", "description") if runtime_scene.get(key))
+    else:
+        try:
+            scene_view = await services.documents.get_view(ctx.chat_key, "scene", SCENE_ID, PLAYER_VIEWER) or {}
+        except Exception:  # noqa: BLE001
+            scene_view = {}
+        scene = " · ".join(str(scene_view.get(key)) for key in ("name", "focus") if scene_view.get(key)) or "(unset)"
+    if runtime and runtime.get("trackers"):
+        runtime_lines = "\n".join(f"- {entry.get('name')}: {entry.get('value')}" for entry in runtime["trackers"])
+        trackers = "\n".join(part for part in (trackers, runtime_lines) if part)
     return trackers, scene
 
 

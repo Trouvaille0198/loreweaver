@@ -19,7 +19,10 @@
 // reply — the full keeper projection of one NPC record (persona, private knowledge,
 // secret agenda) for the mention card's keeper-only section; the broadcast mention
 // card itself stays the PLAYER-visible subset for everyone.
-export const PROTOCOL_VERSION = "2.10" as const
+// 2.11 adds the player-safe `state.module_runtime` projection for native scenario
+// progress. It is additive: older clients continue to render the ordinary scene,
+// clue and tracker fields they already know.
+export const PROTOCOL_VERSION = "2.11" as const
 
 export const FrameType = {
   Join: "join",
@@ -1075,6 +1078,8 @@ export interface StateFrame {
   room_system?: string
   party: PartyMember[]
   scene?: SceneState
+  /** v2.11 additive: deterministic native scenario progress, already projected for this player. */
+  module_runtime?: ModuleRuntimeState
   clock?: ClockState
   initiative: InitiativeEntry[]
   /** Retired with the D&D runtime removal; kept optional for older clients. */
@@ -1109,6 +1114,17 @@ export interface StateFrame {
   // (`.reset` / `admin_reset_room`): besides the already-fresh (empty) panel data,
   // the client should also clear its locally-accumulated chat scrollback.
   reset?: boolean
+}
+
+export interface ModuleRuntimeState {
+  module_id?: string
+  scene?: { id?: string; name?: string; description?: string; summary?: string; image?: string }
+  objectives?: { id?: string; name?: string; status?: string; progress?: number }[]
+  actors?: { id?: string; name?: string; status?: string }[]
+  trackers?: { id?: string; name?: string; value?: unknown; actor?: string }[]
+  clues?: { id?: string; name?: string; description?: string; summary?: string; image?: string }[]
+  ending?: { id?: string; name?: string } | null
+  rewards?: { name?: string; recipient?: string; quantity?: number; description?: string }[]
 }
 
 export interface PresencePlayer {

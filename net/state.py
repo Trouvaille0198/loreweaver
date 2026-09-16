@@ -39,6 +39,7 @@ from core.documents import (
     SCENE_ID,
 )
 from core.modvars import MODVARS_DOC_ID, MODVARS_DOC_TYPE, wire_entries
+from core.module_runtime import MODULE_RUNTIME_DOC_TYPE, project_runtime
 from core.sheets import projected_skills
 from infra.usage_stats import USAGE_STATS_KEY
 
@@ -105,6 +106,17 @@ async def build_room_state(
     variables = await _variables(services, ctx)
     if variables:
         state["variables"] = variables
+
+    try:
+        runtime_doc = await services.documents.get_singleton(ctx.chat_key, MODULE_RUNTIME_DOC_TYPE)
+        if runtime_doc is not None:
+            runtime_view = project_runtime(runtime_doc.data, keeper=False)
+            if runtime_view:
+                state["module_runtime"] = runtime_view
+    except Exception:
+        # A malformed legacy row must not take the whole state frame down; the
+        # action lane refuses to mutate it until the keeper replaces the module.
+        pass
 
     pregens = await _pregens(
         services,
@@ -634,6 +646,23 @@ async def _scene(services: Services, chat_key: str) -> dict[str, Any] | None:
         if image is not None:
             scene["image"] = image
         return scene
+
+    try:
+        from core.module_runtime import MODULE_RUNTIME_DOC_TYPE, project_runtime
+
+        runtime_doc = await services.documents.get_singleton(chat_key, MODULE_RUNTIME_DOC_TYPE)
+        runtime_view = project_runtime(runtime_doc.data, keeper=False) if runtime_doc is not None else None
+        runtime_scene = (runtime_view or {}).get("scene") or {}
+        if runtime_scene.get("name"):
+            scene = {"name": runtime_scene["name"]}
+            if runtime_scene.get("description") or runtime_scene.get("summary"):
+                scene["focus"] = str(runtime_scene.get("summary") or runtime_scene.get("description"))[:300]
+            image = await _scene_image(services, chat_key, str(scene["name"]))
+            if image is not None:
+                scene["image"] = image
+            return scene
+    except Exception:
+        pass
 
     try:
         pool = await services.documents.get_view(chat_key, "module_pool", MODULE_POOL_ID, PLAYER_VIEWER)

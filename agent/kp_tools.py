@@ -31,6 +31,7 @@ from agent.kp_tools_relationships import RelationshipTools
 from agent.kp_tools_settle import SettleTools
 from agent.kp_tools_vars import ModuleVarTools, MvuStatTools
 from agent.kp_tools_worldbook import WorldbookTools
+from agent.kp_tools_runtime import ModuleRuntimeTools
 from agent.services import Services
 from agent.tools import Toolset
 
@@ -76,6 +77,7 @@ def build_kp_toolset(
         MvuStatTools(services),
         ChronicleTools(services),
         SettleTools(services),
+        ModuleRuntimeTools(services),
     )
     prep_scripts._toolset_factory = lambda: toolset  # noqa: SLF001 — our own provider, closing the cycle
     return toolset

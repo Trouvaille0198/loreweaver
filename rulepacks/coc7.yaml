@@ -92,7 +92,7 @@ defaults:
   工程学: 1
   司法科学: 1
   地质学: 1
-  数学: 10
+  数学: 1
   气象学: 1
   药学: 1
   物理学: 1
@@ -234,18 +234,19 @@ resolution:
     hard: {target: "floor(target / 2)", prefixes: {en: [hard], zh: [困难]}}
     extreme: {target: "floor(target / 5)", prefixes: {en: [extreme], zh: [极难]}}
     critical: {target: "1", prefixes: {en: [critical], zh: [大成功]}}
-  # Rulebook rule (SealDice rule 0): 1 always crits; 100 always fumbles; the
-  # 96-100 fumble band applies when the EFFECTIVE target is below 50.
+  # CoC 7e default: 1 is always a critical success; 100 is always a fumble;
+  # the 96-100 fumble band applies when the unmodified skill is below 50.
   ranks:
     - {id: crit, when: "roll == 1", success: true, critical: true, tier: 5}
     - {id: fumble, when: "roll == 100", fumble: true, tier: 0}
     - {id: extreme, when: "roll <= target && roll <= floor(raw_target / 5)", success: true, tier: 4}
     - {id: hard, when: "roll <= target && roll <= floor(raw_target / 2)", success: true, tier: 3}
     - {id: regular, when: "roll <= target", success: true, tier: 2}
-    - {id: fumble, when: "roll >= 96 && target < 50", fumble: true, tier: 0}
+    - {id: fumble, when: "roll >= 96 && raw_target < 50", fumble: true, tier: 0}
     - {id: fail, tier: 1}
   variants:
-    # rule 1: crit 1-5 at skill>=50 (else 1); fumble 96-100 below 50 (else 100).
+    # rule 1: compatibility alias for the CoC 7e ladder above — crit 1-5 at
+    # skill>=50 (else 1); fumble 96-100 below 50 (else 100).
     rule1:
       ranks:
         - {id: crit, when: "roll == 1", success: true, critical: true, tier: 5}
@@ -399,9 +400,10 @@ creation_constraints:
       parts:
         - "智力 * 2"
         - max: ["教育 * 4", "教育 * 2 + 力量 * 2", "教育 * 2 + 敏捷 * 2", "教育 * 2 + 外貌 * 2", "教育 * 2 + 意志 * 2"]
-# Initiative order roll: {name} slots read the sheet's canonical values.
+  # CoC 7e uses descending DEX order; a readied firearm is handled by the
+  # Keeper as DEX+50 when adding that combatant.
 initiative:
-  roll: "1d100 + {敏捷}"
+  roll: "{敏捷}"
 # Presentation-only localized names for canonical keys (checks/tools render via
 # RulePack.display_name; unmapped keys fall back to the canonical key itself).
 display:
@@ -523,16 +525,15 @@ subsystems:
     template: check_with_loss
     stat: SAN
     stat_max: SANMAX
-    # Intentional house rule, not CoC7e RAW: a fumbled check drains ALL
-    # remaining points (RAW would take the loss dice's maximum, "max").
-    # Faithfully ported from the pre-M16 engine implementation.
-    fumble_loss: all
+    # CoC 7e: on a fumbled Sanity check, use the maximum of the declared
+    # failure-loss dice; do not drain the investigator's entire SAN pool.
+    fumble_loss: max
     display: {en: Sanity, zh: 理智}
   skill_growth:
     template: improvement_check
     roll: 1d100
     improve: 1d10
-    cap: 100
+    cap: 99
     # Rulebook experience check: a roll above the skill grows it, and 96-100
     # always grows even at high skill.
     auto_success_above: 95
@@ -555,14 +556,16 @@ subsystems:
         display: {en: Temporary madness, zh: 临时性疯狂}
         aliases: [临时, temporary]
         entries:
-          - 失忆：调查员会发现自己只记得最后身处的安全地点，却没有任何来到这里的记忆。
-          - 假性残疾：调查员陷入了心理性的失明、失聪或躯体缺失感中。
-          - 暴力倾向：调查员陷入了六亲不认的暴力行为中。
-          - 偏执：调查员陷入了严重的偏执妄想之中，所有人都想要伤害他。
-          - 人际依赖：调查员因为一些原因而将某人当作了支柱。
-          - 昏厥：调查员当场昏倒。
-          - 逃避行为：调查员会用任何手段试图逃离现场。
-          - 歇斯底里：调查员表现出大笑、哭泣、嘶吼、害怕等极端情绪反应。
+          - 失忆：调查员忘记从最近一次安全地点离开后的经历，持续 1d10 轮。
+          - 假性残疾：调查员出现心理性失明、失聪或肢体失用，持续 1d10 轮。
+          - 暴力倾向：调查员对周围的人和物发起失控的暴力行为，持续 1d10 轮。
+          - 偏执：调查员认为所有人都要伤害自己，持续 1d10 轮。
+          - 重要人物：把场景中的某人误认成背景里的重要人物，并依此行动，持续 1d10 轮。
+          - 昏厥：调查员昏倒，经过 1d10 轮后恢复。
+          - 恐慌逃跑：调查员不顾代价地逃离现场，持续 1d10 轮。
+          - 身体歇斯底里或情绪爆发：调查员大笑、哭泣、尖叫等而无法行动，持续 1d10 轮。
+          - 恐惧症：调查员获得一种新的恐惧，即使诱因不在场也会在接下来 1d10 轮里把它当真。
+          - 躁狂症：调查员获得一种新的强迫性躁狂，并在接下来 1d10 轮里试图满足它。
       long:
         display: {en: Long-term madness, zh: 总结性疯狂}
         aliases: [总结, 总结性]
@@ -698,7 +701,7 @@ sheet:
     炮术: 1
     手枪: 20
     步霰: 25
-    斗殴: 20
+    斗殴: 25
   # Skill slots whose value derives from a canonical formula (seeded at
   # creation, recomputed on read — never trusted from storage).
   derived_skills:

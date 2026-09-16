@@ -331,5 +331,16 @@
   "kp_tools.item.field_bonus": "加成",
   "kp_tools.item.field_common": "常见物标记",
   "kp_tools.item.merged_updated": "✅ 已把 {character} 的 {item} 合并为单一条目（共 {qty} 件）{changed}。",
-  "kp_tools.initiative.conditions": "　↳ {name}：{conditions}"
+  "kp_tools.initiative.conditions": "　↳ {name}：{conditions}",
+  "kp_tools.runtime.none": "当前没有安装原生剧本运行状态。",
+  "kp_tools.runtime.refused": "❌ 原生剧本动作被拒绝：{error}",
+  "kp_tools.runtime.failed": "❌ 原生剧本动作失败：{error}",
+  "kp_tools.runtime.scene_entered": "✅ 已进入作者定义的场景 {scene}（动作 {sequence}）。",
+  "kp_tools.runtime.clue_revealed": "✅ 已揭示作者定义的线索 {clue}（动作 {sequence}）。",
+  "kp_tools.runtime.objective_updated": "✅ 目标 {objective} 已变为 {status}（动作 {sequence}）。",
+  "kp_tools.runtime.actor_updated": "✅ 角色 {actor} 已变为 {status}（动作 {sequence}）。",
+  "kp_tools.runtime.tracker_set": "✅ 已设置追踪器 {tracker}（动作 {sequence}）。",
+  "kp_tools.runtime.tracker_adjusted": "✅ 已将追踪器 {tracker} 调整 {delta}（动作 {sequence}）。",
+  "kp_tools.runtime.ending_resolved": "✅ 已结算作者定义的结局 {ending}（动作 {sequence}）。",
+  "kp_tools.runtime.reward_granted": "✅ 已为 {recipient} 登记奖励 {reward} ×{quantity}（动作 {sequence}）。"
 }

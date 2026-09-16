@@ -30,6 +30,7 @@ from gateway.commands.panels import PanelsCommands
 from gateway.commands.plot import PlotCommands
 from gateway.commands.rooms import RoomsCommands, _is_keeper, _privilege_level
 from gateway.commands.rules import RulesCommands
+from gateway.commands.runtime import RuntimeCommands
 from gateway.commands.sheet import SheetCommands
 from gateway.commands.trace import TraceCommands
 from gateway.commands.types import CommandCtx, CommandReply, CommandSpec
@@ -75,6 +76,7 @@ class CommandRouter(
     MediaCommands,
     LlmCommands,
     ForgeCommands,
+    RuntimeCommands,
 ):
     def __init__(
         self,
@@ -340,6 +342,16 @@ class CommandRouter(
                 ["clue", "线索"],
                 None,
                 "commands.help.clue",
+            ),
+            CommandSpec(
+                "runtime",
+                self.cmd_runtime,
+                ["runtime", "story_state"],
+                ["runtime", "剧本状态", "劇本狀態", "剧情状态", "劇情狀態"],
+                None,
+                "commands.help.runtime",
+                private_reply=True,
+                keeper_help=True,
             ),
             CommandSpec(
                 "hint",

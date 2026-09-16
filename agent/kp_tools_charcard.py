@@ -876,6 +876,30 @@ class CharcardTools:
                 await ensure_catalog(self._services.documents, ctx.chat_key, tagged)
                 items_line = i18n.t("charcard.tools.world.items_line", count=len(lorecard.items))
 
+            # Native cards carry a declarative scenario graph in `module`. Install its
+            # mutable projection only after the static world content has validated; the
+            # transaction above then rolls it back together with the rest of the import.
+            runtime_line = ""
+            module_blueprint = card.raw.get("module") if isinstance(card.raw, dict) else None
+            if lorecard is not None and isinstance(module_blueprint, dict):
+                from core.module_runtime import install_runtime
+
+                module_tag = str(module_identity.get("pack_id") or "") or source_id
+                runtime = await install_runtime(
+                    self._services.documents,
+                    ctx.chat_key,
+                    module_blueprint,
+                    module_tag,
+                    source=source_id,
+                    preserve=True,
+                )
+                runtime_line = i18n.t(
+                    "charcard.tools.world.runtime_line",
+                    scenes=len(runtime.get("blueprint", {}).get("scenes", [])),
+                    objectives=len(runtime.get("blueprint", {}).get("objectives", [])),
+                    actors=len(runtime.get("blueprint", {}).get("actors", [])),
+                )
+
             # The receipt's variable count is the TOTAL actually injected into the
             # room: the ST-compat [InitVar] tree plus the native typed specs. Reporting
             # only the ST channel read "0" for a native card that shipped variables —
@@ -896,7 +920,7 @@ class CharcardTools:
                     titles=i18n.t("common.list_separator").join(skipped_titles[:5]),
                 )
             extra_lines = [
-                line for line in (pinned_line, specs_line, brief_line, pregen_line, cast_line, items_line, skill_line, skipped_line) if line
+                line for line in (pinned_line, specs_line, brief_line, pregen_line, cast_line, items_line, runtime_line, skill_line, skipped_line) if line
             ]
             await transaction.__aexit__(None, None, None)
             transaction = None

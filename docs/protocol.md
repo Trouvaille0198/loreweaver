@@ -1,6 +1,6 @@
 *English · [中文](protocol.zh.md)*
 
-# loreweaver networked TUI — wire protocol 2.8
+# loreweaver networked TUI — wire protocol 2.11
 
 This is the open, versioned wire protocol between a loreweaver server (started via
 `python -m app --serve`) and the OpenTUI terminal client. The engine itself
@@ -37,6 +37,12 @@ a panel template block carrying `visible_when` and cannot evaluate that conditio
 it does not implement the field, or does not implement that corner of the grammar, or the
 evaluation errors — MUST NOT render the block. Ignoring the gate draws content the author
 hid, so the undecidable case fails CLOSED, exactly as an unresolved `$var` does.
+
+**2.11 (additive)** adds `state.module_runtime`, a player-projected view of native
+scenario progress. It can contain the current authored scene, visible objective and
+actor states, player-visible trackers, discovered clues, a resolved ending, and recorded
+rewards. The native blueprint, keeper notes, conditions, action audit and unrevealed
+content never appear in this projection.
 
 **2.9 (additive)** added two optional fields on the character state frame
 (`CharacterState`): `spells` and `race_info`. Both were withdrawn again when the

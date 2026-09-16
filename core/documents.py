@@ -409,6 +409,7 @@ from core import character_memory as _character_memory  # noqa: E402
 from core import chronicle as _chronicle  # noqa: E402
 from core import module_brief as _module_brief  # noqa: E402
 from core import table_habits as _table_habits  # noqa: E402
+from core import module_runtime as _module_runtime  # noqa: E402
 
 for _name, _project_fn, _validate_fn, _singleton in (
     (_chronicle.CHRONICLE_DOC_TYPE, _chronicle.project_chronicle, _chronicle.validate_chronicle_write, None),
@@ -443,6 +444,12 @@ for _name, _project_fn, _validate_fn, _singleton in (
         _character_memory.project_character_memory,
         _character_memory.validate_character_memory_write,
         None,
+    ),
+    (
+        _module_runtime.MODULE_RUNTIME_DOC_TYPE,
+        _module_runtime.project_document,
+        lambda doc, services: [],
+        _module_runtime.MODULE_RUNTIME_ID,
     ),
 ):
     register_document_type(
